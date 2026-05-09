@@ -1,6 +1,6 @@
+use atheneum::AtheneumGraph;
 use std::fs;
 use std::path::PathBuf;
-use atheneum::AtheneumGraph;
 
 fn main() -> anyhow::Result<()> {
     // Persistent storage - keeps articles between runs
@@ -10,8 +10,7 @@ fn main() -> anyhow::Result<()> {
     let content =
         fs::read_to_string("/home/feanor/wiki/concepts/core-hypothesis-sparse-inference.md")?;
 
-    let article_id =
-        graph.ingest_article("core-hypothesis-sparse-inference.md", &content)?;
+    let article_id = graph.ingest_article("core-hypothesis-sparse-inference.md", &content)?;
 
     println!("✅ Article ingested with ID: {}", article_id);
 
