@@ -1,0 +1,35 @@
+[package]
+name = "atheneum"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0"
+description = "Agent coordination graph database - episodic and semantic memory for multi-agent workflows"
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = "0.31"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+thiserror = "2.0"
+tracing = "0.1"
+sqlitegraph = "2.2"
+
+# Async runtime (optional for future use)
+tokio = { version = "1.44", features = ["full"], optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+
+# Web dashboard (optional feature)
+axum = { version = "0.8", optional = true }
+tower-http = { version = "0.6", features = ["fs", "cors"], optional = true }
+askama = { version = "0.13", optional = true }
+
+[dev-dependencies]
+tempfile = "3.19"
+walkdir = "2.5"
+
+[features]
+default = []
+web-ui = ["dep:axum", "dep:tower-http", "dep:askama"]
+async = ["tokio", "tracing-subscriber"]
