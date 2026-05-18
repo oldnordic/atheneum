@@ -183,6 +183,62 @@ pub struct ToolCallTrace {
     pub modified: Vec<GraphEntity>,
 }
 
+/// Status of a [`Requirement`](AtheneumGraph::add_requirement).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequirementStatus {
+    Unmet,
+    Met,
+}
+
+impl RequirementStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RequirementStatus::Unmet => "UNMET",
+            RequirementStatus::Met => "MET",
+        }
+    }
+}
+
+/// Classification of a [`Blocker`](AtheneumGraph::add_blocker).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockerType {
+    /// External work the team depends on.
+    Dependency,
+    /// A bug standing in the way.
+    Bug,
+    /// Missing information / decision.
+    InfoGap,
+}
+
+impl BlockerType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BlockerType::Dependency => "DEPENDENCY",
+            BlockerType::Bug => "BUG",
+            BlockerType::InfoGap => "INFO_GAP",
+        }
+    }
+}
+
+/// Result of [`AtheneumGraph::get_task_with_details`]: a task with its
+/// linked requirements and blockers, all in one round-trip.
+#[derive(Debug, Clone)]
+pub struct TaskDetail {
+    pub task: GraphEntity,
+    pub requirements: Vec<GraphEntity>,
+    pub blockers: Vec<GraphEntity>,
+}
+
+/// One kanban transition applied via
+/// [`AtheneumGraph::apply_kanban_updates_from_journal`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppliedKanbanUpdate {
+    pub task_id: i64,
+    pub task_title: String,
+    pub previous_status: KanbanStatus,
+    pub new_status: KanbanStatus,
+}
+
 /// Main Atheneum graph interface
 pub struct AtheneumGraph {
     inner: SqliteGraph,
@@ -1716,6 +1772,257 @@ impl AtheneumGraph {
             return Ok(existing.id);
         }
         self.insert_agent(name, json!({}))
+    }
+
+    // ========================================================================
+    // Planning Domain (ported from atheneum-py PlanningService)
+    //
+    // Task / Requirement / Blocker entities as first-class graph nodes.
+    // Parent-child relationships live in the entity `data` blobs (task_id
+    // field) rather than as explicit edges, matching the pattern used by
+    // discoveries-by-target. Status reuses the [`KanbanStatus`] enum from
+    // the watchers port, which makes the journal → task auto-application
+    // step a one-liner.
+    //
+    // KanbanBoard / KanbanColumn from Python are deliberately not ported:
+    // the same coordination is expressible with the `status` field on the
+    // task, and the simpler model is easier for agents to reason about.
+    // ========================================================================
+
+    /// Create a Task entity in `TODO` status, optionally scoped to a project.
+    pub fn create_task(
+        &self,
+        title: &str,
+        description: Option<&str>,
+        project_id: Option<&str>,
+    ) -> Result<i64> {
+        let mut data = json!({
+            "title": title,
+            "description": description,
+            "status": KanbanStatus::Todo.as_str(),
+            "created_at": Utc::now().to_rfc3339(),
+        });
+        if let (Some(pid), Some(obj)) = (project_id, data.as_object_mut()) {
+            obj.insert("project_id".to_string(), Value::String(pid.to_string()));
+        }
+        let entity = GraphEntity {
+            id: 0,
+            kind: "Task".to_string(),
+            name: title.to_string(),
+            file_path: None,
+            data,
+        };
+        self.inner
+            .insert_entity(&entity)
+            .map_err(|e| anyhow::anyhow!("Failed to insert Task: {}", e))
+    }
+
+    /// Transition a task to a new [`KanbanStatus`]. Stamps `status_updated_at`.
+    pub fn update_task_status(&self, task_id: i64, status: KanbanStatus) -> Result<()> {
+        let entity = self.get_entity(task_id)?;
+        let mut data = entity.data;
+        if let Some(obj) = data.as_object_mut() {
+            obj.insert(
+                "status".to_string(),
+                Value::String(status.as_str().to_string()),
+            );
+            obj.insert(
+                "status_updated_at".to_string(),
+                Value::String(Utc::now().to_rfc3339()),
+            );
+        }
+        self.update_entity_data(task_id, &data)
+    }
+
+    /// Find a task by exact title within a project (or any project when
+    /// `project_id=None`). Returns the first match.
+    pub fn find_task_by_title(&self, title: &str, project_id: Option<&str>) -> Result<Option<i64>> {
+        let tasks = self.entities_by_kind("Task")?;
+        Ok(tasks
+            .into_iter()
+            .find(|t| {
+                let title_matches = t.data.get("title").and_then(|v| v.as_str()) == Some(title);
+                let project_matches = match project_id {
+                    None => true,
+                    Some(pid) => t.data.get("project_id").and_then(|v| v.as_str()) == Some(pid),
+                };
+                title_matches && project_matches
+            })
+            .map(|t| t.id))
+    }
+
+    /// List tasks in a given status, optionally project-scoped.
+    pub fn list_tasks_by_status(
+        &self,
+        status: KanbanStatus,
+        project_id: Option<&str>,
+    ) -> Result<Vec<GraphEntity>> {
+        let want = status.as_str();
+        Ok(self
+            .entities_by_kind("Task")?
+            .into_iter()
+            .filter(|t| t.data.get("status").and_then(|v| v.as_str()) == Some(want))
+            .filter(|t| match project_id {
+                None => true,
+                Some(pid) => t.data.get("project_id").and_then(|v| v.as_str()) == Some(pid),
+            })
+            .collect())
+    }
+
+    /// Attach an `UNMET` Requirement to a task. `verification_method` is the
+    /// (optional) free-text shell command / procedure that proves it MET.
+    pub fn add_requirement(
+        &self,
+        task_id: i64,
+        statement: &str,
+        verification_method: Option<&str>,
+    ) -> Result<i64> {
+        let data = json!({
+            "task_id": task_id,
+            "statement": statement,
+            "status": RequirementStatus::Unmet.as_str(),
+            "verification_method": verification_method,
+            "created_at": Utc::now().to_rfc3339(),
+        });
+        let entity = GraphEntity {
+            id: 0,
+            kind: "Requirement".to_string(),
+            name: statement.to_string(),
+            file_path: None,
+            data,
+        };
+        self.inner
+            .insert_entity(&entity)
+            .map_err(|e| anyhow::anyhow!("Failed to insert Requirement: {}", e))
+    }
+
+    /// Flip a Requirement to MET and stamp the time.
+    pub fn mark_requirement_met(&self, req_id: i64) -> Result<()> {
+        let entity = self.get_entity(req_id)?;
+        let mut data = entity.data;
+        if let Some(obj) = data.as_object_mut() {
+            obj.insert(
+                "status".to_string(),
+                Value::String(RequirementStatus::Met.as_str().to_string()),
+            );
+            obj.insert("met_at".to_string(), Value::String(Utc::now().to_rfc3339()));
+        }
+        self.update_entity_data(req_id, &data)
+    }
+
+    /// Attach a Blocker to a task. `resolved_at` is null until
+    /// [`resolve_blocker`] is called.
+    pub fn add_blocker(
+        &self,
+        task_id: i64,
+        description: &str,
+        blocker_type: BlockerType,
+    ) -> Result<i64> {
+        let data = json!({
+            "task_id": task_id,
+            "description": description,
+            "blocker_type": blocker_type.as_str(),
+            "resolved_at": Value::Null,
+            "created_at": Utc::now().to_rfc3339(),
+        });
+        let entity = GraphEntity {
+            id: 0,
+            kind: "Blocker".to_string(),
+            name: description.to_string(),
+            file_path: None,
+            data,
+        };
+        self.inner
+            .insert_entity(&entity)
+            .map_err(|e| anyhow::anyhow!("Failed to insert Blocker: {}", e))
+    }
+
+    /// Stamp `resolved_at` on a blocker so it stops showing up in open
+    /// blocker queries.
+    pub fn resolve_blocker(&self, blocker_id: i64) -> Result<()> {
+        let entity = self.get_entity(blocker_id)?;
+        let mut data = entity.data;
+        if let Some(obj) = data.as_object_mut() {
+            obj.insert(
+                "resolved_at".to_string(),
+                Value::String(Utc::now().to_rfc3339()),
+            );
+        }
+        self.update_entity_data(blocker_id, &data)
+    }
+
+    /// One-call read: a task plus all its requirements and blockers.
+    pub fn get_task_with_details(&self, task_id: i64) -> Result<TaskDetail> {
+        let task = self.get_entity(task_id)?;
+        let requirements = self
+            .entities_by_kind("Requirement")?
+            .into_iter()
+            .filter(|r| r.data.get("task_id").and_then(|v| v.as_i64()) == Some(task_id))
+            .collect();
+        let blockers = self
+            .entities_by_kind("Blocker")?
+            .into_iter()
+            .filter(|b| b.data.get("task_id").and_then(|v| v.as_i64()) == Some(task_id))
+            .collect();
+        Ok(TaskDetail {
+            task,
+            requirements,
+            blockers,
+        })
+    }
+
+    /// Apply the kanban transitions found in a journal section to the
+    /// matching Task entities. Tasks are matched by title within the
+    /// section's `project_id`; unknown titles are silently skipped (the
+    /// journal can mention things that aren't tracked tasks).
+    ///
+    /// Returns the list of actually-applied transitions so callers can
+    /// audit what changed.
+    pub fn apply_kanban_updates_from_journal(
+        &self,
+        journal_section_id: i64,
+    ) -> Result<Vec<AppliedKanbanUpdate>> {
+        let section = self.get_entity(journal_section_id)?;
+        let project_id = section.data.get("project_id").and_then(|v| v.as_str());
+        let updates = section
+            .data
+            .get("kanban_updates")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut applied = Vec::new();
+        for update in updates {
+            let Some(title) = update.get("task_title").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Some(status_str) = update.get("new_status").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Some(new_status) = KanbanStatus::parse(status_str) else {
+                continue;
+            };
+            let Some(task_id) = self.find_task_by_title(title, project_id)? else {
+                continue;
+            };
+
+            let task = self.get_entity(task_id)?;
+            let previous_status = task
+                .data
+                .get("status")
+                .and_then(|v| v.as_str())
+                .and_then(KanbanStatus::parse)
+                .unwrap_or(KanbanStatus::Todo);
+
+            self.update_task_status(task_id, new_status)?;
+            applied.push(AppliedKanbanUpdate {
+                task_id,
+                task_title: title.to_string(),
+                previous_status,
+                new_status,
+            });
+        }
+        Ok(applied)
     }
 
     // ========================================================================
