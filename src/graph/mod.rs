@@ -146,6 +146,43 @@ const SEARCH_INDEX_NAME: &str = "discoveries";
 /// while still differentiating short snippets reasonably well.
 const SEARCH_EMBED_DIM: usize = 128;
 
+/// A single tool invocation to record on an agent action.
+///
+/// Used by [`AtheneumGraph::record_agent_action`]. `modified_targets` is
+/// a list of existing graph-entity IDs (FileChange, CodeSymbol, Discovery,
+/// etc.) that this tool call should be marked as having modified.
+#[derive(Debug, Clone)]
+pub struct ToolCallRecord {
+    pub tool_name: String,
+    pub args: Value,
+    pub modified_targets: Vec<i64>,
+}
+
+/// IDs created by [`AtheneumGraph::record_agent_action`], returned so
+/// callers can attach further edges or queries without re-querying.
+#[derive(Debug, Clone)]
+pub struct ActionTrace {
+    pub agent_id: i64,
+    pub reasoning_log_id: i64,
+    pub tool_call_ids: Vec<i64>,
+    pub modified_edge_ids: Vec<i64>,
+}
+
+/// One row of provenance returned by [`AtheneumGraph::get_action_trace`]:
+/// a reasoning log plus the tool calls it spawned and what each modified.
+#[derive(Debug, Clone)]
+pub struct ActionRecord {
+    pub reasoning_log: GraphEntity,
+    pub tool_calls: Vec<ToolCallTrace>,
+}
+
+/// A single tool call and the entities it modified.
+#[derive(Debug, Clone)]
+pub struct ToolCallTrace {
+    pub tool_call: GraphEntity,
+    pub modified: Vec<GraphEntity>,
+}
+
 /// Main Atheneum graph interface
 pub struct AtheneumGraph {
     inner: SqliteGraph,
@@ -1467,6 +1504,218 @@ impl AtheneumGraph {
             }
         }
         Ok(results)
+    }
+
+    // ========================================================================
+    // Audit Trail (ported from atheneum-py)
+    //
+    // Records the provenance chain
+    //   (Agent)-[PerformedBy]->(ReasoningLog)-[Called]->(ToolCall)-[Modified]->(target)
+    // so the graph stops being a bag of disconnected entities. Each write
+    // step is a small helper; `record_agent_action` is the one-shot
+    // convenience wrapper. `get_action_trace` walks the chain back.
+    //
+    // Edge-type mapping (the existing Rust enum carries the right semantics):
+    //   PerformedBy ↔ atheneum-py THOUGHT
+    //   Called      ↔ atheneum-py USED
+    //   Modified    ↔ atheneum-py MODIFIED
+    // ========================================================================
+
+    /// Create a ReasoningLog entity for an agent's thought and link
+    /// `(Agent)-[PerformedBy]->(ReasoningLog)`. The agent entity is
+    /// created on demand if it doesn't exist.
+    pub fn insert_reasoning_log(
+        &self,
+        agent: &str,
+        content: &str,
+        project_id: Option<&str>,
+    ) -> Result<i64> {
+        let agent_id = self.ensure_agent(agent)?;
+
+        let mut data = json!({
+            "agent": agent,
+            "content": content,
+            "timestamp": Utc::now().to_rfc3339(),
+        });
+        if let (Some(pid), Some(obj)) = (project_id, data.as_object_mut()) {
+            obj.insert("project_id".to_string(), Value::String(pid.to_string()));
+        }
+
+        let entity = GraphEntity {
+            id: 0,
+            kind: "ReasoningLog".to_string(),
+            name: format!(
+                "{}: {}",
+                agent,
+                content.chars().take(48).collect::<String>()
+            ),
+            file_path: None,
+            data,
+        };
+        let log_id = self
+            .inner
+            .insert_entity(&entity)
+            .map_err(|e| anyhow::anyhow!("Failed to insert ReasoningLog: {}", e))?;
+
+        self.insert_edge(
+            agent_id,
+            log_id,
+            EdgeType::PerformedBy,
+            json!({"provenance": {"actor": "atheneum", "method": "insert_reasoning_log"}}),
+        )?;
+
+        Ok(log_id)
+    }
+
+    /// Create a ToolCall entity and link `(ReasoningLog)-[Called]->(ToolCall)`.
+    pub fn insert_tool_call(
+        &self,
+        reasoning_log_id: i64,
+        tool_name: &str,
+        args: Value,
+        project_id: Option<&str>,
+    ) -> Result<i64> {
+        let mut data = json!({
+            "tool_name": tool_name,
+            "args": args,
+            "timestamp": Utc::now().to_rfc3339(),
+        });
+        if let (Some(pid), Some(obj)) = (project_id, data.as_object_mut()) {
+            obj.insert("project_id".to_string(), Value::String(pid.to_string()));
+        }
+
+        let entity = GraphEntity {
+            id: 0,
+            kind: "ToolCall".to_string(),
+            name: tool_name.to_string(),
+            file_path: None,
+            data,
+        };
+        let tool_id = self
+            .inner
+            .insert_entity(&entity)
+            .map_err(|e| anyhow::anyhow!("Failed to insert ToolCall: {}", e))?;
+
+        self.insert_edge(
+            reasoning_log_id,
+            tool_id,
+            EdgeType::Called,
+            json!({"provenance": {"actor": "atheneum", "method": "insert_tool_call"}}),
+        )?;
+
+        Ok(tool_id)
+    }
+
+    /// Link `(ToolCall)-[Modified]->(target)` for an already-existing target
+    /// entity. Returns the edge id so callers can decorate it later.
+    pub fn record_tool_modifies(&self, tool_call_id: i64, target_id: i64) -> Result<i64> {
+        self.insert_edge(
+            tool_call_id,
+            target_id,
+            EdgeType::Modified,
+            json!({"provenance": {"actor": "atheneum", "method": "record_tool_modifies"}}),
+        )
+    }
+
+    /// One-shot recording of a full agent action.
+    ///
+    /// Equivalent to: `insert_reasoning_log`, then `insert_tool_call` per
+    /// entry in `tool_calls`, then `record_tool_modifies` per modified
+    /// target. Returns the IDs created so callers can do follow-up writes
+    /// without re-querying.
+    pub fn record_agent_action(
+        &self,
+        agent: &str,
+        thought: &str,
+        tool_calls: Vec<ToolCallRecord>,
+        project_id: Option<&str>,
+    ) -> Result<ActionTrace> {
+        let log_id = self.insert_reasoning_log(agent, thought, project_id)?;
+        let agent_id = self.ensure_agent(agent)?;
+
+        let mut tool_call_ids = Vec::with_capacity(tool_calls.len());
+        let mut modified_edge_ids = Vec::new();
+        for tc in tool_calls {
+            let tool_id = self.insert_tool_call(log_id, &tc.tool_name, tc.args, project_id)?;
+            tool_call_ids.push(tool_id);
+            for target in tc.modified_targets {
+                let edge_id = self.record_tool_modifies(tool_id, target)?;
+                modified_edge_ids.push(edge_id);
+            }
+        }
+
+        Ok(ActionTrace {
+            agent_id,
+            reasoning_log_id: log_id,
+            tool_call_ids,
+            modified_edge_ids,
+        })
+    }
+
+    /// Walk the provenance chain back: return every action the named agent
+    /// performed, with each tool call and the entities it modified.
+    /// `project_id=Some(p)` restricts to logs tagged with that project.
+    pub fn get_action_trace(
+        &self,
+        agent: &str,
+        project_id: Option<&str>,
+    ) -> Result<Vec<ActionRecord>> {
+        // Walk all ReasoningLogs for this agent (optionally project-scoped).
+        let logs: Vec<GraphEntity> = self
+            .entities_by_kind("ReasoningLog")?
+            .into_iter()
+            .filter(|log| log.data.get("agent").and_then(|v| v.as_str()) == Some(agent))
+            .filter(|log| match project_id {
+                None => true,
+                Some(pid) => log.data.get("project_id").and_then(|v| v.as_str()) == Some(pid),
+            })
+            .collect();
+
+        let mut records = Vec::with_capacity(logs.len());
+        for log in logs {
+            let log_id = log.id;
+            // Tool calls reachable via Called edges out of this log
+            let tool_call_entities: Vec<GraphEntity> = self
+                .outgoing_edges(log_id)?
+                .into_iter()
+                .filter(|e| e.edge_type == EdgeType::Called.as_str())
+                .filter_map(|e| self.get_entity(e.to_id).ok())
+                .collect();
+
+            let mut tool_calls = Vec::with_capacity(tool_call_entities.len());
+            for tc in tool_call_entities {
+                let modified: Vec<GraphEntity> = self
+                    .outgoing_edges(tc.id)?
+                    .into_iter()
+                    .filter(|e| e.edge_type == EdgeType::Modified.as_str())
+                    .filter_map(|e| self.get_entity(e.to_id).ok())
+                    .collect();
+                tool_calls.push(ToolCallTrace {
+                    tool_call: tc,
+                    modified,
+                });
+            }
+
+            records.push(ActionRecord {
+                reasoning_log: log,
+                tool_calls,
+            });
+        }
+        Ok(records)
+    }
+
+    /// Look up an Agent entity by name, creating it if missing. Used as a
+    /// safety net so audit-trail helpers don't fail on first call for a
+    /// new agent.
+    fn ensure_agent(&self, name: &str) -> Result<i64> {
+        if let Some(existing) = self
+            .entities_by_kind(EntityType::Agent.as_str())?
+            .into_iter()
+            .find(|a| a.name == name)
+        {
+            return Ok(existing.id);
+        }
+        self.insert_agent(name, json!({}))
     }
 
     // ========================================================================
