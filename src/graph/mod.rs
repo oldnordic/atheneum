@@ -4,8 +4,10 @@
 
 use anyhow::Result;
 use chrono::Utc;
+use regex::Regex;
 use rusqlite::params;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use sqlitegraph::hnsw::{DistanceMetric, HnswConfigBuilder};
 use sqlitegraph::{GraphEdge, GraphEntity, SqliteGraph};
 use std::hash::{Hash, Hasher};
@@ -1466,6 +1468,167 @@ impl AtheneumGraph {
         }
         Ok(results)
     }
+
+    // ========================================================================
+    // Wiki + Journal Ingestion (ported from atheneum-py watchers/)
+    //
+    // ingest_wiki_page: full markdown file → WikiPage entity with content
+    //   hash + extracted wikilinks + project scoping. Idempotent by path.
+    // ingest_journal:   Logseq-style daily journal → one JournalSection
+    //   entity per H2 section, with extracted kanban transitions.
+    // sync_*_directory: walk a dir, ingest every .md file.
+    //
+    // A live notify-based file watcher is intentionally out of scope here;
+    // calling sync_wiki_directory on a debounce timer or fs event is a
+    // thin downstream wrapper.
+    // ========================================================================
+
+    /// Ingest a Markdown wiki page.
+    ///
+    /// Parses optional YAML frontmatter, extracts `[[wikilinks]]`, computes
+    /// a content hash for change detection, and stores everything as a
+    /// `WikiPage` entity. Idempotent by `path` — re-ingesting the same path
+    /// updates the existing entity in place rather than creating a duplicate.
+    pub fn ingest_wiki_page(
+        &self,
+        path: &str,
+        content: &str,
+        project_id: Option<&str>,
+    ) -> Result<i64> {
+        let (frontmatter, body) = parse_frontmatter_lenient(content);
+        let mut data = json!({
+            "path": path,
+            "body": body,
+            "content_hash": content_hash(body),
+            "wikilinks": extract_wikilinks(body),
+        });
+        if let Some(obj) = data.as_object_mut() {
+            if let Some(fm_obj) = frontmatter.as_object() {
+                for (k, v) in fm_obj {
+                    obj.insert(k.clone(), v.clone());
+                }
+            }
+            if let Some(pid) = project_id {
+                obj.insert("project_id".to_string(), Value::String(pid.to_string()));
+            }
+        }
+
+        let existing = self.find_ontology_entity("WikiPage", path)?;
+        if let Some(id) = existing {
+            self.update_entity_data(id, &data)?;
+            Ok(id)
+        } else {
+            let entity = GraphEntity {
+                id: 0,
+                kind: "WikiPage".to_string(),
+                name: path.to_string(),
+                file_path: Some(path.to_string()),
+                data,
+            };
+            self.inner
+                .insert_entity(&entity)
+                .map_err(|e| anyhow::anyhow!("Failed to insert WikiPage: {}", e))
+        }
+    }
+
+    /// Ingest a Logseq-style journal file as a series of `JournalSection`
+    /// entities — one per H2 header. Each section carries its kanban
+    /// transitions and wikilinks.
+    pub fn ingest_journal(
+        &self,
+        path: &str,
+        content: &str,
+        project_id: Option<&str>,
+    ) -> Result<Vec<i64>> {
+        let sections = parse_journal_sections(content);
+        let mut ids = Vec::with_capacity(sections.len());
+        for (idx, section) in sections.iter().enumerate() {
+            let mut data = json!({
+                "path": path,
+                "section_index": idx,
+                "time": section.time,
+                "title": section.title,
+                "body": section.body,
+                "wikilinks": extract_wikilinks(&section.body),
+                "kanban_updates": section
+                    .kanban_updates
+                    .iter()
+                    .map(|u| {
+                        json!({
+                            "task_title": u.task_title,
+                            "new_status": u.new_status.as_str(),
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            });
+            if let (Some(pid), Some(obj)) = (project_id, data.as_object_mut()) {
+                obj.insert("project_id".to_string(), Value::String(pid.to_string()));
+            }
+
+            let name = format!("{}#{}", path, idx);
+            let entity = GraphEntity {
+                id: 0,
+                kind: "JournalSection".to_string(),
+                name,
+                file_path: Some(path.to_string()),
+                data,
+            };
+            let id = self
+                .inner
+                .insert_entity(&entity)
+                .map_err(|e| anyhow::anyhow!("Failed to insert JournalSection: {}", e))?;
+            ids.push(id);
+        }
+        Ok(ids)
+    }
+
+    /// One-shot sync of every `.md` file in `dir` as a WikiPage. Non-recursive.
+    pub fn sync_wiki_directory(
+        &self,
+        dir: &std::path::Path,
+        project_id: Option<&str>,
+    ) -> Result<Vec<i64>> {
+        let mut ids = Vec::new();
+        for entry in std::fs::read_dir(dir)
+            .map_err(|e| anyhow::anyhow!("read_dir {} failed: {}", dir.display(), e))?
+        {
+            let entry = entry.map_err(|e| anyhow::anyhow!("dir entry: {}", e))?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path)
+                .map_err(|e| anyhow::anyhow!("read {} failed: {}", path.display(), e))?;
+            let id =
+                self.ingest_wiki_page(path.to_str().unwrap_or_default(), &content, project_id)?;
+            ids.push(id);
+        }
+        Ok(ids)
+    }
+
+    /// One-shot sync of every `.md` file in `dir` as a journal. Non-recursive.
+    pub fn sync_journal_directory(
+        &self,
+        dir: &std::path::Path,
+        project_id: Option<&str>,
+    ) -> Result<Vec<i64>> {
+        let mut all_ids = Vec::new();
+        for entry in std::fs::read_dir(dir)
+            .map_err(|e| anyhow::anyhow!("read_dir {} failed: {}", dir.display(), e))?
+        {
+            let entry = entry.map_err(|e| anyhow::anyhow!("dir entry: {}", e))?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path)
+                .map_err(|e| anyhow::anyhow!("read {} failed: {}", path.display(), e))?;
+            let ids =
+                self.ingest_journal(path.to_str().unwrap_or_default(), &content, project_id)?;
+            all_ids.extend(ids);
+        }
+        Ok(all_ids)
+    }
 }
 
 /// Pull human-readable text out of a discovery entity for embedding.
@@ -1515,6 +1678,157 @@ fn hash_embed(text: &str, dim: usize) -> Vec<f32> {
         }
     }
     vector
+}
+
+/// Kanban transition states recognized in journal text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KanbanStatus {
+    Todo,
+    InProgress,
+    Done,
+    Blocked,
+}
+
+impl KanbanStatus {
+    /// Canonical uppercase representation (also what gets stored in JSON).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            KanbanStatus::Todo => "TODO",
+            KanbanStatus::InProgress => "IN_PROGRESS",
+            KanbanStatus::Done => "DONE",
+            KanbanStatus::Blocked => "BLOCKED",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_uppercase().as_str() {
+            "TODO" => Some(KanbanStatus::Todo),
+            "IN_PROGRESS" | "IN-PROGRESS" | "INPROGRESS" => Some(KanbanStatus::InProgress),
+            "DONE" => Some(KanbanStatus::Done),
+            "BLOCKED" => Some(KanbanStatus::Blocked),
+            _ => None,
+        }
+    }
+}
+
+/// A single kanban transition extracted from journal text:
+/// `"Task title" -> STATUS` (or `→` for the unicode arrow).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KanbanUpdate {
+    pub task_title: String,
+    pub new_status: KanbanStatus,
+}
+
+/// One H2-delimited section of a Logseq-style daily journal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JournalSection {
+    /// Optional `HH:MM` prefix on the H2 header.
+    pub time: Option<String>,
+    /// Heading text after the optional time prefix.
+    pub title: String,
+    /// Everything between this H2 and the next.
+    pub body: String,
+    /// Kanban transitions found inside `body`.
+    pub kanban_updates: Vec<KanbanUpdate>,
+}
+
+/// Extract `[[wikilink]]` targets from markdown body text.
+///
+/// Returns inner text of each `[[...]]` pair in document order. Duplicates
+/// are preserved so callers can reason about reference frequency.
+pub fn extract_wikilinks(content: &str) -> Vec<String> {
+    // The pattern is small enough that compiling once per call is fine for
+    // the volumes atheneum sees (KB-scale wiki bodies).
+    let re = Regex::new(r"\[\[([^\[\]]+?)\]\]").expect("static regex");
+    re.captures_iter(content)
+        .map(|c| c[1].to_string())
+        .collect()
+}
+
+/// Deterministic SHA-256 hex digest of `content`. Used for cheap change
+/// detection on wiki pages — re-ingesting with the same hash means the
+/// body didn't change, so downstream consumers can skip work.
+pub fn content_hash(content: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// Segment a Logseq-style journal on H2 headers. A header may be either
+/// `## HH:MM | Topic` (the Logseq convention) or just `## Topic`.
+///
+/// Each returned section's `body` is everything between its header and the
+/// next header (or end-of-file). `kanban_updates` is pre-extracted from
+/// the body so callers don't need a second pass.
+pub fn parse_journal_sections(content: &str) -> Vec<JournalSection> {
+    // Locate every H2 header line and remember (start_of_body, time, title).
+    let re = Regex::new(r"(?m)^##\s+(?:(\d{2}:\d{2})\s*\|\s*)?(.+?)\s*$").expect("static regex");
+    let mut headers: Vec<(usize, Option<String>, String)> = Vec::new();
+    for m in re.captures_iter(content) {
+        let full = m.get(0).expect("full match");
+        let body_start = full.end();
+        let time = m.get(1).map(|t| t.as_str().to_string());
+        let title = m.get(2).map(|t| t.as_str().to_string()).unwrap_or_default();
+        headers.push((body_start, time, title));
+    }
+
+    let mut sections = Vec::with_capacity(headers.len());
+    for (i, (body_start, time, title)) in headers.iter().enumerate() {
+        let body_end = headers.get(i + 1).map(|h| {
+            // Body ends just before the next header line — back up to the
+            // newline that precedes the next `##` to keep the boundary
+            // clean.
+            let next_header_pos = h.0 - content[..h.0].rfind('\n').map(|n| h.0 - n).unwrap_or(0);
+            next_header_pos.saturating_sub(0).max(*body_start)
+        });
+        // Default: body runs to the next header start (we'll over-include
+        // a newline; trim() in the consumer cleans it up).
+        let raw_end = headers
+            .get(i + 1)
+            .map(|h| {
+                // Walk back to just after the previous newline so the next
+                // `##` line isn't included in *this* section's body.
+                content[..h.0]
+                    .rfind("\n##")
+                    .map(|p| p + 1) // include the newline at end of prev line
+                    .unwrap_or(h.0)
+            })
+            .unwrap_or(content.len());
+        let _ = body_end; // kept for clarity above; raw_end is the real cut
+
+        let body = content[*body_start..raw_end].trim().to_string();
+        let kanban_updates = extract_kanban_updates(&body);
+        sections.push(JournalSection {
+            time: time.clone(),
+            title: title.clone(),
+            body,
+            kanban_updates,
+        });
+    }
+    sections
+}
+
+/// Extract `"task" -> STATUS` (or `→`) transitions from journal text.
+pub fn extract_kanban_updates(content: &str) -> Vec<KanbanUpdate> {
+    let re = Regex::new(r#"["']([^"']+?)["']\s*(?:->|→)\s*(TODO|IN[_ -]?PROGRESS|DONE|BLOCKED)"#)
+        .expect("static regex");
+    re.captures_iter(content)
+        .filter_map(|c| {
+            let task = c.get(1)?.as_str().to_string();
+            let status = KanbanStatus::parse(c.get(2)?.as_str())?;
+            Some(KanbanUpdate {
+                task_title: task,
+                new_status: status,
+            })
+        })
+        .collect()
+}
+
+/// Lenient frontmatter parser used by `ingest_wiki_page`. Returns
+/// `(Value::Object({}), full_content)` when no frontmatter is found instead
+/// of erroring, since wiki pages frequently skip the metadata block.
+fn parse_frontmatter_lenient(content: &str) -> (Value, &str) {
+    parse_frontmatter(content).unwrap_or((Value::Object(serde_json::Map::new()), content))
 }
 
 /// Parse YAML frontmatter from markdown content
