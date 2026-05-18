@@ -2281,6 +2281,165 @@ impl AtheneumGraph {
     }
 
     // ========================================================================
+    // Code Bridge to Magellan (Stage 12)
+    //
+    // Pulls Symbol entities from a magellan-format sqlitegraph DB and
+    // stores them as Discoveries in atheneum. Used by agents to
+    // "remember" symbol locations across sessions without re-running
+    // magellan queries. The bridge reads magellan's underlying SQLite
+    // directly — magellan is a CLI, not a library, so a subprocess
+    // round-trip would just add latency and a process boundary.
+    //
+    // Idempotency: by (agent_name, target, project_id, discovery_type).
+    // Re-importing the same symbol updates the existing Discovery in
+    // place rather than creating a duplicate.
+    // ========================================================================
+
+    /// Look up a single symbol in `magellan_db_path` and store it as a
+    /// Discovery in this atheneum graph.
+    ///
+    /// Returns the discovery's entity id, or `None` if no matching symbol
+    /// exists in the magellan DB.
+    pub fn import_symbol_from_magellan(
+        &self,
+        magellan_db_path: &std::path::Path,
+        symbol_name: &str,
+        agent_name: &str,
+        project_id: Option<&str>,
+    ) -> Result<Option<i64>> {
+        let symbols = read_magellan_symbols(magellan_db_path, Some(symbol_name), None)?;
+        if symbols.is_empty() {
+            return Ok(None);
+        }
+        // Take the first match — magellan can have multiple symbols with the
+        // same name (e.g., across modules). Caller can disambiguate with
+        // import_all_symbols_from_magellan or by passing more specific names.
+        let sym = &symbols[0];
+        let metadata = symbol_to_metadata(sym);
+        self.upsert_symbol_discovery(agent_name, symbol_name, project_id, metadata)
+            .map(Some)
+    }
+
+    /// Bulk-import every Symbol entity from `magellan_db_path` as
+    /// Discoveries. Returns the number of symbols imported / updated.
+    pub fn import_all_symbols_from_magellan(
+        &self,
+        magellan_db_path: &std::path::Path,
+        agent_name: &str,
+        project_id: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<usize> {
+        let symbols = read_magellan_symbols(magellan_db_path, None, limit)?;
+        let mut count = 0;
+        for sym in &symbols {
+            let metadata = symbol_to_metadata(sym);
+            let target = sym.name.clone();
+            self.upsert_symbol_discovery(agent_name, &target, project_id, metadata)?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    /// Find an existing Symbol Discovery for `(agent_name, target,
+    /// project_id)` or create one. If it exists, the metadata is updated
+    /// in-place (both the SQL row and the pointer node's `data`).
+    fn upsert_symbol_discovery(
+        &self,
+        agent_name: &str,
+        target: &str,
+        project_id: Option<&str>,
+        mut metadata: Value,
+    ) -> Result<i64> {
+        // Look up an existing discovery via the SQL `discoveries` table
+        // (cheap; indexed on target).
+        let agent_s = agent_name.to_string();
+        let target_s = target.to_string();
+        let project_s = project_id.map(|s| s.to_string());
+        let existing_sql_id: Option<i64> = self.with_raw_connection(|conn| {
+            let row = conn
+                .query_row(
+                    "SELECT id FROM discoveries
+                     WHERE agent_name = ?1 AND target = ?2 AND discovery_type = 'Symbol'
+                       AND ((project_id IS NULL AND ?3 IS NULL) OR project_id = ?3)
+                     LIMIT 1",
+                    rusqlite::params![agent_s, target_s, project_s],
+                    |r| r.get::<_, i64>(0),
+                )
+                .ok();
+            Ok(row)
+        })?;
+
+        if let Some(sql_id) = existing_sql_id {
+            // UPDATE the SQL row's metadata + project_id
+            let agent_s = agent_name.to_string();
+            let target_s = target.to_string();
+            let project_s = project_id.map(|s| s.to_string());
+            // Stamp provenance keys into metadata to keep it self-describing.
+            if let Some(obj) = metadata.as_object_mut() {
+                obj.insert("agent".to_string(), Value::String(agent_s.clone()));
+                obj.insert(
+                    "discovery_type".to_string(),
+                    Value::String("Symbol".to_string()),
+                );
+                obj.insert("target".to_string(), Value::String(target_s.clone()));
+                obj.insert(
+                    "timestamp".to_string(),
+                    Value::String(Utc::now().to_rfc3339()),
+                );
+                obj.insert("sql_id".to_string(), Value::Number(sql_id.into()));
+                if let Some(ref pid) = project_s {
+                    obj.insert("project_id".to_string(), Value::String(pid.clone()));
+                }
+            }
+            let metadata_str = serde_json::to_string(&metadata).unwrap_or_default();
+            let metadata_for_entity = metadata.clone();
+            self.with_raw_connection(|conn| {
+                conn.execute(
+                    "UPDATE discoveries SET metadata = ?1, project_id = ?2 WHERE id = ?3",
+                    rusqlite::params![metadata_str, project_s, sql_id],
+                )?;
+                Ok(())
+            })?;
+
+            // Find + update the matching pointer node so callers reading
+            // entity.data keep seeing the latest fields.
+            let entity_id: Option<i64> = self.with_raw_connection(|conn| {
+                let row = conn
+                    .query_row(
+                        "SELECT id FROM graph_entities
+                         WHERE kind = 'Discovery'
+                           AND json_extract(data, '$.sql_id') = ?1
+                         LIMIT 1",
+                        rusqlite::params![sql_id],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .ok();
+                Ok(row)
+            })?;
+
+            if let Some(entity_id) = entity_id {
+                self.update_entity_data(entity_id, &metadata_for_entity)?;
+                Ok(entity_id)
+            } else {
+                // Stray SQL row with no pointer node — re-create the pointer.
+                let name = format!("{}: {}", agent_name, target);
+                let entity = GraphEntity {
+                    id: 0,
+                    kind: EntityType::Discovery.as_str().to_string(),
+                    name,
+                    file_path: None,
+                    data: metadata_for_entity,
+                };
+                self.inner.insert_entity(&entity).map_err(Into::into)
+            }
+        } else {
+            // No existing discovery — use the standard path which writes both
+            // the SQL row and the pointer node.
+            self.store_discovery_in_project(agent_name, "Symbol", target, project_id, metadata)
+        }
+    }
+
+    // ========================================================================
     // Wiki + Journal Ingestion (ported from atheneum-py watchers/)
     //
     // ingest_wiki_page: full markdown file → WikiPage entity with content
@@ -2749,6 +2908,84 @@ pub fn extract_kanban_updates(content: &str) -> Vec<KanbanUpdate> {
 /// of erroring, since wiki pages frequently skip the metadata block.
 fn parse_frontmatter_lenient(content: &str) -> (Value, &str) {
     parse_frontmatter(content).unwrap_or((Value::Object(serde_json::Map::new()), content))
+}
+
+/// A Symbol row read from a magellan-format sqlitegraph DB.
+///
+/// Mirrors magellan's `SymbolNode` shape but only carries the fields the
+/// code-bridge consumes — magellan uses many more columns under the hood
+/// for indexing and reverse lookup.
+#[derive(Debug, Clone)]
+struct MagellanSymbol {
+    name: String,
+    file_path: Option<String>,
+    data: Value,
+}
+
+/// Read Symbol entities from a magellan-format sqlitegraph DB.
+///
+/// `name_filter=Some(s)` returns rows where `graph_entities.name = s`;
+/// `None` returns all symbols (subject to `limit`). The bridge keeps
+/// this function self-contained so the dependency on magellan's schema
+/// is in one place — if magellan changes its kind tag or table layout
+/// we only update here.
+fn read_magellan_symbols(
+    db_path: &std::path::Path,
+    name_filter: Option<&str>,
+    limit: Option<usize>,
+) -> Result<Vec<MagellanSymbol>> {
+    let conn =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to open magellan DB {}: {}", db_path.display(), e)
+            })?;
+
+    let mut sql =
+        String::from("SELECT name, file_path, data FROM graph_entities WHERE kind = 'Symbol'");
+    if name_filter.is_some() {
+        sql.push_str(" AND name = ?1");
+    }
+    if let Some(n) = limit {
+        sql.push_str(&format!(" LIMIT {}", n));
+    }
+
+    let mut stmt = conn.prepare(&sql)?;
+    let mapper = |row: &rusqlite::Row<'_>| -> rusqlite::Result<MagellanSymbol> {
+        let data_str: String = row.get(2)?;
+        let data: Value = serde_json::from_str(&data_str).unwrap_or(Value::Null);
+        Ok(MagellanSymbol {
+            name: row.get::<_, String>(0)?,
+            file_path: row.get::<_, Option<String>>(1)?,
+            data,
+        })
+    };
+
+    let rows: Vec<MagellanSymbol> = if let Some(filter) = name_filter {
+        stmt.query_map(rusqlite::params![filter], mapper)?
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        stmt.query_map([], mapper)?.collect::<Result<Vec<_>, _>>()?
+    };
+    Ok(rows)
+}
+
+/// Build the `metadata` JSON for an atheneum Discovery from a magellan
+/// Symbol row. Picks out the fields callers care about (file, line,
+/// FQN, kind) and leaves the rest of magellan's data under
+/// `magellan_raw` for callers that want everything.
+fn symbol_to_metadata(sym: &MagellanSymbol) -> Value {
+    let start_line = sym.data.get("start_line").cloned().unwrap_or(Value::Null);
+    let end_line = sym.data.get("end_line").cloned().unwrap_or(Value::Null);
+    let fqn = sym.data.get("fqn").cloned().unwrap_or(Value::Null);
+    let kind = sym.data.get("kind").cloned().unwrap_or(Value::Null);
+    json!({
+        "file": sym.file_path,
+        "start_line": start_line,
+        "end_line": end_line,
+        "fqn": fqn,
+        "kind": kind,
+        "magellan_raw": sym.data,
+    })
 }
 
 /// Parse YAML frontmatter from markdown content
