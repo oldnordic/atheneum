@@ -1909,11 +1909,29 @@ impl AtheneumGraph {
         description: Option<&str>,
         project_id: Option<&str>,
     ) -> Result<i64> {
+        let created_at = Utc::now().to_rfc3339();
+
+        // Stage 11c: write the SQL tasks row first.
+        let title_s = title.to_string();
+        let description_s = description.map(|s| s.to_string());
+        let project_s = project_id.map(|s| s.to_string());
+        let created_at_s = created_at.clone();
+        let sql_id = self.with_raw_connection(|conn| {
+            conn.execute(
+                "INSERT INTO tasks
+                    (title, description, status, project_id, metadata, created_at)
+                 VALUES (?1, ?2, 'TODO', ?3, '{}', ?4)",
+                rusqlite::params![title_s, description_s, project_s, created_at_s],
+            )?;
+            Ok(conn.last_insert_rowid())
+        })?;
+
         let mut data = json!({
+            "sql_id": sql_id,
             "title": title,
             "description": description,
             "status": KanbanStatus::Todo.as_str(),
-            "created_at": Utc::now().to_rfc3339(),
+            "created_at": created_at,
         });
         if let (Some(pid), Some(obj)) = (project_id, data.as_object_mut()) {
             obj.insert("project_id".to_string(), Value::String(pid.to_string()));
@@ -1933,16 +1951,32 @@ impl AtheneumGraph {
     /// Transition a task to a new [`KanbanStatus`]. Stamps `status_updated_at`.
     pub fn update_task_status(&self, task_id: i64, status: KanbanStatus) -> Result<()> {
         let entity = self.get_entity(task_id)?;
+        let sql_id = entity.data.get("sql_id").and_then(|v| v.as_i64());
+
+        let now = Utc::now().to_rfc3339();
+
+        // Update SQL row if we have a pointer (post-11c data does; pre-11c
+        // backfill stamps sql_id on open).
+        if let Some(sql_id) = sql_id {
+            let status_str = status.as_str().to_string();
+            let ts = now.clone();
+            self.with_raw_connection(|conn| {
+                conn.execute(
+                    "UPDATE tasks SET status = ?1, status_updated_at = ?2 WHERE id = ?3",
+                    rusqlite::params![status_str, ts, sql_id],
+                )?;
+                Ok(())
+            })?;
+        }
+
+        // Mirror into the graph entity's data for the existing public API.
         let mut data = entity.data;
         if let Some(obj) = data.as_object_mut() {
             obj.insert(
                 "status".to_string(),
                 Value::String(status.as_str().to_string()),
             );
-            obj.insert(
-                "status_updated_at".to_string(),
-                Value::String(Utc::now().to_rfc3339()),
-            );
+            obj.insert("status_updated_at".to_string(), Value::String(now));
         }
         self.update_entity_data(task_id, &data)
     }
@@ -1990,12 +2024,40 @@ impl AtheneumGraph {
         statement: &str,
         verification_method: Option<&str>,
     ) -> Result<i64> {
+        // Resolve the parent task's SQL id via its pointer node.
+        let task_entity = self.get_entity(task_id)?;
+        let task_sql_id = task_entity
+            .data
+            .get("sql_id")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Task graph_entity {} has no sql_id pointer; migration may not have run",
+                    task_id
+                )
+            })?;
+
+        let created_at = Utc::now().to_rfc3339();
+        let statement_s = statement.to_string();
+        let verification_s = verification_method.map(|s| s.to_string());
+        let created_at_s = created_at.clone();
+        let sql_id = self.with_raw_connection(|conn| {
+            conn.execute(
+                "INSERT INTO requirements
+                    (task_id, statement, status, verification_method, created_at)
+                 VALUES (?1, ?2, 'UNMET', ?3, ?4)",
+                rusqlite::params![task_sql_id, statement_s, verification_s, created_at_s],
+            )?;
+            Ok(conn.last_insert_rowid())
+        })?;
+
         let data = json!({
+            "sql_id": sql_id,
             "task_id": task_id,
             "statement": statement,
             "status": RequirementStatus::Unmet.as_str(),
             "verification_method": verification_method,
-            "created_at": Utc::now().to_rfc3339(),
+            "created_at": created_at,
         });
         let entity = GraphEntity {
             id: 0,
@@ -2012,13 +2074,27 @@ impl AtheneumGraph {
     /// Flip a Requirement to MET and stamp the time.
     pub fn mark_requirement_met(&self, req_id: i64) -> Result<()> {
         let entity = self.get_entity(req_id)?;
+        let sql_id = entity.data.get("sql_id").and_then(|v| v.as_i64());
+        let now = Utc::now().to_rfc3339();
+
+        if let Some(sql_id) = sql_id {
+            let ts = now.clone();
+            self.with_raw_connection(|conn| {
+                conn.execute(
+                    "UPDATE requirements SET status = 'MET', met_at = ?1 WHERE id = ?2",
+                    rusqlite::params![ts, sql_id],
+                )?;
+                Ok(())
+            })?;
+        }
+
         let mut data = entity.data;
         if let Some(obj) = data.as_object_mut() {
             obj.insert(
                 "status".to_string(),
                 Value::String(RequirementStatus::Met.as_str().to_string()),
             );
-            obj.insert("met_at".to_string(), Value::String(Utc::now().to_rfc3339()));
+            obj.insert("met_at".to_string(), Value::String(now));
         }
         self.update_entity_data(req_id, &data)
     }
@@ -2031,12 +2107,39 @@ impl AtheneumGraph {
         description: &str,
         blocker_type: BlockerType,
     ) -> Result<i64> {
+        let task_entity = self.get_entity(task_id)?;
+        let task_sql_id = task_entity
+            .data
+            .get("sql_id")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Task graph_entity {} has no sql_id pointer; migration may not have run",
+                    task_id
+                )
+            })?;
+
+        let created_at = Utc::now().to_rfc3339();
+        let description_s = description.to_string();
+        let blocker_kind = blocker_type.as_str().to_string();
+        let created_at_s = created_at.clone();
+        let sql_id = self.with_raw_connection(|conn| {
+            conn.execute(
+                "INSERT INTO blockers
+                    (task_id, description, blocker_type, resolved_at, created_at)
+                 VALUES (?1, ?2, ?3, NULL, ?4)",
+                rusqlite::params![task_sql_id, description_s, blocker_kind, created_at_s],
+            )?;
+            Ok(conn.last_insert_rowid())
+        })?;
+
         let data = json!({
+            "sql_id": sql_id,
             "task_id": task_id,
             "description": description,
             "blocker_type": blocker_type.as_str(),
             "resolved_at": Value::Null,
-            "created_at": Utc::now().to_rfc3339(),
+            "created_at": created_at,
         });
         let entity = GraphEntity {
             id: 0,
@@ -2054,12 +2157,23 @@ impl AtheneumGraph {
     /// blocker queries.
     pub fn resolve_blocker(&self, blocker_id: i64) -> Result<()> {
         let entity = self.get_entity(blocker_id)?;
+        let sql_id = entity.data.get("sql_id").and_then(|v| v.as_i64());
+        let now = Utc::now().to_rfc3339();
+
+        if let Some(sql_id) = sql_id {
+            let ts = now.clone();
+            self.with_raw_connection(|conn| {
+                conn.execute(
+                    "UPDATE blockers SET resolved_at = ?1 WHERE id = ?2",
+                    rusqlite::params![ts, sql_id],
+                )?;
+                Ok(())
+            })?;
+        }
+
         let mut data = entity.data;
         if let Some(obj) = data.as_object_mut() {
-            obj.insert(
-                "resolved_at".to_string(),
-                Value::String(Utc::now().to_rfc3339()),
-            );
+            obj.insert("resolved_at".to_string(), Value::String(now));
         }
         self.update_entity_data(blocker_id, &data)
     }

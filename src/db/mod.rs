@@ -13,15 +13,19 @@
 use anyhow::Result;
 use chrono::Utc;
 use rusqlite::Connection;
+use serde_json::Value;
 
 pub mod execution;
+pub mod planning;
 
 type Migration = fn(&rusqlite::Transaction<'_>) -> Result<()>;
 
 /// Registered migrations, in apply order. Each entry is
 /// `(version, short_name, body)`.
-const MIGRATIONS: &[(u32, &str, Migration)] =
-    &[(1, "execution-domain", execution::migrate_v1_execution)];
+const MIGRATIONS: &[(u32, &str, Migration)] = &[
+    (1, "execution-domain", execution::migrate_v1_execution),
+    (2, "planning-domain", planning::migrate_v2_planning),
+];
 
 /// Apply any pending migrations to the connection. Idempotent — already-
 /// applied versions are skipped via the `atheneum_schema_version` table.
@@ -68,4 +72,24 @@ fn applied_versions(conn: &Connection) -> Result<std::collections::HashSet<u32>>
         out.insert(row? as u32);
     }
     Ok(out)
+}
+
+/// Shared helper: stamp `sql_id` onto a `graph_entities.data` JSON blob.
+/// Used by every domain's backfill code (execution, planning, …) so re-
+/// running the migration on the same row is a no-op.
+pub(crate) fn stamp_sql_id(
+    tx: &rusqlite::Transaction<'_>,
+    entity_id: i64,
+    existing_data: &Value,
+    sql_id: i64,
+) -> Result<()> {
+    let mut data = existing_data.clone();
+    if let Some(obj) = data.as_object_mut() {
+        obj.insert("sql_id".to_string(), Value::Number(sql_id.into()));
+    }
+    tx.execute(
+        "UPDATE graph_entities SET data = ?1 WHERE id = ?2",
+        rusqlite::params![serde_json::to_string(&data)?, entity_id],
+    )?;
+    Ok(())
 }

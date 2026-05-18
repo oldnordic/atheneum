@@ -97,7 +97,7 @@ fn backfill_agents(tx: &Transaction<'_>) -> Result<()> {
             params![name],
             |r| r.get(0),
         )?;
-        stamp_sql_id(tx, entity_id, &data, sql_id)?;
+        super::stamp_sql_id(tx, entity_id, &data, sql_id)?;
     }
     Ok(())
 }
@@ -150,7 +150,7 @@ fn backfill_reasoning_logs(tx: &Transaction<'_>) -> Result<()> {
             ],
         )?;
         let sql_id = tx.last_insert_rowid();
-        stamp_sql_id(tx, entity_id, &data, sql_id)?;
+        super::stamp_sql_id(tx, entity_id, &data, sql_id)?;
     }
     Ok(())
 }
@@ -211,26 +211,7 @@ fn backfill_tool_calls(tx: &Transaction<'_>) -> Result<()> {
             ],
         )?;
         let sql_id = tx.last_insert_rowid();
-        stamp_sql_id(tx, entity_id, &data, sql_id)?;
+        super::stamp_sql_id(tx, entity_id, &data, sql_id)?;
     }
-    Ok(())
-}
-
-/// Patch the graph_entity row's data to include `sql_id` so subsequent
-/// runs of the backfill skip it.
-fn stamp_sql_id(
-    tx: &Transaction<'_>,
-    entity_id: i64,
-    existing_data: &Value,
-    sql_id: i64,
-) -> Result<()> {
-    let mut data = existing_data.clone();
-    if let Some(obj) = data.as_object_mut() {
-        obj.insert("sql_id".to_string(), Value::Number(sql_id.into()));
-    }
-    tx.execute(
-        "UPDATE graph_entities SET data = ?1 WHERE id = ?2",
-        params![serde_json::to_string(&data)?, entity_id],
-    )?;
     Ok(())
 }
