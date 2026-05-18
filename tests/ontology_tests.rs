@@ -45,7 +45,12 @@ fn test_define_class_is_idempotent_by_name() {
     let count = classes.iter().filter(|c| c.name == "Bug").count();
     assert_eq!(count, 1, "must not create duplicate entries for same name");
     assert_eq!(
-        classes.iter().find(|c| c.name == "Bug").unwrap().description.as_deref(),
+        classes
+            .iter()
+            .find(|c| c.name == "Bug")
+            .unwrap()
+            .description
+            .as_deref(),
         Some("Updated description"),
     );
 }

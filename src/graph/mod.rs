@@ -1004,19 +1004,16 @@ impl AtheneumGraph {
             .map_err(|e| anyhow::anyhow!("Failed to prepare statement: {}", e))?;
 
         let mut rows = stmt
-            .query_map(
-                params![EntityType::Handoff.as_str(), agent, pid],
-                |row| {
-                    Ok(GraphEntity {
-                        id: row.get(0)?,
-                        kind: row.get(1)?,
-                        name: row.get(2)?,
-                        file_path: row.get(3)?,
-                        data: serde_json::from_str(row.get_ref(4)?.as_str()?)
-                            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
-                    })
-                },
-            )
+            .query_map(params![EntityType::Handoff.as_str(), agent, pid], |row| {
+                Ok(GraphEntity {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    name: row.get(2)?,
+                    file_path: row.get(3)?,
+                    data: serde_json::from_str(row.get_ref(4)?.as_str()?)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
+                })
+            })
             .map_err(|e| anyhow::anyhow!("Failed to query: {}", e))?;
 
         match rows.next() {
@@ -1268,12 +1265,7 @@ impl AtheneumGraph {
     /// edge is allowed. Once a property *is* registered, both its
     /// `domain_class` and `range_class` must match (the literal `"ANY"`
     /// matches anything).
-    pub fn validate_edge(
-        &self,
-        from_kind: &str,
-        to_kind: &str,
-        edge_type: &str,
-    ) -> Result<bool> {
+    pub fn validate_edge(&self, from_kind: &str, to_kind: &str, edge_type: &str) -> Result<bool> {
         let props = self.list_properties()?;
         let Some(prop) = props.iter().find(|p| p.name == edge_type) else {
             return Ok(true); // open mode: undefined edges are allowed
@@ -1326,13 +1318,9 @@ impl AtheneumGraph {
                 .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
         };
         let mut stmt = conn
-            .prepare_cached(
-                "SELECT id FROM graph_entities WHERE kind = ?1 AND name = ?2 LIMIT 1",
-            )
+            .prepare_cached("SELECT id FROM graph_entities WHERE kind = ?1 AND name = ?2 LIMIT 1")
             .map_err(|e| anyhow::anyhow!("Failed to prepare statement: {}", e))?;
-        let id_opt: Option<i64> = stmt
-            .query_row(params![kind, name], |row| row.get(0))
-            .ok();
+        let id_opt: Option<i64> = stmt.query_row(params![kind, name], |row| row.get(0)).ok();
         Ok(id_opt)
     }
 
@@ -1441,7 +1429,9 @@ impl AtheneumGraph {
                     idx.get_vector(vector_id).ok().flatten()
                 })
                 .map_err(|e| anyhow::anyhow!("get_vector failed: {}", e))?;
-            let Some((_vec, meta)) = metadata else { continue };
+            let Some((_vec, meta)) = metadata else {
+                continue;
+            };
             let Some(entity_id) = meta.get("entity_id").and_then(|v| v.as_i64()) else {
                 continue;
             };
@@ -1508,7 +1498,10 @@ fn embed_text_for_entity(entity: &GraphEntity) -> String {
 /// but has no dependencies and runs anywhere.
 fn hash_embed(text: &str, dim: usize) -> Vec<f32> {
     let mut vector = vec![0.0_f32; dim];
-    for token in text.split(|c: char| !c.is_alphanumeric()).filter(|t| !t.is_empty()) {
+    for token in text
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+    {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         token.to_ascii_lowercase().hash(&mut hasher);
         let bucket = (hasher.finish() as usize) % dim;

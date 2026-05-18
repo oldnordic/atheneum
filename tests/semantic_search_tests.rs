@@ -61,7 +61,9 @@ fn test_semantic_search_respects_k_limit() {
     }
     graph.build_search_index().expect("build_search_index");
 
-    let results = graph.semantic_search("test discovery", 3, None).expect("search");
+    let results = graph
+        .semantic_search("test discovery", 3, None)
+        .expect("search");
     assert!(
         results.len() <= 3,
         "search must respect k limit (got {} results)",
@@ -98,22 +100,24 @@ fn test_semantic_search_filtered_by_project() {
         .semantic_search("message", 10, Some("envoy"))
         .expect("search");
     assert!(
-        envoy_only.iter().all(|r| r
-            .data
-            .get("project_id")
-            .and_then(|v| v.as_str())
-            == Some("envoy")),
+        envoy_only
+            .iter()
+            .all(|r| r.data.get("project_id").and_then(|v| v.as_str()) == Some("envoy")),
         "filter must only return envoy discoveries (got: {:?})",
-        envoy_only.iter().map(|r| r.data.get("project_id").cloned()).collect::<Vec<_>>()
+        envoy_only
+            .iter()
+            .map(|r| r.data.get("project_id").cloned())
+            .collect::<Vec<_>>()
     );
-    assert!(!envoy_only.is_empty(), "envoy filter should still return results");
+    assert!(
+        !envoy_only.is_empty(),
+        "envoy filter should still return results"
+    );
 
     let mag_only = graph
         .semantic_search("message", 10, Some("magellan"))
         .expect("search");
-    assert!(mag_only.iter().all(|r| r
-        .data
-        .get("project_id")
-        .and_then(|v| v.as_str())
-        == Some("magellan")));
+    assert!(mag_only
+        .iter()
+        .all(|r| r.data.get("project_id").and_then(|v| v.as_str()) == Some("magellan")));
 }

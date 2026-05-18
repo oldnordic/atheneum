@@ -80,7 +80,11 @@ fn test_unscoped_query_returns_all_projects() {
     let all = graph
         .query_discoveries("shared_name")
         .expect("unscoped query should succeed");
-    assert_eq!(all.len(), 2, "unscoped query should return both discoveries");
+    assert_eq!(
+        all.len(),
+        2,
+        "unscoped query should return both discoveries"
+    );
 }
 
 #[test]
@@ -132,7 +136,10 @@ fn test_handoff_isolated_by_project() {
         .get_pending_handoff_in_project("receiver", Some("envoy"))
         .expect("envoy pending query")
         .expect("envoy handoff present");
-    assert_eq!(envoy_pending.data["manifest"]["what_was_done"], json!("envoy work"));
+    assert_eq!(
+        envoy_pending.data["manifest"]["what_was_done"],
+        json!("envoy work")
+    );
 
     let magellan_pending = graph
         .get_pending_handoff_in_project("receiver", Some("magellan"))
@@ -172,7 +179,8 @@ fn test_knowledge_scoped_by_project() {
         .query_knowledge_in_project("Message", Some("envoy"))
         .expect("envoy knowledge query");
     assert_eq!(
-        envoy_knowledge["discovery_count"], json!(1),
+        envoy_knowledge["discovery_count"],
+        json!(1),
         "envoy knowledge should count only envoy discoveries"
     );
 
@@ -180,7 +188,8 @@ fn test_knowledge_scoped_by_project() {
         .query_knowledge_in_project("Message", Some("magellan"))
         .expect("magellan knowledge query");
     assert_eq!(
-        magellan_knowledge["discovery_count"], json!(1),
+        magellan_knowledge["discovery_count"],
+        json!(1),
         "magellan knowledge should count only magellan discoveries"
     );
 }
