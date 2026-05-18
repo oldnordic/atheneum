@@ -248,13 +248,48 @@ impl AtheneumGraph {
     /// Create a new in-memory graph (for testing)
     pub fn open_in_memory() -> Result<Self> {
         let inner = SqliteGraph::open_in_memory()?;
-        Ok(Self { inner })
+        let g = Self { inner };
+        g.run_startup_migrations()?;
+        Ok(g)
     }
 
     /// Open or create a graph at the given path
     pub fn open(path: &std::path::Path) -> Result<Self> {
         let inner = SqliteGraph::open(path)?;
-        Ok(Self { inner })
+        let g = Self { inner };
+        g.run_startup_migrations()?;
+        Ok(g)
+    }
+
+    /// Run atheneum's SQL-layer migrations (idempotent). Called from
+    /// `open` / `open_in_memory` automatically. See [`crate::db`] for the
+    /// list of registered migrations.
+    fn run_startup_migrations(&self) -> Result<()> {
+        self.with_raw_connection(crate::db::run_migrations)
+    }
+
+    /// Borrow the underlying SQLite connection for a short, read-or-write
+    /// operation against atheneum's typed SQL tables (agents,
+    /// reasoning_logs, tool_calls, …). The closure runs synchronously and
+    /// the connection is released when it returns.
+    ///
+    /// Most callers should reach for the high-level methods first; this
+    /// is the escape hatch for aggregations or schema-aware queries that
+    /// don't have a typed method yet.
+    pub fn with_raw_connection<F, R>(&self, f: F) -> Result<R>
+    where
+        F: FnOnce(&rusqlite::Connection) -> Result<R>,
+    {
+        if let Some(direct) = self.inner.pool.direct_connection() {
+            f(direct)
+        } else {
+            let pooled = self
+                .inner
+                .pool
+                .get()
+                .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?;
+            f(&pooled)
+        }
     }
 
     /// Check if the graph is healthy
@@ -384,6 +419,33 @@ impl AtheneumGraph {
 
     /// Insert an Agent entity
     pub fn insert_agent(&self, name: &str, data: Value) -> Result<i64> {
+        // Stage 11b: write the SQL row first, then mirror into the graph
+        // entity with sql_id so downstream queries can join back.
+        let sql_id = self.with_raw_connection(|conn| {
+            let project_id = data.get("project_id").and_then(|v| v.as_str());
+            conn.execute(
+                "INSERT OR IGNORE INTO agents (name, project_id, metadata, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    name,
+                    project_id,
+                    serde_json::to_string(&data).unwrap_or_default(),
+                    Utc::now().to_rfc3339()
+                ],
+            )?;
+            let id: i64 = conn.query_row(
+                "SELECT id FROM agents WHERE name = ?1",
+                rusqlite::params![name],
+                |row| row.get(0),
+            )?;
+            Ok(id)
+        })?;
+
+        let mut data = data;
+        if let Some(obj) = data.as_object_mut() {
+            obj.insert("sql_id".to_string(), Value::Number(sql_id.into()));
+        }
+
         let entity = GraphEntity {
             id: 0,
             kind: EntityType::Agent.as_str().to_string(),
@@ -1586,9 +1648,31 @@ impl AtheneumGraph {
         content: &str,
         project_id: Option<&str>,
     ) -> Result<i64> {
-        let agent_id = self.ensure_agent(agent)?;
+        let agent_entity_id = self.ensure_agent(agent)?;
+
+        // Stage 11b: write the SQL reasoning_logs row first, then mirror
+        // into a graph_entity pointer node.
+        let agent_name = agent.to_string();
+        let content_str = content.to_string();
+        let project = project_id.map(|s| s.to_string());
+        let timestamp = Utc::now().to_rfc3339();
+        let sql_id = self.with_raw_connection(|conn| {
+            let agent_sql_id: i64 = conn.query_row(
+                "SELECT id FROM agents WHERE name = ?1",
+                rusqlite::params![agent_name],
+                |row| row.get(0),
+            )?;
+            conn.execute(
+                "INSERT INTO reasoning_logs
+                    (agent_id, content, project_id, metadata, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![agent_sql_id, content_str, project, "{}", timestamp],
+            )?;
+            Ok(conn.last_insert_rowid())
+        })?;
 
         let mut data = json!({
+            "sql_id": sql_id,
             "agent": agent,
             "content": content,
             "timestamp": Utc::now().to_rfc3339(),
@@ -1608,19 +1692,19 @@ impl AtheneumGraph {
             file_path: None,
             data,
         };
-        let log_id = self
+        let log_entity_id = self
             .inner
             .insert_entity(&entity)
             .map_err(|e| anyhow::anyhow!("Failed to insert ReasoningLog: {}", e))?;
 
         self.insert_edge(
-            agent_id,
-            log_id,
+            agent_entity_id,
+            log_entity_id,
             EdgeType::PerformedBy,
             json!({"provenance": {"actor": "atheneum", "method": "insert_reasoning_log"}}),
         )?;
 
-        Ok(log_id)
+        Ok(log_entity_id)
     }
 
     /// Create a ToolCall entity and link `(ReasoningLog)-[Called]->(ToolCall)`.
@@ -1631,7 +1715,36 @@ impl AtheneumGraph {
         args: Value,
         project_id: Option<&str>,
     ) -> Result<i64> {
+        // Resolve the reasoning_logs SQL row id from the pointer node's data.
+        let log_entity = self.get_entity(reasoning_log_id)?;
+        let log_sql_id = log_entity
+            .data
+            .get("sql_id")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "ReasoningLog graph_entity {} has no sql_id pointer; migration may not have run",
+                    reasoning_log_id
+                )
+            })?;
+
+        // Write the SQL tool_calls row first.
+        let tool_name_owned = tool_name.to_string();
+        let args_str = serde_json::to_string(&args).unwrap_or_else(|_| "null".into());
+        let project = project_id.map(|s| s.to_string());
+        let timestamp = Utc::now().to_rfc3339();
+        let sql_id = self.with_raw_connection(|conn| {
+            conn.execute(
+                "INSERT INTO tool_calls
+                    (reasoning_log_id, tool_name, args, project_id, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![log_sql_id, tool_name_owned, args_str, project, timestamp],
+            )?;
+            Ok(conn.last_insert_rowid())
+        })?;
+
         let mut data = json!({
+            "sql_id": sql_id,
             "tool_name": tool_name,
             "args": args,
             "timestamp": Utc::now().to_rfc3339(),
@@ -1647,19 +1760,19 @@ impl AtheneumGraph {
             file_path: None,
             data,
         };
-        let tool_id = self
+        let tool_entity_id = self
             .inner
             .insert_entity(&entity)
             .map_err(|e| anyhow::anyhow!("Failed to insert ToolCall: {}", e))?;
 
         self.insert_edge(
             reasoning_log_id,
-            tool_id,
+            tool_entity_id,
             EdgeType::Called,
             json!({"provenance": {"actor": "atheneum", "method": "insert_tool_call"}}),
         )?;
 
-        Ok(tool_id)
+        Ok(tool_entity_id)
     }
 
     /// Link `(ToolCall)-[Modified]->(target)` for an already-existing target
