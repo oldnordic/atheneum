@@ -89,6 +89,36 @@ pub enum AtheneumError {
     InvalidData(String),
 }
 
+/// A class registered in the dynamic ontology.
+///
+/// Stored as a graph entity with `kind = "OntologyClass"`. Returned by
+/// [`AtheneumGraph::list_classes`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OntologyClassInfo {
+    pub id: i64,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+/// A property (edge restriction) registered in the dynamic ontology.
+///
+/// `domain_class` and `range_class` may be specific class names or the
+/// wildcard `"ANY"` to leave that side unconstrained.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OntologyPropertyInfo {
+    pub id: i64,
+    pub name: String,
+    pub domain_class: String,
+    pub range_class: String,
+    pub description: Option<String>,
+}
+
+/// Reserved graph entity kind for ontology class definitions.
+pub const ONTOLOGY_CLASS_KIND: &str = "OntologyClass";
+
+/// Reserved graph entity kind for ontology property definitions.
+pub const ONTOLOGY_PROPERTY_KIND: &str = "OntologyProperty";
+
 /// Main Atheneum graph interface
 pub struct AtheneumGraph {
     inner: SqliteGraph,
@@ -1080,6 +1110,223 @@ impl AtheneumGraph {
                 "percentage_reduction": percentage_reduction
             }
         }))
+    }
+
+    // ========================================================================
+    // Dynamic Ontology (ported from atheneum-py OntologyService)
+    //
+    // Lets callers register new entity classes and edge properties at
+    // runtime, instead of being constrained to the hardcoded EntityType /
+    // EdgeType enums. Validation is permissive by default — undefined edge
+    // types are allowed (KeplAI "open mode") — so existing data and
+    // unregistered relations continue to work unchanged.
+    // ========================================================================
+
+    /// Register (or update) a class in the dynamic ontology.
+    ///
+    /// Idempotent by `name`: calling it twice with the same name updates
+    /// the stored description rather than creating a duplicate entity.
+    pub fn define_class(&self, name: &str, description: Option<&str>) -> Result<i64> {
+        let existing = self.find_ontology_entity(ONTOLOGY_CLASS_KIND, name)?;
+
+        let data = json!({
+            "name": name,
+            "description": description,
+            "registered_at": Utc::now().to_rfc3339(),
+        });
+
+        if let Some(id) = existing {
+            self.update_entity_data(id, &data)?;
+            Ok(id)
+        } else {
+            let entity = GraphEntity {
+                id: 0,
+                kind: ONTOLOGY_CLASS_KIND.to_string(),
+                name: name.to_string(),
+                file_path: None,
+                data,
+            };
+            self.inner
+                .insert_entity(&entity)
+                .map_err(|e| anyhow::anyhow!("Failed to insert OntologyClass: {}", e))
+        }
+    }
+
+    /// Register (or update) a property (edge restriction) in the ontology.
+    ///
+    /// `domain_class` and `range_class` are class names that this edge may
+    /// connect. Use the literal `"ANY"` to leave a side unconstrained.
+    pub fn define_property(
+        &self,
+        name: &str,
+        domain_class: &str,
+        range_class: &str,
+        description: Option<&str>,
+    ) -> Result<i64> {
+        let existing = self.find_ontology_entity(ONTOLOGY_PROPERTY_KIND, name)?;
+
+        let data = json!({
+            "name": name,
+            "domain_class": domain_class,
+            "range_class": range_class,
+            "description": description,
+            "registered_at": Utc::now().to_rfc3339(),
+        });
+
+        if let Some(id) = existing {
+            self.update_entity_data(id, &data)?;
+            Ok(id)
+        } else {
+            let entity = GraphEntity {
+                id: 0,
+                kind: ONTOLOGY_PROPERTY_KIND.to_string(),
+                name: name.to_string(),
+                file_path: None,
+                data,
+            };
+            self.inner
+                .insert_entity(&entity)
+                .map_err(|e| anyhow::anyhow!("Failed to insert OntologyProperty: {}", e))
+        }
+    }
+
+    /// List all registered ontology classes.
+    pub fn list_classes(&self) -> Result<Vec<OntologyClassInfo>> {
+        let entities = self.entities_by_kind(ONTOLOGY_CLASS_KIND)?;
+        Ok(entities
+            .into_iter()
+            .map(|e| OntologyClassInfo {
+                id: e.id,
+                name: e.name.clone(),
+                description: e
+                    .data
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            })
+            .collect())
+    }
+
+    /// List all registered ontology properties.
+    pub fn list_properties(&self) -> Result<Vec<OntologyPropertyInfo>> {
+        let entities = self.entities_by_kind(ONTOLOGY_PROPERTY_KIND)?;
+        Ok(entities
+            .into_iter()
+            .map(|e| OntologyPropertyInfo {
+                id: e.id,
+                name: e.name.clone(),
+                domain_class: e
+                    .data
+                    .get("domain_class")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("ANY")
+                    .to_string(),
+                range_class: e
+                    .data
+                    .get("range_class")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("ANY")
+                    .to_string(),
+                description: e
+                    .data
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            })
+            .collect())
+    }
+
+    /// Check whether `(from_kind)-[edge_type]->(to_kind)` is permitted by
+    /// the ontology.
+    ///
+    /// Open-mode default: if no property is registered with this name, the
+    /// edge is allowed. Once a property *is* registered, both its
+    /// `domain_class` and `range_class` must match (the literal `"ANY"`
+    /// matches anything).
+    pub fn validate_edge(
+        &self,
+        from_kind: &str,
+        to_kind: &str,
+        edge_type: &str,
+    ) -> Result<bool> {
+        let props = self.list_properties()?;
+        let Some(prop) = props.iter().find(|p| p.name == edge_type) else {
+            return Ok(true); // open mode: undefined edges are allowed
+        };
+        let domain_ok = prop.domain_class == "ANY" || prop.domain_class == from_kind;
+        let range_ok = prop.range_class == "ANY" || prop.range_class == to_kind;
+        Ok(domain_ok && range_ok)
+    }
+
+    /// Seed the ontology with atheneum's standard set of classes.
+    ///
+    /// Idempotent — safe to call repeatedly on an existing DB. Combines
+    /// the 10 historical [`EntityType`] variants with the additional kinds
+    /// borrowed from the atheneum-py port (Project for workspace scoping,
+    /// CodeSymbol, WikiPage, JournalSection, ReasoningLog).
+    pub fn seed_standard_ontology(&self) -> Result<()> {
+        const STANDARD: &[(&str, &str)] = &[
+            ("Agent", "An autonomous participant"),
+            ("Task", "A unit of work"),
+            ("Event", "Something that happened, recorded for provenance"),
+            ("Decision", "A choice made by an agent"),
+            ("ToolCall", "An action taken by an agent"),
+            ("FileChange", "A modification to a source file"),
+            ("Verification", "A verification gate result"),
+            ("Knowledge", "Persistent contextual information"),
+            ("Discovery", "A dynamic insight found by an agent"),
+            ("Handoff", "Context transfer between agents"),
+            ("Project", "A workspace namespace"),
+            ("CodeSymbol", "A source code entity"),
+            ("WikiPage", "A static knowledge document"),
+            ("JournalSection", "An entry in a Logseq journal"),
+            ("ReasoningLog", "A stream of thought from an agent"),
+        ];
+        for (name, description) in STANDARD {
+            self.define_class(name, Some(description))?;
+        }
+        Ok(())
+    }
+
+    // -- internal helpers for ontology storage -------------------------------
+
+    fn find_ontology_entity(&self, kind: &str, name: &str) -> Result<Option<i64>> {
+        let conn = if let Some(direct) = self.inner.pool.direct_connection() {
+            direct
+        } else {
+            &self
+                .inner
+                .pool
+                .get()
+                .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
+        };
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT id FROM graph_entities WHERE kind = ?1 AND name = ?2 LIMIT 1",
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to prepare statement: {}", e))?;
+        let id_opt: Option<i64> = stmt
+            .query_row(params![kind, name], |row| row.get(0))
+            .ok();
+        Ok(id_opt)
+    }
+
+    fn update_entity_data(&self, id: i64, data: &Value) -> Result<()> {
+        let conn = if let Some(direct) = self.inner.pool.direct_connection() {
+            direct
+        } else {
+            &self
+                .inner
+                .pool
+                .get()
+                .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
+        };
+        conn.execute(
+            "UPDATE graph_entities SET data = ?1 WHERE id = ?2",
+            params![serde_json::to_string(data)?, id],
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to update entity: {}", e))?;
+        Ok(())
     }
 }
 
