@@ -6,7 +6,9 @@ use anyhow::Result;
 use chrono::Utc;
 use rusqlite::params;
 use serde_json::{json, Value};
+use sqlitegraph::hnsw::{DistanceMetric, HnswConfigBuilder};
 use sqlitegraph::{GraphEdge, GraphEntity, SqliteGraph};
+use std::hash::{Hash, Hasher};
 use thiserror::Error;
 
 /// Entity types in the Atheneum graph
@@ -118,6 +120,29 @@ pub const ONTOLOGY_CLASS_KIND: &str = "OntologyClass";
 
 /// Reserved graph entity kind for ontology property definitions.
 pub const ONTOLOGY_PROPERTY_KIND: &str = "OntologyProperty";
+
+/// A single hit from [`AtheneumGraph::semantic_search`].
+#[derive(Debug, Clone)]
+pub struct SearchResult {
+    /// Graph entity id of the matching node.
+    pub id: i64,
+    /// `kind: name` style display label, copied from the entity.
+    pub name: String,
+    /// Entity kind (e.g. "Discovery"); useful for downstream filtering.
+    pub kind: String,
+    /// Distance score from HNSW (smaller = closer; metric is cosine).
+    pub score: f32,
+    /// Full entity `data` blob, in case the caller wants to read project_id,
+    /// summary, etc. without a second round-trip.
+    pub data: Value,
+}
+
+/// Reserved HNSW index name used by [`AtheneumGraph::build_search_index`].
+const SEARCH_INDEX_NAME: &str = "discoveries";
+
+/// Vector dimension for the built-in hash embedder. 128 keeps memory low
+/// while still differentiating short snippets reasonably well.
+const SEARCH_EMBED_DIM: usize = 128;
 
 /// Main Atheneum graph interface
 pub struct AtheneumGraph {
@@ -1328,6 +1353,175 @@ impl AtheneumGraph {
         .map_err(|e| anyhow::anyhow!("Failed to update entity: {}", e))?;
         Ok(())
     }
+
+    // ========================================================================
+    // Semantic Search (ported from atheneum-py SearchService)
+    //
+    // Wraps sqlitegraph 3.0's native HNSW index with a deterministic
+    // hash-based embedder so agents can ask "what do we know about X" and
+    // get fuzzy matches against stored Discovery entities — not just exact
+    // target-name lookups.
+    //
+    // The embedder is intentionally simple (bag-of-words → hashed buckets,
+    // L2 normalized): no ML model dependencies, deterministic across
+    // platforms, and good enough for short discovery summaries. Swap in a
+    // real model later by feeding pre-computed vectors directly.
+    // ========================================================================
+
+    /// (Re-)build the semantic search index over all stored Discovery
+    /// entities.
+    ///
+    /// Idempotent: if an index with the reserved name already exists it is
+    /// dropped and rebuilt so callers don't have to think about stale state.
+    /// Call this once after a batch of `store_discovery*` calls (or on
+    /// startup) before invoking [`semantic_search`].
+    pub fn build_search_index(&self) -> Result<()> {
+        // Drop any existing index so this method stays idempotent.
+        let _ = self.inner.delete_hnsw_index(SEARCH_INDEX_NAME);
+
+        let config = HnswConfigBuilder::new()
+            .dimension(SEARCH_EMBED_DIM)
+            .distance_metric(DistanceMetric::Cosine)
+            .build()
+            .map_err(|e| anyhow::anyhow!("HNSW config build failed: {}", e))?;
+
+        // Create the index (guard is dropped immediately; we'll get a
+        // fresh mutable borrow per-insert below).
+        {
+            let _guard = self
+                .inner
+                .hnsw_index(SEARCH_INDEX_NAME, config)
+                .map_err(|e| anyhow::anyhow!("hnsw_index create failed: {}", e))?;
+        }
+
+        let discoveries = self.entities_by_kind(EntityType::Discovery.as_str())?;
+        for entity in discoveries {
+            let text = embed_text_for_entity(&entity);
+            let vector = hash_embed(&text, SEARCH_EMBED_DIM);
+            let entity_id = entity.id;
+            self.inner
+                .get_hnsw_index_mut(SEARCH_INDEX_NAME, move |idx| {
+                    idx.insert_vector(&vector, Some(json!({"entity_id": entity_id})))
+                })
+                .map_err(|e| anyhow::anyhow!("get_hnsw_index_mut failed: {}", e))?
+                .map_err(|e| anyhow::anyhow!("insert_vector failed: {}", e))?;
+        }
+
+        Ok(())
+    }
+
+    /// Find up to `k` Discovery entities most similar to `query`.
+    ///
+    /// `project_id=Some(...)` post-filters results to that project (the
+    /// underlying HNSW does not partition by project, so we ask for extra
+    /// candidates and then filter). `project_id=None` returns matches from
+    /// every project.
+    pub fn semantic_search(
+        &self,
+        query: &str,
+        k: usize,
+        project_id: Option<&str>,
+    ) -> Result<Vec<SearchResult>> {
+        let query_vec = hash_embed(query, SEARCH_EMBED_DIM);
+        // Over-fetch so the project filter still has room to return `k`.
+        let fetch_k = if project_id.is_some() { k * 4 } else { k };
+
+        let hits = self
+            .inner
+            .get_hnsw_index_ref(SEARCH_INDEX_NAME, |idx| idx.search(&query_vec, fetch_k))
+            .map_err(|e| anyhow::anyhow!("search index lookup failed: {}", e))?
+            .map_err(|e| anyhow::anyhow!("hnsw search failed: {}", e))?;
+
+        let mut results = Vec::with_capacity(hits.len());
+        for (vector_id, score) in hits {
+            // Resolve vector_id → entity_id via the metadata we stored on insert.
+            let metadata = self
+                .inner
+                .get_hnsw_index_ref(SEARCH_INDEX_NAME, |idx| {
+                    idx.get_vector(vector_id).ok().flatten()
+                })
+                .map_err(|e| anyhow::anyhow!("get_vector failed: {}", e))?;
+            let Some((_vec, meta)) = metadata else { continue };
+            let Some(entity_id) = meta.get("entity_id").and_then(|v| v.as_i64()) else {
+                continue;
+            };
+
+            let entity = match self.get_entity(entity_id) {
+                Ok(e) => e,
+                Err(_) => continue, // entity was deleted since indexing — skip
+            };
+
+            if let Some(pid) = project_id {
+                let entity_project = entity
+                    .data
+                    .get("project_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if entity_project != pid {
+                    continue;
+                }
+            }
+
+            results.push(SearchResult {
+                id: entity.id,
+                name: entity.name,
+                kind: entity.kind,
+                score,
+                data: entity.data,
+            });
+
+            if results.len() >= k {
+                break;
+            }
+        }
+        Ok(results)
+    }
+}
+
+/// Pull human-readable text out of a discovery entity for embedding.
+///
+/// We mix the symbol/target name, agent name, discovery type, file path,
+/// and a free-form `summary` field so simple word-overlap embeddings work
+/// against any of them.
+fn embed_text_for_entity(entity: &GraphEntity) -> String {
+    let mut parts = vec![entity.kind.clone(), entity.name.clone()];
+    for key in [
+        "target",
+        "agent",
+        "discovery_type",
+        "file",
+        "file_path",
+        "summary",
+        "signature",
+        "kind",
+    ] {
+        if let Some(value) = entity.data.get(key).and_then(|v| v.as_str()) {
+            parts.push(value.to_string());
+        }
+    }
+    parts.join(" ")
+}
+
+/// Deterministic bag-of-words → fixed-dimension vector. Each word's hash
+/// picks a bucket; the resulting vector is L2-normalized so cosine
+/// distance is meaningful. Not as expressive as a real embedding model
+/// but has no dependencies and runs anywhere.
+fn hash_embed(text: &str, dim: usize) -> Vec<f32> {
+    let mut vector = vec![0.0_f32; dim];
+    for token in text.split(|c: char| !c.is_alphanumeric()).filter(|t| !t.is_empty()) {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        token.to_ascii_lowercase().hash(&mut hasher);
+        let bucket = (hasher.finish() as usize) % dim;
+        vector[bucket] += 1.0;
+    }
+    // L2 normalize so cosine distance reflects direction, not magnitude.
+    let norm: f32 = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for v in &mut vector {
+            *v /= norm;
+        }
+    }
+    vector
 }
 
 /// Parse YAML frontmatter from markdown content
