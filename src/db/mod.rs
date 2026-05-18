@@ -16,6 +16,7 @@ use rusqlite::Connection;
 use serde_json::Value;
 
 pub mod execution;
+pub mod knowledge;
 pub mod planning;
 
 type Migration = fn(&rusqlite::Transaction<'_>) -> Result<()>;
@@ -25,6 +26,7 @@ type Migration = fn(&rusqlite::Transaction<'_>) -> Result<()>;
 const MIGRATIONS: &[(u32, &str, Migration)] = &[
     (1, "execution-domain", execution::migrate_v1_execution),
     (2, "planning-domain", planning::migrate_v2_planning),
+    (3, "knowledge-domain", knowledge::migrate_v3_knowledge),
 ];
 
 /// Apply any pending migrations to the connection. Idempotent — already-

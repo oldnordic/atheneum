@@ -679,6 +679,38 @@ impl AtheneumGraph {
             );
         }
 
+        // Stage 11d: write the SQL discoveries row first.
+        let agent_s = agent.to_string();
+        let discovery_type_s = discovery_type.to_string();
+        let target_s = target.to_string();
+        let project_id_s = metadata
+            .get("project_id")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let metadata_str = serde_json::to_string(&metadata).unwrap_or_default();
+        let created_at = Utc::now().to_rfc3339();
+        let sql_id = self.with_raw_connection(|conn| {
+            conn.execute(
+                "INSERT INTO discoveries
+                    (agent_name, discovery_type, target, project_id, metadata, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![
+                    agent_s,
+                    discovery_type_s,
+                    target_s,
+                    project_id_s,
+                    metadata_str,
+                    created_at
+                ],
+            )?;
+            Ok(conn.last_insert_rowid())
+        })?;
+
+        // Stamp sql_id into the metadata that will go onto the pointer node.
+        if let Some(obj) = metadata.as_object_mut() {
+            obj.insert("sql_id".to_string(), Value::Number(sql_id.into()));
+        }
+
         let entity = GraphEntity {
             id: 0,
             kind: EntityType::Discovery.as_str().to_string(),
@@ -721,10 +753,6 @@ impl AtheneumGraph {
             EdgeType::PerformedBy,
             json!({"provenance": {"actor": "atheneum", "method": "store_discovery"}}),
         )?;
-
-        // Link discovery to target (via RelatedTo edge stored in discovery data)
-        // We create a pseudo-entity for the target if it doesn't exist
-        // This allows querying by target later
 
         Ok(discovery_id)
     }
@@ -2296,6 +2324,57 @@ impl AtheneumGraph {
             }
         }
 
+        // Stage 11d: UPSERT the SQL wiki_pages row by path so re-ingestion
+        // updates in place. ID stays stable across edits.
+        let path_s = path.to_string();
+        let title = data.get("title").and_then(|v| v.as_str()).map(String::from);
+        let body_s = body.to_string();
+        let content_hash_s = data
+            .get("content_hash")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let wikilinks_s = data
+            .get("wikilinks")
+            .map(|v| serde_json::to_string(v).unwrap_or_default());
+        let project_s = project_id.map(|s| s.to_string());
+        let metadata_str = serde_json::to_string(&data).unwrap_or_default();
+        let now = Utc::now().to_rfc3339();
+        let sql_id = self.with_raw_connection(|conn| {
+            conn.execute(
+                "INSERT INTO wiki_pages
+                    (path, title, content_hash, body, wikilinks, project_id, metadata, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+                 ON CONFLICT(path) DO UPDATE SET
+                    title = excluded.title,
+                    content_hash = excluded.content_hash,
+                    body = excluded.body,
+                    wikilinks = excluded.wikilinks,
+                    project_id = excluded.project_id,
+                    metadata = excluded.metadata,
+                    updated_at = excluded.updated_at",
+                rusqlite::params![
+                    path_s,
+                    title,
+                    content_hash_s,
+                    body_s,
+                    wikilinks_s,
+                    project_s,
+                    metadata_str,
+                    now,
+                ],
+            )?;
+            let id: i64 = conn.query_row(
+                "SELECT id FROM wiki_pages WHERE path = ?1",
+                rusqlite::params![path_s],
+                |r| r.get(0),
+            )?;
+            Ok(id)
+        })?;
+
+        if let Some(obj) = data.as_object_mut() {
+            obj.insert("sql_id".to_string(), Value::Number(sql_id.into()));
+        }
+
         let existing = self.find_ontology_entity("WikiPage", path)?;
         if let Some(id) = existing {
             self.update_entity_data(id, &data)?;
@@ -2326,14 +2405,10 @@ impl AtheneumGraph {
         let sections = parse_journal_sections(content);
         let mut ids = Vec::with_capacity(sections.len());
         for (idx, section) in sections.iter().enumerate() {
-            let mut data = json!({
-                "path": path,
-                "section_index": idx,
-                "time": section.time,
-                "title": section.title,
-                "body": section.body,
-                "wikilinks": extract_wikilinks(&section.body),
-                "kanban_updates": section
+            let wikilinks_json =
+                serde_json::to_value(extract_wikilinks(&section.body)).unwrap_or(Value::Null);
+            let kanban_json = serde_json::to_value(
+                section
                     .kanban_updates
                     .iter()
                     .map(|u| {
@@ -2343,9 +2418,71 @@ impl AtheneumGraph {
                         })
                     })
                     .collect::<Vec<_>>(),
+            )
+            .unwrap_or(Value::Null);
+
+            let mut data = json!({
+                "path": path,
+                "section_index": idx,
+                "time": section.time,
+                "title": section.title,
+                "body": section.body,
+                "wikilinks": wikilinks_json,
+                "kanban_updates": kanban_json,
             });
             if let (Some(pid), Some(obj)) = (project_id, data.as_object_mut()) {
                 obj.insert("project_id".to_string(), Value::String(pid.to_string()));
+            }
+
+            // Stage 11d: upsert the SQL journal_sections row keyed by
+            // (path, section_index) so re-ingesting a file doesn't duplicate.
+            let path_s = path.to_string();
+            let idx_i64 = idx as i64;
+            let time_s = section.time.clone();
+            let title_s = section.title.clone();
+            let body_s = section.body.clone();
+            let wikilinks_s = serde_json::to_string(&wikilinks_json).unwrap_or_default();
+            let kanban_s = serde_json::to_string(&kanban_json).unwrap_or_default();
+            let project_s = project_id.map(|s| s.to_string());
+            let metadata_str = serde_json::to_string(&data).unwrap_or_default();
+            let now = Utc::now().to_rfc3339();
+            let sql_id = self.with_raw_connection(|conn| {
+                conn.execute(
+                    "INSERT INTO journal_sections
+                        (path, section_index, time, title, body, kanban_updates,
+                         wikilinks, project_id, metadata, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                     ON CONFLICT(path, section_index) DO UPDATE SET
+                        time = excluded.time,
+                        title = excluded.title,
+                        body = excluded.body,
+                        kanban_updates = excluded.kanban_updates,
+                        wikilinks = excluded.wikilinks,
+                        project_id = excluded.project_id,
+                        metadata = excluded.metadata",
+                    rusqlite::params![
+                        path_s,
+                        idx_i64,
+                        time_s,
+                        title_s,
+                        body_s,
+                        kanban_s,
+                        wikilinks_s,
+                        project_s,
+                        metadata_str,
+                        now,
+                    ],
+                )?;
+                let id: i64 = conn.query_row(
+                    "SELECT id FROM journal_sections WHERE path = ?1 AND section_index = ?2",
+                    rusqlite::params![path_s, idx_i64],
+                    |r| r.get(0),
+                )?;
+                Ok(id)
+            })?;
+
+            if let Some(obj) = data.as_object_mut() {
+                obj.insert("sql_id".to_string(), Value::Number(sql_id.into()));
             }
 
             let name = format!("{}#{}", path, idx);
