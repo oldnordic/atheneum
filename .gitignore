@@ -1,4 +1,32 @@
 /target
+Cargo.lock
+
+# Database files
 *.db
 *.db-shm
 *.db-wal
+*.sqlite
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+
+# Environment
+.env
+.env.*
+
+# Claude and internal development files
+.claude/
+.hermes/
+docs/superpowers/
+
+# Agent instructions — local only
+AGENTS.md
+CLAUDE.md
+GEMINI.md
