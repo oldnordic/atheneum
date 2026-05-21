@@ -16,7 +16,7 @@ serde_yaml = "0.9"
 sha2 = "0.10"
 thiserror = "2.0"
 tracing = "0.1"
-sqlitegraph = "3.0.1"
+sqlitegraph = "3.0.2"
 
 # Async runtime (optional for future use)
 tokio = { version = "1.44", features = ["full"], optional = true }
