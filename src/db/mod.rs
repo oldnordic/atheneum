@@ -15,7 +15,13 @@ use chrono::Utc;
 use rusqlite::Connection;
 use serde_json::Value;
 
+pub(crate) fn json_to_string(v: &Value) -> Result<String> {
+    serde_json::to_string(v).map_err(|e| anyhow::anyhow!("JSON serialization failed: {}", e))
+}
+
+pub mod evidence;
 pub mod execution;
+pub mod hook_compat;
 pub mod knowledge;
 pub mod planning;
 
@@ -27,6 +33,8 @@ const MIGRATIONS: &[(u32, &str, Migration)] = &[
     (1, "execution-domain", execution::migrate_v1_execution),
     (2, "planning-domain", planning::migrate_v2_planning),
     (3, "knowledge-domain", knowledge::migrate_v3_knowledge),
+    (4, "evidence-domain", evidence::migrate_v4_evidence),
+    (5, "hook-compat", hook_compat::migrate_v5_hook_compat),
 ];
 
 /// Apply any pending migrations to the connection. Idempotent — already-

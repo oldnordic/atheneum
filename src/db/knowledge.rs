@@ -106,7 +106,7 @@ fn backfill_discoveries(tx: &Transaction<'_>) -> Result<()> {
                 discovery_type,
                 target,
                 project_id,
-                serde_json::to_string(&data).unwrap_or_default(),
+                super::json_to_string(&data)?,
                 created_at,
             ],
         )?;
@@ -145,7 +145,8 @@ fn backfill_wiki_pages(tx: &Transaction<'_>) -> Result<()> {
         let body = data.get("body").and_then(|v| v.as_str());
         let wikilinks = data
             .get("wikilinks")
-            .map(|v| serde_json::to_string(v).unwrap_or_default());
+            .map(super::json_to_string)
+            .transpose()?;
         let project_id = data.get("project_id").and_then(|v| v.as_str());
         let now = Utc::now().to_rfc3339();
 
@@ -162,7 +163,7 @@ fn backfill_wiki_pages(tx: &Transaction<'_>) -> Result<()> {
                 body,
                 wikilinks,
                 project_id,
-                serde_json::to_string(&data).unwrap_or_default(),
+                super::json_to_string(&data)?,
                 now,
                 now,
             ],
@@ -200,10 +201,12 @@ fn backfill_journal_sections(tx: &Transaction<'_>) -> Result<()> {
         let body = data.get("body").and_then(|v| v.as_str());
         let kanban_updates = data
             .get("kanban_updates")
-            .map(|v| serde_json::to_string(v).unwrap_or_default());
+            .map(super::json_to_string)
+            .transpose()?;
         let wikilinks = data
             .get("wikilinks")
-            .map(|v| serde_json::to_string(v).unwrap_or_default());
+            .map(super::json_to_string)
+            .transpose()?;
         let project_id = data.get("project_id").and_then(|v| v.as_str());
         let created_at = Utc::now().to_rfc3339();
 
@@ -221,7 +224,7 @@ fn backfill_journal_sections(tx: &Transaction<'_>) -> Result<()> {
                 kanban_updates,
                 wikilinks,
                 project_id,
-                serde_json::to_string(&data).unwrap_or_default(),
+                super::json_to_string(&data)?,
                 created_at,
             ],
         )?;

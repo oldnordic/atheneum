@@ -1,251 +1,43 @@
-//! Graph operations for Atheneum
-//!
-//! Provides entity and edge storage with provenance tracking.
-
 use anyhow::Result;
 use chrono::Utc;
-use regex::Regex;
 use rusqlite::params;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
-use sqlitegraph::hnsw::{DistanceMetric, HnswConfigBuilder};
 use sqlitegraph::{GraphEdge, GraphEntity, SqliteGraph};
-use std::hash::{Hash, Hasher};
-use thiserror::Error;
 
-/// Entity types in the Atheneum graph
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EntityType {
-    Agent,
-    Task,
-    Event,
-    Decision,
-    ToolCall,
-    FileChange,
-    Verification,
-    Knowledge,
-    Discovery,
-    Handoff,
+pub mod audit;
+pub mod discovery;
+pub mod evidence;
+pub mod handoff;
+pub mod knowledge;
+pub mod magellan_bridge;
+pub mod ontology;
+pub mod planning;
+pub mod search;
+pub mod types;
+pub mod wiki;
+
+pub use planning::{KanbanStatus, KanbanUpdate};
+pub use types::{
+    ActionRecord, ActionTrace, AppliedKanbanUpdate, AtheneumError, BlockerType, CommitParams,
+    EdgeType, EndSessionParams, EntityType, FileWriteParams, FixChainParams, OntologyClassInfo,
+    OntologyPropertyInfo, PromptParams, RequirementStatus, SearchResult, SessionParams, TaskDetail,
+    TestRunParams, ToolCallParams, ToolCallRecord, ToolCallTrace, ONTOLOGY_CLASS_KIND,
+    ONTOLOGY_PROPERTY_KIND,
+};
+pub use wiki::{
+    content_hash, extract_kanban_updates, extract_wikilinks, parse_journal_sections,
+    JournalSection, WikiPage,
+};
+
+pub(super) fn json_to_string(v: &Value) -> Result<String> {
+    serde_json::to_string(v).map_err(|e| anyhow::anyhow!("JSON serialization failed: {}", e))
 }
 
-impl EntityType {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            EntityType::Agent => "Agent",
-            EntityType::Task => "Task",
-            EntityType::Event => "Event",
-            EntityType::Decision => "Decision",
-            EntityType::ToolCall => "ToolCall",
-            EntityType::FileChange => "FileChange",
-            EntityType::Verification => "Verification",
-            EntityType::Knowledge => "Knowledge",
-            EntityType::Discovery => "Discovery",
-            EntityType::Handoff => "Handoff",
-        }
-    }
-}
-
-/// Edge types (relations) in the Atheneum graph
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EdgeType {
-    PerformedBy,
-    AssignedTo,
-    Called,
-    Modified,
-    VerifiedBy,
-    DependsOn,
-    CausedBy,
-    Supersedes,
-    Created,
-    RelatedTo,
-}
-
-impl EdgeType {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            EdgeType::PerformedBy => "performed_by",
-            EdgeType::AssignedTo => "assigned_to",
-            EdgeType::Called => "called",
-            EdgeType::Modified => "modified",
-            EdgeType::VerifiedBy => "verified_by",
-            EdgeType::DependsOn => "depends_on",
-            EdgeType::CausedBy => "caused_by",
-            EdgeType::Supersedes => "supersedes",
-            EdgeType::Created => "created",
-            EdgeType::RelatedTo => "related_to",
-        }
-    }
-}
-
-/// Errors specific to Atheneum operations
-#[derive(Error, Debug)]
-pub enum AtheneumError {
-    #[error("SQLite graph error: {0}")]
-    GraphError(#[from] sqlitegraph::SqliteGraphError),
-
-    #[error("Entity not found: {0}")]
-    EntityNotFound(i64),
-
-    #[error("Edge not found: {0}")]
-    EdgeNotFound(i64),
-
-    #[error("Invalid entity data: {0}")]
-    InvalidData(String),
-}
-
-/// A class registered in the dynamic ontology.
-///
-/// Stored as a graph entity with `kind = "OntologyClass"`. Returned by
-/// [`AtheneumGraph::list_classes`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OntologyClassInfo {
-    pub id: i64,
-    pub name: String,
-    pub description: Option<String>,
-}
-
-/// A property (edge restriction) registered in the dynamic ontology.
-///
-/// `domain_class` and `range_class` may be specific class names or the
-/// wildcard `"ANY"` to leave that side unconstrained.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OntologyPropertyInfo {
-    pub id: i64,
-    pub name: String,
-    pub domain_class: String,
-    pub range_class: String,
-    pub description: Option<String>,
-}
-
-/// Reserved graph entity kind for ontology class definitions.
-pub const ONTOLOGY_CLASS_KIND: &str = "OntologyClass";
-
-/// Reserved graph entity kind for ontology property definitions.
-pub const ONTOLOGY_PROPERTY_KIND: &str = "OntologyProperty";
-
-/// A single hit from [`AtheneumGraph::semantic_search`].
-#[derive(Debug, Clone)]
-pub struct SearchResult {
-    /// Graph entity id of the matching node.
-    pub id: i64,
-    /// `kind: name` style display label, copied from the entity.
-    pub name: String,
-    /// Entity kind (e.g. "Discovery"); useful for downstream filtering.
-    pub kind: String,
-    /// Distance score from HNSW (smaller = closer; metric is cosine).
-    pub score: f32,
-    /// Full entity `data` blob, in case the caller wants to read project_id,
-    /// summary, etc. without a second round-trip.
-    pub data: Value,
-}
-
-/// Reserved HNSW index name used by [`AtheneumGraph::build_search_index`].
-const SEARCH_INDEX_NAME: &str = "discoveries";
-
-/// Vector dimension for the built-in hash embedder. 128 keeps memory low
-/// while still differentiating short snippets reasonably well.
-const SEARCH_EMBED_DIM: usize = 128;
-
-/// A single tool invocation to record on an agent action.
-///
-/// Used by [`AtheneumGraph::record_agent_action`]. `modified_targets` is
-/// a list of existing graph-entity IDs (FileChange, CodeSymbol, Discovery,
-/// etc.) that this tool call should be marked as having modified.
-#[derive(Debug, Clone)]
-pub struct ToolCallRecord {
-    pub tool_name: String,
-    pub args: Value,
-    pub modified_targets: Vec<i64>,
-}
-
-/// IDs created by [`AtheneumGraph::record_agent_action`], returned so
-/// callers can attach further edges or queries without re-querying.
-#[derive(Debug, Clone)]
-pub struct ActionTrace {
-    pub agent_id: i64,
-    pub reasoning_log_id: i64,
-    pub tool_call_ids: Vec<i64>,
-    pub modified_edge_ids: Vec<i64>,
-}
-
-/// One row of provenance returned by [`AtheneumGraph::get_action_trace`]:
-/// a reasoning log plus the tool calls it spawned and what each modified.
-#[derive(Debug, Clone)]
-pub struct ActionRecord {
-    pub reasoning_log: GraphEntity,
-    pub tool_calls: Vec<ToolCallTrace>,
-}
-
-/// A single tool call and the entities it modified.
-#[derive(Debug, Clone)]
-pub struct ToolCallTrace {
-    pub tool_call: GraphEntity,
-    pub modified: Vec<GraphEntity>,
-}
-
-/// Status of a [`Requirement`](AtheneumGraph::add_requirement).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RequirementStatus {
-    Unmet,
-    Met,
-}
-
-impl RequirementStatus {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            RequirementStatus::Unmet => "UNMET",
-            RequirementStatus::Met => "MET",
-        }
-    }
-}
-
-/// Classification of a [`Blocker`](AtheneumGraph::add_blocker).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BlockerType {
-    /// External work the team depends on.
-    Dependency,
-    /// A bug standing in the way.
-    Bug,
-    /// Missing information / decision.
-    InfoGap,
-}
-
-impl BlockerType {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            BlockerType::Dependency => "DEPENDENCY",
-            BlockerType::Bug => "BUG",
-            BlockerType::InfoGap => "INFO_GAP",
-        }
-    }
-}
-
-/// Result of [`AtheneumGraph::get_task_with_details`]: a task with its
-/// linked requirements and blockers, all in one round-trip.
-#[derive(Debug, Clone)]
-pub struct TaskDetail {
-    pub task: GraphEntity,
-    pub requirements: Vec<GraphEntity>,
-    pub blockers: Vec<GraphEntity>,
-}
-
-/// One kanban transition applied via
-/// [`AtheneumGraph::apply_kanban_updates_from_journal`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AppliedKanbanUpdate {
-    pub task_id: i64,
-    pub task_title: String,
-    pub previous_status: KanbanStatus,
-    pub new_status: KanbanStatus,
-}
-
-/// Main Atheneum graph interface
 pub struct AtheneumGraph {
     inner: SqliteGraph,
 }
 
 impl AtheneumGraph {
-    /// Create a new in-memory graph (for testing)
     pub fn open_in_memory() -> Result<Self> {
         let inner = SqliteGraph::open_in_memory()?;
         let g = Self { inner };
@@ -253,7 +45,6 @@ impl AtheneumGraph {
         Ok(g)
     }
 
-    /// Open or create a graph at the given path
     pub fn open(path: &std::path::Path) -> Result<Self> {
         let inner = SqliteGraph::open(path)?;
         let g = Self { inner };
@@ -261,21 +52,10 @@ impl AtheneumGraph {
         Ok(g)
     }
 
-    /// Run atheneum's SQL-layer migrations (idempotent). Called from
-    /// `open` / `open_in_memory` automatically. See [`crate::db`] for the
-    /// list of registered migrations.
     fn run_startup_migrations(&self) -> Result<()> {
         self.with_raw_connection(crate::db::run_migrations)
     }
 
-    /// Borrow the underlying SQLite connection for a short, read-or-write
-    /// operation against atheneum's typed SQL tables (agents,
-    /// reasoning_logs, tool_calls, …). The closure runs synchronously and
-    /// the connection is released when it returns.
-    ///
-    /// Most callers should reach for the high-level methods first; this
-    /// is the escape hatch for aggregations or schema-aware queries that
-    /// don't have a typed method yet.
     pub fn with_raw_connection<F, R>(&self, f: F) -> Result<R>
     where
         F: FnOnce(&rusqlite::Connection) -> Result<R>,
@@ -292,36 +72,68 @@ impl AtheneumGraph {
         }
     }
 
-    /// Check if the graph is healthy
     pub fn is_healthy(&self) -> bool {
-        true // TODO: add actual health checks
+        true
     }
 
-    /// Get an entity by ID
     pub fn get_entity(&self, id: i64) -> Result<GraphEntity> {
         self.inner
             .get_entity(id)
             .map_err(|_e| AtheneumError::EntityNotFound(id).into())
     }
 
-    /// Get an edge by ID
     pub fn get_edge(&self, id: i64) -> Result<GraphEdge> {
         self.inner
             .get_edge(id)
             .map_err(|_e| AtheneumError::EdgeNotFound(id).into())
     }
 
-    /// Query all edges originating from an entity
     pub fn outgoing_edges(&self, entity_id: i64) -> Result<Vec<GraphEdge>> {
-        get_outgoing_edges(&self.inner, entity_id)
+        self.with_raw_connection(|conn| {
+            let mut stmt = conn.prepare_cached(
+                "SELECT id, from_id, to_id, edge_type, data FROM graph_edges WHERE from_id=?1 ORDER BY id"
+            )?;
+            let rows = stmt.query_map(rusqlite::params![entity_id], |row| {
+                Ok(GraphEdge {
+                    id: row.get(0)?,
+                    from_id: row.get(1)?,
+                    to_id: row.get(2)?,
+                    edge_type: row.get(3)?,
+                    data: serde_json::from_str(row.get_ref(4)?.as_str()?)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
+                })
+            })?;
+            let mut edges = Vec::new();
+            for row in rows {
+                edges.push(row?);
+            }
+            Ok(edges)
+        })
     }
 
-    /// Query all edges pointing to an entity
     pub fn incoming_edges(&self, entity_id: i64) -> Result<Vec<GraphEdge>> {
-        get_incoming_edges(&self.inner, entity_id)
+        self.with_raw_connection(|conn| {
+            let mut stmt = conn.prepare_cached(
+                "SELECT id, from_id, to_id, edge_type, data FROM graph_edges WHERE to_id=?1 ORDER BY id"
+            )?;
+            let rows = stmt.query_map(rusqlite::params![entity_id], |row| {
+                Ok(GraphEdge {
+                    id: row.get(0)?,
+                    from_id: row.get(1)?,
+                    to_id: row.get(2)?,
+                    edge_type: row.get(3)?,
+                    data: serde_json::from_str(row.get_ref(4)?.as_str()?)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
+                })
+            })?;
+            let mut edges = Vec::new();
+            for row in rows {
+                edges.push(row?);
+            }
+            Ok(edges)
+        })
     }
 
-    /// Query entities by kind (e.g., all Knowledge, all Events)
     pub fn entities_by_kind(&self, kind: &str) -> Result<Vec<GraphEntity>> {
         let conn = if let Some(direct) = self.inner.pool.direct_connection() {
             direct
@@ -359,7 +171,6 @@ impl AtheneumGraph {
         Ok(entities)
     }
 
-    /// Count entities by kind
     pub fn count_entities_by_kind(&self) -> Result<Vec<(String, i64)>> {
         let conn = if let Some(direct) = self.inner.pool.direct_connection() {
             direct
@@ -388,7 +199,6 @@ impl AtheneumGraph {
         Ok(counts)
     }
 
-    /// Count edges by type
     pub fn count_edges_by_type(&self) -> Result<Vec<(String, i64)>> {
         let conn = if let Some(direct) = self.inner.pool.direct_connection() {
             direct
@@ -417,21 +227,14 @@ impl AtheneumGraph {
         Ok(counts)
     }
 
-    /// Insert an Agent entity
     pub fn insert_agent(&self, name: &str, data: Value) -> Result<i64> {
-        // Stage 11b: write the SQL row first, then mirror into the graph
-        // entity with sql_id so downstream queries can join back.
+        let metadata_str = json_to_string(&data)?;
         let sql_id = self.with_raw_connection(|conn| {
             let project_id = data.get("project_id").and_then(|v| v.as_str());
             conn.execute(
                 "INSERT OR IGNORE INTO agents (name, project_id, metadata, created_at)
                  VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![
-                    name,
-                    project_id,
-                    serde_json::to_string(&data).unwrap_or_default(),
-                    Utc::now().to_rfc3339()
-                ],
+                rusqlite::params![name, project_id, metadata_str, Utc::now().to_rfc3339()],
             )?;
             let id: i64 = conn.query_row(
                 "SELECT id FROM agents WHERE name = ?1",
@@ -456,7 +259,6 @@ impl AtheneumGraph {
         self.inner.insert_entity(&entity).map_err(Into::into)
     }
 
-    /// Insert a Task entity
     pub fn insert_task(&self, name: &str, data: Value) -> Result<i64> {
         let entity = GraphEntity {
             id: 0,
@@ -468,9 +270,7 @@ impl AtheneumGraph {
         self.inner.insert_entity(&entity).map_err(Into::into)
     }
 
-    /// Insert an Event entity (automatically adds timestamp)
     pub fn insert_event(&self, name: &str, mut data: Value) -> Result<i64> {
-        // Auto-add timestamp if not present and data is an object
         if let Some(obj) = data.as_object_mut() {
             if !obj.contains_key("timestamp") {
                 obj.insert(
@@ -490,7 +290,6 @@ impl AtheneumGraph {
         self.inner.insert_entity(&entity).map_err(Into::into)
     }
 
-    /// Insert an edge between two entities
     pub fn insert_edge(
         &self,
         from_id: i64,
@@ -508,11 +307,9 @@ impl AtheneumGraph {
         self.inner.insert_edge(&edge).map_err(Into::into)
     }
 
-    /// Query all events performed by an agent
     pub fn events_performed_by(&self, agent_id: i64) -> Result<Vec<GraphEntity>> {
         let mut events = Vec::new();
 
-        // Get all edges pointing to this agent with "performed_by" type
         let edges = get_incoming_edges(&self.inner, agent_id)?
             .into_iter()
             .filter(|e| e.edge_type == EdgeType::PerformedBy.as_str());
@@ -528,11 +325,9 @@ impl AtheneumGraph {
         Ok(events)
     }
 
-    /// Query all tasks assigned to an agent
     pub fn tasks_assigned_to(&self, agent_id: i64) -> Result<Vec<GraphEntity>> {
         let mut tasks = Vec::new();
 
-        // Get all incoming edges with "assigned_to" type
         let edges = get_incoming_edges(&self.inner, agent_id)?
             .into_iter()
             .filter(|e| e.edge_type == EdgeType::AssignedTo.as_str());
@@ -548,7 +343,6 @@ impl AtheneumGraph {
         Ok(tasks)
     }
 
-    /// Trace causal chain backwards from an event
     pub fn causal_chain(&self, event_id: i64) -> Result<Vec<GraphEntity>> {
         let mut chain = Vec::new();
         let mut current = Some(event_id);
@@ -556,13 +350,12 @@ impl AtheneumGraph {
 
         while let Some(id) = current {
             if !visited.insert(id) {
-                break; // Cycle detected
+                break;
             }
 
             if let Ok(entity) = self.get_entity(id) {
                 chain.push(entity);
 
-                // Find the "caused_by" edge
                 if let Ok(edges) = get_outgoing_edges(&self.inner, id) {
                     current = edges
                         .into_iter()
@@ -579,21 +372,14 @@ impl AtheneumGraph {
         Ok(chain)
     }
 
-    /// Ingest a wiki article into the knowledge graph
-    ///
-    /// Parses YAML frontmatter and creates a Knowledge entity.
-    /// Also creates an event recording the ingestion.
     pub fn ingest_article(&self, path: &str, content: &str) -> Result<i64> {
-        // Parse YAML frontmatter (between --- markers)
         let (frontmatter, body) = parse_frontmatter(content)?;
 
-        // Create the Knowledge entity
         let mut data = serde_json::json!({
             "path": path,
             "body": body,
         });
 
-        // Merge frontmatter into data
         if let Some(obj) = data.as_object_mut() {
             if let Some(frontmatter_obj) = frontmatter.as_object() {
                 for (key, value) in frontmatter_obj.iter() {
@@ -615,7 +401,6 @@ impl AtheneumGraph {
             .insert_entity(&entity)
             .map_err(|e| anyhow::anyhow!("Failed to insert entity: {}", e))?;
 
-        // Record the ingestion event
         let event_id = self.insert_event(
             "article-ingested",
             json!({
@@ -625,18 +410,15 @@ impl AtheneumGraph {
             }),
         )?;
 
-        // Link event to system agent (ID 0 represents "system")
-        // First ensure system agent exists
         let _ = self.insert_agent("system", json!({"type": "system"}));
 
         self.insert_edge(
             event_id,
-            1, // system agent (we'll use ID 1, created above)
+            1,
             EdgeType::PerformedBy,
             json!({"provenance": {"actor": "atheneum", "method": "ingest"}}),
         )?;
 
-        // Link event to the article (Event --Created--> Knowledge)
         self.insert_edge(
             event_id,
             article_id,
@@ -647,866 +429,37 @@ impl AtheneumGraph {
         Ok(article_id)
     }
 
-    // ========================================================================
-    // Bridge API: Discovery
-    // ========================================================================
-
-    /// Store a discovery made by an agent
-    ///
-    /// Discoveries are findings about symbols, CFG, issues, or patterns.
-    /// They create a Discovery entity and link it to the target via RelatedTo edge.
-    pub fn store_discovery(
+    pub(super) fn find_entity_id_by_data(
         &self,
-        agent: &str,
-        discovery_type: &str,
-        target: &str,
-        mut metadata: Value,
-    ) -> Result<i64> {
-        // Build discovery name: "agent: target"
-        let name = format!("{}: {}", agent, target);
-
-        // Merge provenance into metadata
-        if let Some(obj) = metadata.as_object_mut() {
-            obj.insert("agent".to_string(), Value::String(agent.to_string()));
-            obj.insert(
-                "discovery_type".to_string(),
-                Value::String(discovery_type.to_string()),
-            );
-            obj.insert("target".to_string(), Value::String(target.to_string()));
-            obj.insert(
-                "timestamp".to_string(),
-                Value::String(Utc::now().to_rfc3339()),
-            );
-        }
-
-        // Stage 11d: write the SQL discoveries row first.
-        let agent_s = agent.to_string();
-        let discovery_type_s = discovery_type.to_string();
-        let target_s = target.to_string();
-        let project_id_s = metadata
-            .get("project_id")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let metadata_str = serde_json::to_string(&metadata).unwrap_or_default();
-        let created_at = Utc::now().to_rfc3339();
-        let sql_id = self.with_raw_connection(|conn| {
-            conn.execute(
-                "INSERT INTO discoveries
-                    (agent_name, discovery_type, target, project_id, metadata, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params![
-                    agent_s,
-                    discovery_type_s,
-                    target_s,
-                    project_id_s,
-                    metadata_str,
-                    created_at
-                ],
-            )?;
-            Ok(conn.last_insert_rowid())
-        })?;
-
-        // Stamp sql_id into the metadata that will go onto the pointer node.
-        if let Some(obj) = metadata.as_object_mut() {
-            obj.insert("sql_id".to_string(), Value::Number(sql_id.into()));
-        }
-
-        let entity = GraphEntity {
-            id: 0,
-            kind: EntityType::Discovery.as_str().to_string(),
-            name: name.clone(),
-            file_path: None,
-            data: metadata,
-        };
-
-        let discovery_id = self
-            .inner
-            .insert_entity(&entity)
-            .map_err(|e| anyhow::anyhow!("Failed to insert discovery: {}", e))?;
-
-        // Record the discovery event
-        let event_id = self.insert_event(
-            "discovery-stored",
-            json!({
-                "agent": agent,
-                "target": target,
-                "discovery_type": discovery_type,
-                "discovery_id": discovery_id
-            }),
-        )?;
-
-        // Ensure agent entity exists
-        let agent_id = self
-            .entities_by_kind(EntityType::Agent.as_str())?
-            .into_iter()
-            .find(|e| e.name == agent)
-            .map(|e| e.id)
-            .unwrap_or_else(|| {
-                self.insert_agent(agent, json!({}))
-                    .expect("Failed to create agent")
-            });
-
-        // Link event to agent
-        self.insert_edge(
-            event_id,
-            agent_id,
-            EdgeType::PerformedBy,
-            json!({"provenance": {"actor": "atheneum", "method": "store_discovery"}}),
-        )?;
-
-        Ok(discovery_id)
+        kind: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<Option<i64>> {
+        self.with_raw_connection(|conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT id FROM graph_entities WHERE kind = ?1 AND json_extract(data, ?2) = ?3 LIMIT 1",
+                    rusqlite::params![kind, format!("$.{}", key), value],
+                    |r| r.get(0),
+                )
+                .ok())
+        })
     }
 
-    /// Query all discoveries about a specific target
-    pub fn query_discoveries(&self, target: &str) -> Result<Vec<GraphEntity>> {
-        let conn = if let Some(direct) = self.inner.pool.direct_connection() {
-            direct
-        } else {
-            &self
-                .inner
-                .pool
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
-        };
-
-        // Query discoveries where data->>'target' = target
-        let mut stmt = conn
-            .prepare_cached(
-                "SELECT id, kind, name, file_path, data FROM graph_entities
-                 WHERE kind=?1 AND json_extract(data, '$.target') = ?2",
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to prepare statement: {}", e))?;
-
-        let rows = stmt
-            .query_map(params![EntityType::Discovery.as_str(), target], |row| {
-                Ok(GraphEntity {
-                    id: row.get(0)?,
-                    kind: row.get(1)?,
-                    name: row.get(2)?,
-                    file_path: row.get(3)?,
-                    data: serde_json::from_str(row.get_ref(4)?.as_str()?)
-                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
-                })
-            })
-            .map_err(|e| anyhow::anyhow!("Failed to query: {}", e))?;
-
-        let mut discoveries = Vec::new();
-        for row in rows {
-            discoveries.push(row.map_err(|e| anyhow::anyhow!("Failed to read row: {}", e))?);
-        }
-        Ok(discoveries)
-    }
-
-    // ========================================================================
-    // Bridge API: Handoff
-    // ========================================================================
-
-    /// Store a handoff manifest between agents
-    pub fn store_handoff(&self, from_agent: &str, to_agent: &str, manifest: Value) -> Result<i64> {
-        let name = format!("{} -> {}", from_agent, to_agent);
-
-        let data = json!({
-            "from_agent": from_agent,
-            "to_agent": to_agent,
-            "manifest": manifest,
-            "created_at": Utc::now().to_rfc3339(),
-            "claimed": false,
-        });
-
-        let entity = GraphEntity {
-            id: 0,
-            kind: EntityType::Handoff.as_str().to_string(),
-            name,
-            file_path: None,
-            data,
-        };
-
-        let handoff_id = self
-            .inner
-            .insert_entity(&entity)
-            .map_err(|e| anyhow::anyhow!("Failed to insert handoff: {}", e))?;
-
-        // Record the handoff event
-        let _event_id = self.insert_event(
-            "handoff-created",
-            json!({
-                "from": from_agent,
-                "to": to_agent,
-                "handoff_id": handoff_id
-            }),
-        )?;
-
-        // Ensure both agents exist
-        let _ = self.insert_agent(from_agent, json!({}));
-        let _ = self.insert_agent(to_agent, json!({}));
-
-        Ok(handoff_id)
-    }
-
-    /// Get the most recent pending handoff for an agent
-    ///
-    /// Returns None if no pending handoffs exist
-    pub fn get_pending_handoff(&self, agent: &str) -> Result<Option<GraphEntity>> {
-        let conn = if let Some(direct) = self.inner.pool.direct_connection() {
-            direct
-        } else {
-            &self
-                .inner
-                .pool
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
-        };
-
-        let mut stmt = conn
-            .prepare_cached(
-                "SELECT id, kind, name, file_path, data FROM graph_entities
-                 WHERE kind=?1 AND json_extract(data, '$.to_agent') = ?2
-                 AND NOT json_extract(data, '$.claimed')
-                 ORDER BY id DESC LIMIT 1",
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to prepare statement: {}", e))?;
-
-        let mut rows = stmt
-            .query_map(params![EntityType::Handoff.as_str(), agent], |row| {
-                Ok(GraphEntity {
-                    id: row.get(0)?,
-                    kind: row.get(1)?,
-                    name: row.get(2)?,
-                    file_path: row.get(3)?,
-                    data: serde_json::from_str(row.get_ref(4)?.as_str()?)
-                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
-                })
-            })
-            .map_err(|e| anyhow::anyhow!("Failed to query: {}", e))?;
-
-        match rows.next() {
-            Some(Ok(entity)) => Ok(Some(entity)),
-            Some(Err(e)) => Err(anyhow::anyhow!("Failed to read row: {}", e)),
-            None => Ok(None),
-        }
-    }
-
-    /// Mark a handoff as claimed
-    pub fn mark_handoff_claimed(&self, handoff_id: i64) -> Result<()> {
-        let conn = if let Some(direct) = self.inner.pool.direct_connection() {
-            direct
-        } else {
-            &self
-                .inner
-                .pool
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
-        };
-
-        // Get the current entity data
-        let entity = self.get_entity(handoff_id)?;
-
-        // Update claimed flag
-        let mut data = entity.data;
-        if let Some(obj) = data.as_object_mut() {
-            obj.insert("claimed".to_string(), Value::Bool(true));
-            obj.insert(
-                "claimed_at".to_string(),
-                Value::String(Utc::now().to_rfc3339()),
-            );
-        }
-
-        // Update the entity
-        conn.execute(
-            "UPDATE graph_entities SET data = ?1 WHERE id = ?2",
-            params![serde_json::to_string(&data)?, handoff_id],
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to update handoff: {}", e))?;
-
-        Ok(())
-    }
-
-    // ========================================================================
-    // Bridge API: Knowledge Query
-    // ========================================================================
-
-    /// Query all knowledge about a target
-    ///
-    /// Aggregates discoveries, handoffs, and calculates token savings.
-    pub fn query_knowledge(&self, target: &str) -> Result<Value> {
-        // Get all discoveries about this target
-        let discoveries = self.query_discoveries(target).unwrap_or_default();
-
-        // Get handoffs that mention this target (in task or files_analyzed)
-        let conn = if let Some(direct) = self.inner.pool.direct_connection() {
-            direct
-        } else {
-            &self
-                .inner
-                .pool
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
-        };
-
-        let mut stmt = conn
-            .prepare_cached(
-                "SELECT id, kind, name, file_path, data FROM graph_entities
-                 WHERE kind=?1 AND (
-                     json_extract(data, '$.manifest.task') LIKE ?2 OR
-                     EXISTS (
-                         SELECT 1 FROM json_each(data, '$.manifest.files_analyzed')
-                         WHERE json_each.value LIKE ?2
-                     )
-                 )",
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to prepare statement: {}", e))?;
-
-        let target_pattern = format!("%{}%", target);
-        let rows = stmt
-            .query_map(
-                params![EntityType::Handoff.as_str(), target_pattern],
-                |row| {
-                    Ok(GraphEntity {
-                        id: row.get(0)?,
-                        kind: row.get(1)?,
-                        name: row.get(2)?,
-                        file_path: row.get(3)?,
-                        data: serde_json::from_str(row.get_ref(4)?.as_str()?)
-                            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
-                    })
-                },
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to query: {}", e))?;
-
-        let mut handoffs = Vec::new();
-        for row in rows {
-            handoffs.push(row.map_err(|e| anyhow::anyhow!("Failed to read row: {}", e))?);
-        }
-
-        // Calculate token savings
-        let unique_agents: std::collections::HashSet<_> = discoveries
-            .iter()
-            .filter_map(|d| d.data.get("agent"))
-            .filter_map(|a| a.as_str())
-            .collect();
-
-        let agent_count = unique_agents.len() as i64;
-        let estimated_file_tokens = discoveries
-            .iter()
-            .filter_map(|d| d.data.get("token_count"))
-            .filter_map(|t| t.as_i64())
-            .next()
-            .unwrap_or(15000); // Default assumption
-
-        let without_sharing = agent_count * estimated_file_tokens;
-        let with_sharing = estimated_file_tokens + (agent_count - 1).max(0) * 2500; // 2.5K summary per additional agent
-        let saved = without_sharing.saturating_sub(with_sharing);
-        let percentage_reduction = if without_sharing > 0 {
-            (saved as f64 / without_sharing as f64) * 100.0
-        } else {
-            0.0
-        };
-
-        // Get total entity count
-        let total_entities = conn
-            .query_row("SELECT COUNT(*) FROM graph_entities", [], |row| row.get(0))
-            .unwrap_or(0);
-
-        Ok(json!({
-            "target": target,
-            "queried_at": Utc::now().to_rfc3339(),
-            "total_entities": total_entities,
-            "discovery_count": discoveries.len(),
-            "discoveries": discoveries,
-            "handoff_count": handoffs.len(),
-            "handoffs": handoffs,
-            "token_savings": {
-                "unique_agents": agent_count,
-                "estimated_file_tokens": estimated_file_tokens,
-                "without_sharing": without_sharing,
-                "with_sharing": with_sharing,
-                "saved": saved,
-                "percentage_reduction": percentage_reduction
-            }
-        }))
-    }
-
-    // ========================================================================
-    // Project / Workspace scoping (ported from atheneum-py)
-    //
-    // project_id lets multiple projects (envoy, magellan, splice) share one
-    // atheneum DB without name collisions. Stored inside the entity's `data`
-    // JSON blob so no schema migration is needed; queried via json_extract.
-    //
-    // Pass project_id=None on read to get the legacy unfiltered behavior.
-    // ========================================================================
-
-    /// Like `store_discovery` but tags the entity with a project_id.
-    pub fn store_discovery_in_project(
+    pub(super) fn find_entity_id_by_kind_and_name(
         &self,
-        agent: &str,
-        discovery_type: &str,
-        target: &str,
-        project_id: Option<&str>,
-        mut metadata: Value,
-    ) -> Result<i64> {
-        if let (Some(pid), Some(obj)) = (project_id, metadata.as_object_mut()) {
-            obj.insert("project_id".to_string(), Value::String(pid.to_string()));
-        }
-        self.store_discovery(agent, discovery_type, target, metadata)
-    }
-
-    /// Query discoveries for a target, optionally scoped to a project.
-    pub fn query_discoveries_in_project(
-        &self,
-        target: &str,
-        project_id: Option<&str>,
-    ) -> Result<Vec<GraphEntity>> {
-        let Some(pid) = project_id else {
-            return self.query_discoveries(target);
-        };
-
-        let conn = if let Some(direct) = self.inner.pool.direct_connection() {
-            direct
-        } else {
-            &self
-                .inner
-                .pool
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
-        };
-
-        let mut stmt = conn
-            .prepare_cached(
-                "SELECT id, kind, name, file_path, data FROM graph_entities
-                 WHERE kind=?1
-                   AND json_extract(data, '$.target') = ?2
-                   AND json_extract(data, '$.project_id') = ?3",
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to prepare statement: {}", e))?;
-
-        let rows = stmt
-            .query_map(
-                params![EntityType::Discovery.as_str(), target, pid],
-                |row| {
-                    Ok(GraphEntity {
-                        id: row.get(0)?,
-                        kind: row.get(1)?,
-                        name: row.get(2)?,
-                        file_path: row.get(3)?,
-                        data: serde_json::from_str(row.get_ref(4)?.as_str()?)
-                            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
-                    })
-                },
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to query: {}", e))?;
-
-        let mut discoveries = Vec::new();
-        for row in rows {
-            discoveries.push(row.map_err(|e| anyhow::anyhow!("Failed to read row: {}", e))?);
-        }
-        Ok(discoveries)
-    }
-
-    /// Like `store_handoff` but tags the handoff with a project_id.
-    ///
-    /// The project_id lives in the top-level handoff data, not nested under
-    /// `manifest`, so query filters can reach it without parsing the manifest.
-    pub fn store_handoff_in_project(
-        &self,
-        from_agent: &str,
-        to_agent: &str,
-        project_id: Option<&str>,
-        manifest: Value,
-    ) -> Result<i64> {
-        let name = format!("{} -> {}", from_agent, to_agent);
-        let mut data = json!({
-            "from_agent": from_agent,
-            "to_agent": to_agent,
-            "manifest": manifest,
-            "created_at": Utc::now().to_rfc3339(),
-            "claimed": false,
-        });
-        if let (Some(pid), Some(obj)) = (project_id, data.as_object_mut()) {
-            obj.insert("project_id".to_string(), Value::String(pid.to_string()));
-        }
-
-        let entity = GraphEntity {
-            id: 0,
-            kind: EntityType::Handoff.as_str().to_string(),
-            name,
-            file_path: None,
-            data,
-        };
-
-        let handoff_id = self
-            .inner
-            .insert_entity(&entity)
-            .map_err(|e| anyhow::anyhow!("Failed to insert handoff: {}", e))?;
-
-        let _event_id = self.insert_event(
-            "handoff-created",
-            json!({
-                "from": from_agent,
-                "to": to_agent,
-                "handoff_id": handoff_id,
-                "project_id": project_id,
-            }),
-        )?;
-
-        let _ = self.insert_agent(from_agent, json!({}));
-        let _ = self.insert_agent(to_agent, json!({}));
-
-        Ok(handoff_id)
-    }
-
-    /// Get the most recent pending handoff for an agent within a project.
-    ///
-    /// `project_id=None` falls back to the legacy unscoped lookup.
-    pub fn get_pending_handoff_in_project(
-        &self,
-        agent: &str,
-        project_id: Option<&str>,
-    ) -> Result<Option<GraphEntity>> {
-        let Some(pid) = project_id else {
-            return self.get_pending_handoff(agent);
-        };
-
-        let conn = if let Some(direct) = self.inner.pool.direct_connection() {
-            direct
-        } else {
-            &self
-                .inner
-                .pool
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
-        };
-
-        let mut stmt = conn
-            .prepare_cached(
-                "SELECT id, kind, name, file_path, data FROM graph_entities
-                 WHERE kind=?1
-                   AND json_extract(data, '$.to_agent') = ?2
-                   AND json_extract(data, '$.project_id') = ?3
-                   AND NOT json_extract(data, '$.claimed')
-                 ORDER BY id DESC LIMIT 1",
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to prepare statement: {}", e))?;
-
-        let mut rows = stmt
-            .query_map(params![EntityType::Handoff.as_str(), agent, pid], |row| {
-                Ok(GraphEntity {
-                    id: row.get(0)?,
-                    kind: row.get(1)?,
-                    name: row.get(2)?,
-                    file_path: row.get(3)?,
-                    data: serde_json::from_str(row.get_ref(4)?.as_str()?)
-                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
-                })
-            })
-            .map_err(|e| anyhow::anyhow!("Failed to query: {}", e))?;
-
-        match rows.next() {
-            Some(Ok(entity)) => Ok(Some(entity)),
-            Some(Err(e)) => Err(anyhow::anyhow!("Failed to read row: {}", e)),
-            None => Ok(None),
-        }
-    }
-
-    /// Aggregate knowledge for a target, scoped to a project when provided.
-    pub fn query_knowledge_in_project(
-        &self,
-        target: &str,
-        project_id: Option<&str>,
-    ) -> Result<Value> {
-        let Some(_pid) = project_id else {
-            return self.query_knowledge(target);
-        };
-
-        let discoveries = self
-            .query_discoveries_in_project(target, project_id)
-            .unwrap_or_default();
-
-        // Handoffs scoped to the same project that mention this target
-        let conn = if let Some(direct) = self.inner.pool.direct_connection() {
-            direct
-        } else {
-            &self
-                .inner
-                .pool
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
-        };
-
-        let mut stmt = conn
-            .prepare_cached(
-                "SELECT id, kind, name, file_path, data FROM graph_entities
-                 WHERE kind=?1
-                   AND json_extract(data, '$.project_id') = ?2
-                   AND (
-                       json_extract(data, '$.manifest.task') LIKE ?3 OR
-                       EXISTS (
-                           SELECT 1 FROM json_each(data, '$.manifest.files_analyzed')
-                           WHERE json_each.value LIKE ?3
-                       )
-                   )",
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to prepare statement: {}", e))?;
-
-        let target_pattern = format!("%{}%", target);
-        let rows = stmt
-            .query_map(
-                params![
-                    EntityType::Handoff.as_str(),
-                    project_id.unwrap(),
-                    target_pattern
-                ],
-                |row| {
-                    Ok(GraphEntity {
-                        id: row.get(0)?,
-                        kind: row.get(1)?,
-                        name: row.get(2)?,
-                        file_path: row.get(3)?,
-                        data: serde_json::from_str(row.get_ref(4)?.as_str()?)
-                            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
-                    })
-                },
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to query: {}", e))?;
-
-        let mut handoffs = Vec::new();
-        for row in rows {
-            handoffs.push(row.map_err(|e| anyhow::anyhow!("Failed to read row: {}", e))?);
-        }
-
-        let unique_agents: std::collections::HashSet<_> = discoveries
-            .iter()
-            .filter_map(|d| d.data.get("agent"))
-            .filter_map(|a| a.as_str())
-            .collect();
-        let agent_count = unique_agents.len() as i64;
-        let estimated_file_tokens = discoveries
-            .iter()
-            .filter_map(|d| d.data.get("token_count"))
-            .filter_map(|t| t.as_i64())
-            .next()
-            .unwrap_or(15000);
-        let without_sharing = agent_count * estimated_file_tokens;
-        let with_sharing = estimated_file_tokens + (agent_count - 1).max(0) * 2500;
-        let saved = without_sharing.saturating_sub(with_sharing);
-        let percentage_reduction = if without_sharing > 0 {
-            (saved as f64 / without_sharing as f64) * 100.0
-        } else {
-            0.0
-        };
-
-        let total_entities = conn
-            .query_row("SELECT COUNT(*) FROM graph_entities", [], |row| row.get(0))
-            .unwrap_or(0);
-
-        Ok(json!({
-            "target": target,
-            "project_id": project_id,
-            "queried_at": Utc::now().to_rfc3339(),
-            "total_entities": total_entities,
-            "discovery_count": discoveries.len(),
-            "discoveries": discoveries,
-            "handoff_count": handoffs.len(),
-            "handoffs": handoffs,
-            "token_savings": {
-                "unique_agents": agent_count,
-                "estimated_file_tokens": estimated_file_tokens,
-                "without_sharing": without_sharing,
-                "with_sharing": with_sharing,
-                "saved": saved,
-                "percentage_reduction": percentage_reduction
-            }
-        }))
-    }
-
-    // ========================================================================
-    // Dynamic Ontology (ported from atheneum-py OntologyService)
-    //
-    // Lets callers register new entity classes and edge properties at
-    // runtime, instead of being constrained to the hardcoded EntityType /
-    // EdgeType enums. Validation is permissive by default — undefined edge
-    // types are allowed (KeplAI "open mode") — so existing data and
-    // unregistered relations continue to work unchanged.
-    // ========================================================================
-
-    /// Register (or update) a class in the dynamic ontology.
-    ///
-    /// Idempotent by `name`: calling it twice with the same name updates
-    /// the stored description rather than creating a duplicate entity.
-    pub fn define_class(&self, name: &str, description: Option<&str>) -> Result<i64> {
-        let existing = self.find_ontology_entity(ONTOLOGY_CLASS_KIND, name)?;
-
-        let data = json!({
-            "name": name,
-            "description": description,
-            "registered_at": Utc::now().to_rfc3339(),
-        });
-
-        if let Some(id) = existing {
-            self.update_entity_data(id, &data)?;
-            Ok(id)
-        } else {
-            let entity = GraphEntity {
-                id: 0,
-                kind: ONTOLOGY_CLASS_KIND.to_string(),
-                name: name.to_string(),
-                file_path: None,
-                data,
-            };
-            self.inner
-                .insert_entity(&entity)
-                .map_err(|e| anyhow::anyhow!("Failed to insert OntologyClass: {}", e))
-        }
-    }
-
-    /// Register (or update) a property (edge restriction) in the ontology.
-    ///
-    /// `domain_class` and `range_class` are class names that this edge may
-    /// connect. Use the literal `"ANY"` to leave a side unconstrained.
-    pub fn define_property(
-        &self,
+        kind: &str,
         name: &str,
-        domain_class: &str,
-        range_class: &str,
-        description: Option<&str>,
-    ) -> Result<i64> {
-        let existing = self.find_ontology_entity(ONTOLOGY_PROPERTY_KIND, name)?;
-
-        let data = json!({
-            "name": name,
-            "domain_class": domain_class,
-            "range_class": range_class,
-            "description": description,
-            "registered_at": Utc::now().to_rfc3339(),
-        });
-
-        if let Some(id) = existing {
-            self.update_entity_data(id, &data)?;
-            Ok(id)
-        } else {
-            let entity = GraphEntity {
-                id: 0,
-                kind: ONTOLOGY_PROPERTY_KIND.to_string(),
-                name: name.to_string(),
-                file_path: None,
-                data,
-            };
-            self.inner
-                .insert_entity(&entity)
-                .map_err(|e| anyhow::anyhow!("Failed to insert OntologyProperty: {}", e))
-        }
-    }
-
-    /// List all registered ontology classes.
-    pub fn list_classes(&self) -> Result<Vec<OntologyClassInfo>> {
-        let entities = self.entities_by_kind(ONTOLOGY_CLASS_KIND)?;
-        Ok(entities
-            .into_iter()
-            .map(|e| OntologyClassInfo {
-                id: e.id,
-                name: e.name.clone(),
-                description: e
-                    .data
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
-            })
-            .collect())
-    }
-
-    /// List all registered ontology properties.
-    pub fn list_properties(&self) -> Result<Vec<OntologyPropertyInfo>> {
-        let entities = self.entities_by_kind(ONTOLOGY_PROPERTY_KIND)?;
-        Ok(entities
-            .into_iter()
-            .map(|e| OntologyPropertyInfo {
-                id: e.id,
-                name: e.name.clone(),
-                domain_class: e
-                    .data
-                    .get("domain_class")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("ANY")
-                    .to_string(),
-                range_class: e
-                    .data
-                    .get("range_class")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("ANY")
-                    .to_string(),
-                description: e
-                    .data
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
-            })
-            .collect())
-    }
-
-    /// Check whether `(from_kind)-[edge_type]->(to_kind)` is permitted by
-    /// the ontology.
-    ///
-    /// Open-mode default: if no property is registered with this name, the
-    /// edge is allowed. Once a property *is* registered, both its
-    /// `domain_class` and `range_class` must match (the literal `"ANY"`
-    /// matches anything).
-    pub fn validate_edge(&self, from_kind: &str, to_kind: &str, edge_type: &str) -> Result<bool> {
-        let props = self.list_properties()?;
-        let Some(prop) = props.iter().find(|p| p.name == edge_type) else {
-            return Ok(true); // open mode: undefined edges are allowed
-        };
-        let domain_ok = prop.domain_class == "ANY" || prop.domain_class == from_kind;
-        let range_ok = prop.range_class == "ANY" || prop.range_class == to_kind;
-        Ok(domain_ok && range_ok)
-    }
-
-    /// Seed the ontology with atheneum's standard set of classes.
-    ///
-    /// Idempotent — safe to call repeatedly on an existing DB. Combines
-    /// the 10 historical [`EntityType`] variants with the additional kinds
-    /// borrowed from the atheneum-py port (Project for workspace scoping,
-    /// CodeSymbol, WikiPage, JournalSection, ReasoningLog).
-    pub fn seed_standard_ontology(&self) -> Result<()> {
-        const STANDARD: &[(&str, &str)] = &[
-            ("Agent", "An autonomous participant"),
-            ("Task", "A unit of work"),
-            ("Event", "Something that happened, recorded for provenance"),
-            ("Decision", "A choice made by an agent"),
-            ("ToolCall", "An action taken by an agent"),
-            ("FileChange", "A modification to a source file"),
-            ("Verification", "A verification gate result"),
-            ("Knowledge", "Persistent contextual information"),
-            ("Discovery", "A dynamic insight found by an agent"),
-            ("Handoff", "Context transfer between agents"),
-            ("Project", "A workspace namespace"),
-            ("CodeSymbol", "A source code entity"),
-            ("WikiPage", "A static knowledge document"),
-            ("JournalSection", "An entry in a Logseq journal"),
-            ("ReasoningLog", "A stream of thought from an agent"),
-        ];
-        for (name, description) in STANDARD {
-            self.define_class(name, Some(description))?;
-        }
-        Ok(())
-    }
-
-    // -- internal helpers for ontology storage -------------------------------
-
-    fn find_ontology_entity(&self, kind: &str, name: &str) -> Result<Option<i64>> {
-        let conn = if let Some(direct) = self.inner.pool.direct_connection() {
-            direct
-        } else {
-            &self
-                .inner
-                .pool
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
-        };
-        let mut stmt = conn
-            .prepare_cached("SELECT id FROM graph_entities WHERE kind = ?1 AND name = ?2 LIMIT 1")
-            .map_err(|e| anyhow::anyhow!("Failed to prepare statement: {}", e))?;
-        let id_opt: Option<i64> = stmt.query_row(params![kind, name], |row| row.get(0)).ok();
-        Ok(id_opt)
+    ) -> Result<Option<i64>> {
+        self.with_raw_connection(|conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT id FROM graph_entities WHERE kind = ?1 AND name = ?2 LIMIT 1",
+                    rusqlite::params![kind, name],
+                    |r| r.get(0),
+                )
+                .ok())
+        })
     }
 
     fn update_entity_data(&self, id: i64, data: &Value) -> Result<()> {
@@ -1526,1506 +479,33 @@ impl AtheneumGraph {
         .map_err(|e| anyhow::anyhow!("Failed to update entity: {}", e))?;
         Ok(())
     }
-
-    // ========================================================================
-    // Semantic Search (ported from atheneum-py SearchService)
-    //
-    // Wraps sqlitegraph 3.0's native HNSW index with a deterministic
-    // hash-based embedder so agents can ask "what do we know about X" and
-    // get fuzzy matches against stored Discovery entities — not just exact
-    // target-name lookups.
-    //
-    // The embedder is intentionally simple (bag-of-words → hashed buckets,
-    // L2 normalized): no ML model dependencies, deterministic across
-    // platforms, and good enough for short discovery summaries. Swap in a
-    // real model later by feeding pre-computed vectors directly.
-    // ========================================================================
-
-    /// (Re-)build the semantic search index over all stored Discovery
-    /// entities.
-    ///
-    /// Idempotent: if an index with the reserved name already exists it is
-    /// dropped and rebuilt so callers don't have to think about stale state.
-    /// Call this once after a batch of `store_discovery*` calls (or on
-    /// startup) before invoking [`semantic_search`].
-    pub fn build_search_index(&self) -> Result<()> {
-        // Drop any existing index so this method stays idempotent.
-        let _ = self.inner.delete_hnsw_index(SEARCH_INDEX_NAME);
-
-        let config = HnswConfigBuilder::new()
-            .dimension(SEARCH_EMBED_DIM)
-            .distance_metric(DistanceMetric::Cosine)
-            .build()
-            .map_err(|e| anyhow::anyhow!("HNSW config build failed: {}", e))?;
-
-        // Create the index (guard is dropped immediately; we'll get a
-        // fresh mutable borrow per-insert below).
-        {
-            let _guard = self
-                .inner
-                .hnsw_index(SEARCH_INDEX_NAME, config)
-                .map_err(|e| anyhow::anyhow!("hnsw_index create failed: {}", e))?;
-        }
-
-        let discoveries = self.entities_by_kind(EntityType::Discovery.as_str())?;
-        for entity in discoveries {
-            let text = embed_text_for_entity(&entity);
-            let vector = hash_embed(&text, SEARCH_EMBED_DIM);
-            let entity_id = entity.id;
-            self.inner
-                .get_hnsw_index_mut(SEARCH_INDEX_NAME, move |idx| {
-                    idx.insert_vector(&vector, Some(json!({"entity_id": entity_id})))
-                })
-                .map_err(|e| anyhow::anyhow!("get_hnsw_index_mut failed: {}", e))?
-                .map_err(|e| anyhow::anyhow!("insert_vector failed: {}", e))?;
-        }
-
-        Ok(())
-    }
-
-    /// Find up to `k` Discovery entities most similar to `query`.
-    ///
-    /// `project_id=Some(...)` post-filters results to that project (the
-    /// underlying HNSW does not partition by project, so we ask for extra
-    /// candidates and then filter). `project_id=None` returns matches from
-    /// every project.
-    pub fn semantic_search(
-        &self,
-        query: &str,
-        k: usize,
-        project_id: Option<&str>,
-    ) -> Result<Vec<SearchResult>> {
-        let query_vec = hash_embed(query, SEARCH_EMBED_DIM);
-        // Over-fetch so the project filter still has room to return `k`.
-        let fetch_k = if project_id.is_some() { k * 4 } else { k };
-
-        let hits = self
-            .inner
-            .get_hnsw_index_ref(SEARCH_INDEX_NAME, |idx| idx.search(&query_vec, fetch_k))
-            .map_err(|e| anyhow::anyhow!("search index lookup failed: {}", e))?
-            .map_err(|e| anyhow::anyhow!("hnsw search failed: {}", e))?;
-
-        let mut results = Vec::with_capacity(hits.len());
-        for (vector_id, score) in hits {
-            // Resolve vector_id → entity_id via the metadata we stored on insert.
-            let metadata = self
-                .inner
-                .get_hnsw_index_ref(SEARCH_INDEX_NAME, |idx| {
-                    idx.get_vector(vector_id).ok().flatten()
-                })
-                .map_err(|e| anyhow::anyhow!("get_vector failed: {}", e))?;
-            let Some((_vec, meta)) = metadata else {
-                continue;
-            };
-            let Some(entity_id) = meta.get("entity_id").and_then(|v| v.as_i64()) else {
-                continue;
-            };
-
-            let entity = match self.get_entity(entity_id) {
-                Ok(e) => e,
-                Err(_) => continue, // entity was deleted since indexing — skip
-            };
-
-            if let Some(pid) = project_id {
-                let entity_project = entity
-                    .data
-                    .get("project_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                if entity_project != pid {
-                    continue;
-                }
-            }
-
-            results.push(SearchResult {
-                id: entity.id,
-                name: entity.name,
-                kind: entity.kind,
-                score,
-                data: entity.data,
-            });
-
-            if results.len() >= k {
-                break;
-            }
-        }
-        Ok(results)
-    }
-
-    // ========================================================================
-    // Audit Trail (ported from atheneum-py)
-    //
-    // Records the provenance chain
-    //   (Agent)-[PerformedBy]->(ReasoningLog)-[Called]->(ToolCall)-[Modified]->(target)
-    // so the graph stops being a bag of disconnected entities. Each write
-    // step is a small helper; `record_agent_action` is the one-shot
-    // convenience wrapper. `get_action_trace` walks the chain back.
-    //
-    // Edge-type mapping (the existing Rust enum carries the right semantics):
-    //   PerformedBy ↔ atheneum-py THOUGHT
-    //   Called      ↔ atheneum-py USED
-    //   Modified    ↔ atheneum-py MODIFIED
-    // ========================================================================
-
-    /// Create a ReasoningLog entity for an agent's thought and link
-    /// `(Agent)-[PerformedBy]->(ReasoningLog)`. The agent entity is
-    /// created on demand if it doesn't exist.
-    pub fn insert_reasoning_log(
-        &self,
-        agent: &str,
-        content: &str,
-        project_id: Option<&str>,
-    ) -> Result<i64> {
-        let agent_entity_id = self.ensure_agent(agent)?;
-
-        // Stage 11b: write the SQL reasoning_logs row first, then mirror
-        // into a graph_entity pointer node.
-        let agent_name = agent.to_string();
-        let content_str = content.to_string();
-        let project = project_id.map(|s| s.to_string());
-        let timestamp = Utc::now().to_rfc3339();
-        let sql_id = self.with_raw_connection(|conn| {
-            let agent_sql_id: i64 = conn.query_row(
-                "SELECT id FROM agents WHERE name = ?1",
-                rusqlite::params![agent_name],
-                |row| row.get(0),
-            )?;
-            conn.execute(
-                "INSERT INTO reasoning_logs
-                    (agent_id, content, project_id, metadata, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![agent_sql_id, content_str, project, "{}", timestamp],
-            )?;
-            Ok(conn.last_insert_rowid())
-        })?;
-
-        let mut data = json!({
-            "sql_id": sql_id,
-            "agent": agent,
-            "content": content,
-            "timestamp": Utc::now().to_rfc3339(),
-        });
-        if let (Some(pid), Some(obj)) = (project_id, data.as_object_mut()) {
-            obj.insert("project_id".to_string(), Value::String(pid.to_string()));
-        }
-
-        let entity = GraphEntity {
-            id: 0,
-            kind: "ReasoningLog".to_string(),
-            name: format!(
-                "{}: {}",
-                agent,
-                content.chars().take(48).collect::<String>()
-            ),
-            file_path: None,
-            data,
-        };
-        let log_entity_id = self
-            .inner
-            .insert_entity(&entity)
-            .map_err(|e| anyhow::anyhow!("Failed to insert ReasoningLog: {}", e))?;
-
-        self.insert_edge(
-            agent_entity_id,
-            log_entity_id,
-            EdgeType::PerformedBy,
-            json!({"provenance": {"actor": "atheneum", "method": "insert_reasoning_log"}}),
-        )?;
-
-        Ok(log_entity_id)
-    }
-
-    /// Create a ToolCall entity and link `(ReasoningLog)-[Called]->(ToolCall)`.
-    pub fn insert_tool_call(
-        &self,
-        reasoning_log_id: i64,
-        tool_name: &str,
-        args: Value,
-        project_id: Option<&str>,
-    ) -> Result<i64> {
-        // Resolve the reasoning_logs SQL row id from the pointer node's data.
-        let log_entity = self.get_entity(reasoning_log_id)?;
-        let log_sql_id = log_entity
-            .data
-            .get("sql_id")
-            .and_then(|v| v.as_i64())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "ReasoningLog graph_entity {} has no sql_id pointer; migration may not have run",
-                    reasoning_log_id
-                )
-            })?;
-
-        // Write the SQL tool_calls row first.
-        let tool_name_owned = tool_name.to_string();
-        let args_str = serde_json::to_string(&args).unwrap_or_else(|_| "null".into());
-        let project = project_id.map(|s| s.to_string());
-        let timestamp = Utc::now().to_rfc3339();
-        let sql_id = self.with_raw_connection(|conn| {
-            conn.execute(
-                "INSERT INTO tool_calls
-                    (reasoning_log_id, tool_name, args, project_id, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![log_sql_id, tool_name_owned, args_str, project, timestamp],
-            )?;
-            Ok(conn.last_insert_rowid())
-        })?;
-
-        let mut data = json!({
-            "sql_id": sql_id,
-            "tool_name": tool_name,
-            "args": args,
-            "timestamp": Utc::now().to_rfc3339(),
-        });
-        if let (Some(pid), Some(obj)) = (project_id, data.as_object_mut()) {
-            obj.insert("project_id".to_string(), Value::String(pid.to_string()));
-        }
-
-        let entity = GraphEntity {
-            id: 0,
-            kind: "ToolCall".to_string(),
-            name: tool_name.to_string(),
-            file_path: None,
-            data,
-        };
-        let tool_entity_id = self
-            .inner
-            .insert_entity(&entity)
-            .map_err(|e| anyhow::anyhow!("Failed to insert ToolCall: {}", e))?;
-
-        self.insert_edge(
-            reasoning_log_id,
-            tool_entity_id,
-            EdgeType::Called,
-            json!({"provenance": {"actor": "atheneum", "method": "insert_tool_call"}}),
-        )?;
-
-        Ok(tool_entity_id)
-    }
-
-    /// Link `(ToolCall)-[Modified]->(target)` for an already-existing target
-    /// entity. Returns the edge id so callers can decorate it later.
-    pub fn record_tool_modifies(&self, tool_call_id: i64, target_id: i64) -> Result<i64> {
-        self.insert_edge(
-            tool_call_id,
-            target_id,
-            EdgeType::Modified,
-            json!({"provenance": {"actor": "atheneum", "method": "record_tool_modifies"}}),
-        )
-    }
-
-    /// One-shot recording of a full agent action.
-    ///
-    /// Equivalent to: `insert_reasoning_log`, then `insert_tool_call` per
-    /// entry in `tool_calls`, then `record_tool_modifies` per modified
-    /// target. Returns the IDs created so callers can do follow-up writes
-    /// without re-querying.
-    pub fn record_agent_action(
-        &self,
-        agent: &str,
-        thought: &str,
-        tool_calls: Vec<ToolCallRecord>,
-        project_id: Option<&str>,
-    ) -> Result<ActionTrace> {
-        let log_id = self.insert_reasoning_log(agent, thought, project_id)?;
-        let agent_id = self.ensure_agent(agent)?;
-
-        let mut tool_call_ids = Vec::with_capacity(tool_calls.len());
-        let mut modified_edge_ids = Vec::new();
-        for tc in tool_calls {
-            let tool_id = self.insert_tool_call(log_id, &tc.tool_name, tc.args, project_id)?;
-            tool_call_ids.push(tool_id);
-            for target in tc.modified_targets {
-                let edge_id = self.record_tool_modifies(tool_id, target)?;
-                modified_edge_ids.push(edge_id);
-            }
-        }
-
-        Ok(ActionTrace {
-            agent_id,
-            reasoning_log_id: log_id,
-            tool_call_ids,
-            modified_edge_ids,
-        })
-    }
-
-    /// Walk the provenance chain back: return every action the named agent
-    /// performed, with each tool call and the entities it modified.
-    /// `project_id=Some(p)` restricts to logs tagged with that project.
-    pub fn get_action_trace(
-        &self,
-        agent: &str,
-        project_id: Option<&str>,
-    ) -> Result<Vec<ActionRecord>> {
-        // Walk all ReasoningLogs for this agent (optionally project-scoped).
-        let logs: Vec<GraphEntity> = self
-            .entities_by_kind("ReasoningLog")?
-            .into_iter()
-            .filter(|log| log.data.get("agent").and_then(|v| v.as_str()) == Some(agent))
-            .filter(|log| match project_id {
-                None => true,
-                Some(pid) => log.data.get("project_id").and_then(|v| v.as_str()) == Some(pid),
-            })
-            .collect();
-
-        let mut records = Vec::with_capacity(logs.len());
-        for log in logs {
-            let log_id = log.id;
-            // Tool calls reachable via Called edges out of this log
-            let tool_call_entities: Vec<GraphEntity> = self
-                .outgoing_edges(log_id)?
-                .into_iter()
-                .filter(|e| e.edge_type == EdgeType::Called.as_str())
-                .filter_map(|e| self.get_entity(e.to_id).ok())
-                .collect();
-
-            let mut tool_calls = Vec::with_capacity(tool_call_entities.len());
-            for tc in tool_call_entities {
-                let modified: Vec<GraphEntity> = self
-                    .outgoing_edges(tc.id)?
-                    .into_iter()
-                    .filter(|e| e.edge_type == EdgeType::Modified.as_str())
-                    .filter_map(|e| self.get_entity(e.to_id).ok())
-                    .collect();
-                tool_calls.push(ToolCallTrace {
-                    tool_call: tc,
-                    modified,
-                });
-            }
-
-            records.push(ActionRecord {
-                reasoning_log: log,
-                tool_calls,
-            });
-        }
-        Ok(records)
-    }
-
-    /// Look up an Agent entity by name, creating it if missing. Used as a
-    /// safety net so audit-trail helpers don't fail on first call for a
-    /// new agent.
-    fn ensure_agent(&self, name: &str) -> Result<i64> {
-        if let Some(existing) = self
-            .entities_by_kind(EntityType::Agent.as_str())?
-            .into_iter()
-            .find(|a| a.name == name)
-        {
-            return Ok(existing.id);
-        }
-        self.insert_agent(name, json!({}))
-    }
-
-    // ========================================================================
-    // Planning Domain (ported from atheneum-py PlanningService)
-    //
-    // Task / Requirement / Blocker entities as first-class graph nodes.
-    // Parent-child relationships live in the entity `data` blobs (task_id
-    // field) rather than as explicit edges, matching the pattern used by
-    // discoveries-by-target. Status reuses the [`KanbanStatus`] enum from
-    // the watchers port, which makes the journal → task auto-application
-    // step a one-liner.
-    //
-    // KanbanBoard / KanbanColumn from Python are deliberately not ported:
-    // the same coordination is expressible with the `status` field on the
-    // task, and the simpler model is easier for agents to reason about.
-    // ========================================================================
-
-    /// Create a Task entity in `TODO` status, optionally scoped to a project.
-    pub fn create_task(
-        &self,
-        title: &str,
-        description: Option<&str>,
-        project_id: Option<&str>,
-    ) -> Result<i64> {
-        let created_at = Utc::now().to_rfc3339();
-
-        // Stage 11c: write the SQL tasks row first.
-        let title_s = title.to_string();
-        let description_s = description.map(|s| s.to_string());
-        let project_s = project_id.map(|s| s.to_string());
-        let created_at_s = created_at.clone();
-        let sql_id = self.with_raw_connection(|conn| {
-            conn.execute(
-                "INSERT INTO tasks
-                    (title, description, status, project_id, metadata, created_at)
-                 VALUES (?1, ?2, 'TODO', ?3, '{}', ?4)",
-                rusqlite::params![title_s, description_s, project_s, created_at_s],
-            )?;
-            Ok(conn.last_insert_rowid())
-        })?;
-
-        let mut data = json!({
-            "sql_id": sql_id,
-            "title": title,
-            "description": description,
-            "status": KanbanStatus::Todo.as_str(),
-            "created_at": created_at,
-        });
-        if let (Some(pid), Some(obj)) = (project_id, data.as_object_mut()) {
-            obj.insert("project_id".to_string(), Value::String(pid.to_string()));
-        }
-        let entity = GraphEntity {
-            id: 0,
-            kind: "Task".to_string(),
-            name: title.to_string(),
-            file_path: None,
-            data,
-        };
-        self.inner
-            .insert_entity(&entity)
-            .map_err(|e| anyhow::anyhow!("Failed to insert Task: {}", e))
-    }
-
-    /// Transition a task to a new [`KanbanStatus`]. Stamps `status_updated_at`.
-    pub fn update_task_status(&self, task_id: i64, status: KanbanStatus) -> Result<()> {
-        let entity = self.get_entity(task_id)?;
-        let sql_id = entity.data.get("sql_id").and_then(|v| v.as_i64());
-
-        let now = Utc::now().to_rfc3339();
-
-        // Update SQL row if we have a pointer (post-11c data does; pre-11c
-        // backfill stamps sql_id on open).
-        if let Some(sql_id) = sql_id {
-            let status_str = status.as_str().to_string();
-            let ts = now.clone();
-            self.with_raw_connection(|conn| {
-                conn.execute(
-                    "UPDATE tasks SET status = ?1, status_updated_at = ?2 WHERE id = ?3",
-                    rusqlite::params![status_str, ts, sql_id],
-                )?;
-                Ok(())
-            })?;
-        }
-
-        // Mirror into the graph entity's data for the existing public API.
-        let mut data = entity.data;
-        if let Some(obj) = data.as_object_mut() {
-            obj.insert(
-                "status".to_string(),
-                Value::String(status.as_str().to_string()),
-            );
-            obj.insert("status_updated_at".to_string(), Value::String(now));
-        }
-        self.update_entity_data(task_id, &data)
-    }
-
-    /// Find a task by exact title within a project (or any project when
-    /// `project_id=None`). Returns the first match.
-    pub fn find_task_by_title(&self, title: &str, project_id: Option<&str>) -> Result<Option<i64>> {
-        let tasks = self.entities_by_kind("Task")?;
-        Ok(tasks
-            .into_iter()
-            .find(|t| {
-                let title_matches = t.data.get("title").and_then(|v| v.as_str()) == Some(title);
-                let project_matches = match project_id {
-                    None => true,
-                    Some(pid) => t.data.get("project_id").and_then(|v| v.as_str()) == Some(pid),
-                };
-                title_matches && project_matches
-            })
-            .map(|t| t.id))
-    }
-
-    /// List tasks in a given status, optionally project-scoped.
-    pub fn list_tasks_by_status(
-        &self,
-        status: KanbanStatus,
-        project_id: Option<&str>,
-    ) -> Result<Vec<GraphEntity>> {
-        let want = status.as_str();
-        Ok(self
-            .entities_by_kind("Task")?
-            .into_iter()
-            .filter(|t| t.data.get("status").and_then(|v| v.as_str()) == Some(want))
-            .filter(|t| match project_id {
-                None => true,
-                Some(pid) => t.data.get("project_id").and_then(|v| v.as_str()) == Some(pid),
-            })
-            .collect())
-    }
-
-    /// Attach an `UNMET` Requirement to a task. `verification_method` is the
-    /// (optional) free-text shell command / procedure that proves it MET.
-    pub fn add_requirement(
-        &self,
-        task_id: i64,
-        statement: &str,
-        verification_method: Option<&str>,
-    ) -> Result<i64> {
-        // Resolve the parent task's SQL id via its pointer node.
-        let task_entity = self.get_entity(task_id)?;
-        let task_sql_id = task_entity
-            .data
-            .get("sql_id")
-            .and_then(|v| v.as_i64())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Task graph_entity {} has no sql_id pointer; migration may not have run",
-                    task_id
-                )
-            })?;
-
-        let created_at = Utc::now().to_rfc3339();
-        let statement_s = statement.to_string();
-        let verification_s = verification_method.map(|s| s.to_string());
-        let created_at_s = created_at.clone();
-        let sql_id = self.with_raw_connection(|conn| {
-            conn.execute(
-                "INSERT INTO requirements
-                    (task_id, statement, status, verification_method, created_at)
-                 VALUES (?1, ?2, 'UNMET', ?3, ?4)",
-                rusqlite::params![task_sql_id, statement_s, verification_s, created_at_s],
-            )?;
-            Ok(conn.last_insert_rowid())
-        })?;
-
-        let data = json!({
-            "sql_id": sql_id,
-            "task_id": task_id,
-            "statement": statement,
-            "status": RequirementStatus::Unmet.as_str(),
-            "verification_method": verification_method,
-            "created_at": created_at,
-        });
-        let entity = GraphEntity {
-            id: 0,
-            kind: "Requirement".to_string(),
-            name: statement.to_string(),
-            file_path: None,
-            data,
-        };
-        self.inner
-            .insert_entity(&entity)
-            .map_err(|e| anyhow::anyhow!("Failed to insert Requirement: {}", e))
-    }
-
-    /// Flip a Requirement to MET and stamp the time.
-    pub fn mark_requirement_met(&self, req_id: i64) -> Result<()> {
-        let entity = self.get_entity(req_id)?;
-        let sql_id = entity.data.get("sql_id").and_then(|v| v.as_i64());
-        let now = Utc::now().to_rfc3339();
-
-        if let Some(sql_id) = sql_id {
-            let ts = now.clone();
-            self.with_raw_connection(|conn| {
-                conn.execute(
-                    "UPDATE requirements SET status = 'MET', met_at = ?1 WHERE id = ?2",
-                    rusqlite::params![ts, sql_id],
-                )?;
-                Ok(())
-            })?;
-        }
-
-        let mut data = entity.data;
-        if let Some(obj) = data.as_object_mut() {
-            obj.insert(
-                "status".to_string(),
-                Value::String(RequirementStatus::Met.as_str().to_string()),
-            );
-            obj.insert("met_at".to_string(), Value::String(now));
-        }
-        self.update_entity_data(req_id, &data)
-    }
-
-    /// Attach a Blocker to a task. `resolved_at` is null until
-    /// [`resolve_blocker`] is called.
-    pub fn add_blocker(
-        &self,
-        task_id: i64,
-        description: &str,
-        blocker_type: BlockerType,
-    ) -> Result<i64> {
-        let task_entity = self.get_entity(task_id)?;
-        let task_sql_id = task_entity
-            .data
-            .get("sql_id")
-            .and_then(|v| v.as_i64())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Task graph_entity {} has no sql_id pointer; migration may not have run",
-                    task_id
-                )
-            })?;
-
-        let created_at = Utc::now().to_rfc3339();
-        let description_s = description.to_string();
-        let blocker_kind = blocker_type.as_str().to_string();
-        let created_at_s = created_at.clone();
-        let sql_id = self.with_raw_connection(|conn| {
-            conn.execute(
-                "INSERT INTO blockers
-                    (task_id, description, blocker_type, resolved_at, created_at)
-                 VALUES (?1, ?2, ?3, NULL, ?4)",
-                rusqlite::params![task_sql_id, description_s, blocker_kind, created_at_s],
-            )?;
-            Ok(conn.last_insert_rowid())
-        })?;
-
-        let data = json!({
-            "sql_id": sql_id,
-            "task_id": task_id,
-            "description": description,
-            "blocker_type": blocker_type.as_str(),
-            "resolved_at": Value::Null,
-            "created_at": created_at,
-        });
-        let entity = GraphEntity {
-            id: 0,
-            kind: "Blocker".to_string(),
-            name: description.to_string(),
-            file_path: None,
-            data,
-        };
-        self.inner
-            .insert_entity(&entity)
-            .map_err(|e| anyhow::anyhow!("Failed to insert Blocker: {}", e))
-    }
-
-    /// Stamp `resolved_at` on a blocker so it stops showing up in open
-    /// blocker queries.
-    pub fn resolve_blocker(&self, blocker_id: i64) -> Result<()> {
-        let entity = self.get_entity(blocker_id)?;
-        let sql_id = entity.data.get("sql_id").and_then(|v| v.as_i64());
-        let now = Utc::now().to_rfc3339();
-
-        if let Some(sql_id) = sql_id {
-            let ts = now.clone();
-            self.with_raw_connection(|conn| {
-                conn.execute(
-                    "UPDATE blockers SET resolved_at = ?1 WHERE id = ?2",
-                    rusqlite::params![ts, sql_id],
-                )?;
-                Ok(())
-            })?;
-        }
-
-        let mut data = entity.data;
-        if let Some(obj) = data.as_object_mut() {
-            obj.insert("resolved_at".to_string(), Value::String(now));
-        }
-        self.update_entity_data(blocker_id, &data)
-    }
-
-    /// One-call read: a task plus all its requirements and blockers.
-    pub fn get_task_with_details(&self, task_id: i64) -> Result<TaskDetail> {
-        let task = self.get_entity(task_id)?;
-        let requirements = self
-            .entities_by_kind("Requirement")?
-            .into_iter()
-            .filter(|r| r.data.get("task_id").and_then(|v| v.as_i64()) == Some(task_id))
-            .collect();
-        let blockers = self
-            .entities_by_kind("Blocker")?
-            .into_iter()
-            .filter(|b| b.data.get("task_id").and_then(|v| v.as_i64()) == Some(task_id))
-            .collect();
-        Ok(TaskDetail {
-            task,
-            requirements,
-            blockers,
-        })
-    }
-
-    /// Apply the kanban transitions found in a journal section to the
-    /// matching Task entities. Tasks are matched by title within the
-    /// section's `project_id`; unknown titles are silently skipped (the
-    /// journal can mention things that aren't tracked tasks).
-    ///
-    /// Returns the list of actually-applied transitions so callers can
-    /// audit what changed.
-    pub fn apply_kanban_updates_from_journal(
-        &self,
-        journal_section_id: i64,
-    ) -> Result<Vec<AppliedKanbanUpdate>> {
-        let section = self.get_entity(journal_section_id)?;
-        let project_id = section.data.get("project_id").and_then(|v| v.as_str());
-        let updates = section
-            .data
-            .get("kanban_updates")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-
-        let mut applied = Vec::new();
-        for update in updates {
-            let Some(title) = update.get("task_title").and_then(|v| v.as_str()) else {
-                continue;
-            };
-            let Some(status_str) = update.get("new_status").and_then(|v| v.as_str()) else {
-                continue;
-            };
-            let Some(new_status) = KanbanStatus::parse(status_str) else {
-                continue;
-            };
-            let Some(task_id) = self.find_task_by_title(title, project_id)? else {
-                continue;
-            };
-
-            let task = self.get_entity(task_id)?;
-            let previous_status = task
-                .data
-                .get("status")
-                .and_then(|v| v.as_str())
-                .and_then(KanbanStatus::parse)
-                .unwrap_or(KanbanStatus::Todo);
-
-            self.update_task_status(task_id, new_status)?;
-            applied.push(AppliedKanbanUpdate {
-                task_id,
-                task_title: title.to_string(),
-                previous_status,
-                new_status,
-            });
-        }
-        Ok(applied)
-    }
-
-    // ========================================================================
-    // Code Bridge to Magellan (Stage 12)
-    //
-    // Pulls Symbol entities from a magellan-format sqlitegraph DB and
-    // stores them as Discoveries in atheneum. Used by agents to
-    // "remember" symbol locations across sessions without re-running
-    // magellan queries. The bridge reads magellan's underlying SQLite
-    // directly — magellan is a CLI, not a library, so a subprocess
-    // round-trip would just add latency and a process boundary.
-    //
-    // Idempotency: by (agent_name, target, project_id, discovery_type).
-    // Re-importing the same symbol updates the existing Discovery in
-    // place rather than creating a duplicate.
-    // ========================================================================
-
-    /// Look up a single symbol in `magellan_db_path` and store it as a
-    /// Discovery in this atheneum graph.
-    ///
-    /// Returns the discovery's entity id, or `None` if no matching symbol
-    /// exists in the magellan DB.
-    pub fn import_symbol_from_magellan(
-        &self,
-        magellan_db_path: &std::path::Path,
-        symbol_name: &str,
-        agent_name: &str,
-        project_id: Option<&str>,
-    ) -> Result<Option<i64>> {
-        let symbols = read_magellan_symbols(magellan_db_path, Some(symbol_name), None)?;
-        if symbols.is_empty() {
-            return Ok(None);
-        }
-        // Take the first match — magellan can have multiple symbols with the
-        // same name (e.g., across modules). Caller can disambiguate with
-        // import_all_symbols_from_magellan or by passing more specific names.
-        let sym = &symbols[0];
-        let metadata = symbol_to_metadata(sym);
-        self.upsert_symbol_discovery(agent_name, symbol_name, project_id, metadata)
-            .map(Some)
-    }
-
-    /// Bulk-import every Symbol entity from `magellan_db_path` as
-    /// Discoveries. Returns the number of symbols imported / updated.
-    pub fn import_all_symbols_from_magellan(
-        &self,
-        magellan_db_path: &std::path::Path,
-        agent_name: &str,
-        project_id: Option<&str>,
-        limit: Option<usize>,
-    ) -> Result<usize> {
-        let symbols = read_magellan_symbols(magellan_db_path, None, limit)?;
-        let mut count = 0;
-        for sym in &symbols {
-            let metadata = symbol_to_metadata(sym);
-            let target = sym.name.clone();
-            self.upsert_symbol_discovery(agent_name, &target, project_id, metadata)?;
-            count += 1;
-        }
-        Ok(count)
-    }
-
-    /// Find an existing Symbol Discovery for `(agent_name, target,
-    /// project_id)` or create one. If it exists, the metadata is updated
-    /// in-place (both the SQL row and the pointer node's `data`).
-    fn upsert_symbol_discovery(
-        &self,
-        agent_name: &str,
-        target: &str,
-        project_id: Option<&str>,
-        mut metadata: Value,
-    ) -> Result<i64> {
-        // Look up an existing discovery via the SQL `discoveries` table
-        // (cheap; indexed on target).
-        let agent_s = agent_name.to_string();
-        let target_s = target.to_string();
-        let project_s = project_id.map(|s| s.to_string());
-        let existing_sql_id: Option<i64> = self.with_raw_connection(|conn| {
-            let row = conn
-                .query_row(
-                    "SELECT id FROM discoveries
-                     WHERE agent_name = ?1 AND target = ?2 AND discovery_type = 'Symbol'
-                       AND ((project_id IS NULL AND ?3 IS NULL) OR project_id = ?3)
-                     LIMIT 1",
-                    rusqlite::params![agent_s, target_s, project_s],
-                    |r| r.get::<_, i64>(0),
-                )
-                .ok();
-            Ok(row)
-        })?;
-
-        if let Some(sql_id) = existing_sql_id {
-            // UPDATE the SQL row's metadata + project_id
-            let agent_s = agent_name.to_string();
-            let target_s = target.to_string();
-            let project_s = project_id.map(|s| s.to_string());
-            // Stamp provenance keys into metadata to keep it self-describing.
-            if let Some(obj) = metadata.as_object_mut() {
-                obj.insert("agent".to_string(), Value::String(agent_s.clone()));
-                obj.insert(
-                    "discovery_type".to_string(),
-                    Value::String("Symbol".to_string()),
-                );
-                obj.insert("target".to_string(), Value::String(target_s.clone()));
-                obj.insert(
-                    "timestamp".to_string(),
-                    Value::String(Utc::now().to_rfc3339()),
-                );
-                obj.insert("sql_id".to_string(), Value::Number(sql_id.into()));
-                if let Some(ref pid) = project_s {
-                    obj.insert("project_id".to_string(), Value::String(pid.clone()));
-                }
-            }
-            let metadata_str = serde_json::to_string(&metadata).unwrap_or_default();
-            let metadata_for_entity = metadata.clone();
-            self.with_raw_connection(|conn| {
-                conn.execute(
-                    "UPDATE discoveries SET metadata = ?1, project_id = ?2 WHERE id = ?3",
-                    rusqlite::params![metadata_str, project_s, sql_id],
-                )?;
-                Ok(())
-            })?;
-
-            // Find + update the matching pointer node so callers reading
-            // entity.data keep seeing the latest fields.
-            let entity_id: Option<i64> = self.with_raw_connection(|conn| {
-                let row = conn
-                    .query_row(
-                        "SELECT id FROM graph_entities
-                         WHERE kind = 'Discovery'
-                           AND json_extract(data, '$.sql_id') = ?1
-                         LIMIT 1",
-                        rusqlite::params![sql_id],
-                        |r| r.get::<_, i64>(0),
-                    )
-                    .ok();
-                Ok(row)
-            })?;
-
-            if let Some(entity_id) = entity_id {
-                self.update_entity_data(entity_id, &metadata_for_entity)?;
-                Ok(entity_id)
-            } else {
-                // Stray SQL row with no pointer node — re-create the pointer.
-                let name = format!("{}: {}", agent_name, target);
-                let entity = GraphEntity {
-                    id: 0,
-                    kind: EntityType::Discovery.as_str().to_string(),
-                    name,
-                    file_path: None,
-                    data: metadata_for_entity,
-                };
-                self.inner.insert_entity(&entity).map_err(Into::into)
-            }
-        } else {
-            // No existing discovery — use the standard path which writes both
-            // the SQL row and the pointer node.
-            self.store_discovery_in_project(agent_name, "Symbol", target, project_id, metadata)
-        }
-    }
-
-    // ========================================================================
-    // Wiki + Journal Ingestion (ported from atheneum-py watchers/)
-    //
-    // ingest_wiki_page: full markdown file → WikiPage entity with content
-    //   hash + extracted wikilinks + project scoping. Idempotent by path.
-    // ingest_journal:   Logseq-style daily journal → one JournalSection
-    //   entity per H2 section, with extracted kanban transitions.
-    // sync_*_directory: walk a dir, ingest every .md file.
-    //
-    // A live notify-based file watcher is intentionally out of scope here;
-    // calling sync_wiki_directory on a debounce timer or fs event is a
-    // thin downstream wrapper.
-    // ========================================================================
-
-    /// Ingest a Markdown wiki page.
-    ///
-    /// Parses optional YAML frontmatter, extracts `[[wikilinks]]`, computes
-    /// a content hash for change detection, and stores everything as a
-    /// `WikiPage` entity. Idempotent by `path` — re-ingesting the same path
-    /// updates the existing entity in place rather than creating a duplicate.
-    pub fn ingest_wiki_page(
-        &self,
-        path: &str,
-        content: &str,
-        project_id: Option<&str>,
-    ) -> Result<i64> {
-        let (frontmatter, body) = parse_frontmatter_lenient(content);
-        let mut data = json!({
-            "path": path,
-            "body": body,
-            "content_hash": content_hash(body),
-            "wikilinks": extract_wikilinks(body),
-        });
-        if let Some(obj) = data.as_object_mut() {
-            if let Some(fm_obj) = frontmatter.as_object() {
-                for (k, v) in fm_obj {
-                    obj.insert(k.clone(), v.clone());
-                }
-            }
-            if let Some(pid) = project_id {
-                obj.insert("project_id".to_string(), Value::String(pid.to_string()));
-            }
-        }
-
-        // Stage 11d: UPSERT the SQL wiki_pages row by path so re-ingestion
-        // updates in place. ID stays stable across edits.
-        let path_s = path.to_string();
-        let title = data.get("title").and_then(|v| v.as_str()).map(String::from);
-        let body_s = body.to_string();
-        let content_hash_s = data
-            .get("content_hash")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let wikilinks_s = data
-            .get("wikilinks")
-            .map(|v| serde_json::to_string(v).unwrap_or_default());
-        let project_s = project_id.map(|s| s.to_string());
-        let metadata_str = serde_json::to_string(&data).unwrap_or_default();
-        let now = Utc::now().to_rfc3339();
-        let sql_id = self.with_raw_connection(|conn| {
-            conn.execute(
-                "INSERT INTO wiki_pages
-                    (path, title, content_hash, body, wikilinks, project_id, metadata, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
-                 ON CONFLICT(path) DO UPDATE SET
-                    title = excluded.title,
-                    content_hash = excluded.content_hash,
-                    body = excluded.body,
-                    wikilinks = excluded.wikilinks,
-                    project_id = excluded.project_id,
-                    metadata = excluded.metadata,
-                    updated_at = excluded.updated_at",
-                rusqlite::params![
-                    path_s,
-                    title,
-                    content_hash_s,
-                    body_s,
-                    wikilinks_s,
-                    project_s,
-                    metadata_str,
-                    now,
-                ],
-            )?;
-            let id: i64 = conn.query_row(
-                "SELECT id FROM wiki_pages WHERE path = ?1",
-                rusqlite::params![path_s],
-                |r| r.get(0),
-            )?;
-            Ok(id)
-        })?;
-
-        if let Some(obj) = data.as_object_mut() {
-            obj.insert("sql_id".to_string(), Value::Number(sql_id.into()));
-        }
-
-        let existing = self.find_ontology_entity("WikiPage", path)?;
-        if let Some(id) = existing {
-            self.update_entity_data(id, &data)?;
-            Ok(id)
-        } else {
-            let entity = GraphEntity {
-                id: 0,
-                kind: "WikiPage".to_string(),
-                name: path.to_string(),
-                file_path: Some(path.to_string()),
-                data,
-            };
-            self.inner
-                .insert_entity(&entity)
-                .map_err(|e| anyhow::anyhow!("Failed to insert WikiPage: {}", e))
-        }
-    }
-
-    /// Ingest a Logseq-style journal file as a series of `JournalSection`
-    /// entities — one per H2 header. Each section carries its kanban
-    /// transitions and wikilinks.
-    pub fn ingest_journal(
-        &self,
-        path: &str,
-        content: &str,
-        project_id: Option<&str>,
-    ) -> Result<Vec<i64>> {
-        let sections = parse_journal_sections(content);
-        let mut ids = Vec::with_capacity(sections.len());
-        for (idx, section) in sections.iter().enumerate() {
-            let wikilinks_json =
-                serde_json::to_value(extract_wikilinks(&section.body)).unwrap_or(Value::Null);
-            let kanban_json = serde_json::to_value(
-                section
-                    .kanban_updates
-                    .iter()
-                    .map(|u| {
-                        json!({
-                            "task_title": u.task_title,
-                            "new_status": u.new_status.as_str(),
-                        })
-                    })
-                    .collect::<Vec<_>>(),
-            )
-            .unwrap_or(Value::Null);
-
-            let mut data = json!({
-                "path": path,
-                "section_index": idx,
-                "time": section.time,
-                "title": section.title,
-                "body": section.body,
-                "wikilinks": wikilinks_json,
-                "kanban_updates": kanban_json,
-            });
-            if let (Some(pid), Some(obj)) = (project_id, data.as_object_mut()) {
-                obj.insert("project_id".to_string(), Value::String(pid.to_string()));
-            }
-
-            // Stage 11d: upsert the SQL journal_sections row keyed by
-            // (path, section_index) so re-ingesting a file doesn't duplicate.
-            let path_s = path.to_string();
-            let idx_i64 = idx as i64;
-            let time_s = section.time.clone();
-            let title_s = section.title.clone();
-            let body_s = section.body.clone();
-            let wikilinks_s = serde_json::to_string(&wikilinks_json).unwrap_or_default();
-            let kanban_s = serde_json::to_string(&kanban_json).unwrap_or_default();
-            let project_s = project_id.map(|s| s.to_string());
-            let metadata_str = serde_json::to_string(&data).unwrap_or_default();
-            let now = Utc::now().to_rfc3339();
-            let sql_id = self.with_raw_connection(|conn| {
-                conn.execute(
-                    "INSERT INTO journal_sections
-                        (path, section_index, time, title, body, kanban_updates,
-                         wikilinks, project_id, metadata, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-                     ON CONFLICT(path, section_index) DO UPDATE SET
-                        time = excluded.time,
-                        title = excluded.title,
-                        body = excluded.body,
-                        kanban_updates = excluded.kanban_updates,
-                        wikilinks = excluded.wikilinks,
-                        project_id = excluded.project_id,
-                        metadata = excluded.metadata",
-                    rusqlite::params![
-                        path_s,
-                        idx_i64,
-                        time_s,
-                        title_s,
-                        body_s,
-                        kanban_s,
-                        wikilinks_s,
-                        project_s,
-                        metadata_str,
-                        now,
-                    ],
-                )?;
-                let id: i64 = conn.query_row(
-                    "SELECT id FROM journal_sections WHERE path = ?1 AND section_index = ?2",
-                    rusqlite::params![path_s, idx_i64],
-                    |r| r.get(0),
-                )?;
-                Ok(id)
-            })?;
-
-            if let Some(obj) = data.as_object_mut() {
-                obj.insert("sql_id".to_string(), Value::Number(sql_id.into()));
-            }
-
-            let name = format!("{}#{}", path, idx);
-            let entity = GraphEntity {
-                id: 0,
-                kind: "JournalSection".to_string(),
-                name,
-                file_path: Some(path.to_string()),
-                data,
-            };
-            let id = self
-                .inner
-                .insert_entity(&entity)
-                .map_err(|e| anyhow::anyhow!("Failed to insert JournalSection: {}", e))?;
-            ids.push(id);
-        }
-        Ok(ids)
-    }
-
-    /// One-shot sync of every `.md` file in `dir` as a WikiPage. Non-recursive.
-    pub fn sync_wiki_directory(
-        &self,
-        dir: &std::path::Path,
-        project_id: Option<&str>,
-    ) -> Result<Vec<i64>> {
-        let mut ids = Vec::new();
-        for entry in std::fs::read_dir(dir)
-            .map_err(|e| anyhow::anyhow!("read_dir {} failed: {}", dir.display(), e))?
-        {
-            let entry = entry.map_err(|e| anyhow::anyhow!("dir entry: {}", e))?;
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("md") {
-                continue;
-            }
-            let content = std::fs::read_to_string(&path)
-                .map_err(|e| anyhow::anyhow!("read {} failed: {}", path.display(), e))?;
-            let id =
-                self.ingest_wiki_page(path.to_str().unwrap_or_default(), &content, project_id)?;
-            ids.push(id);
-        }
-        Ok(ids)
-    }
-
-    /// One-shot sync of every `.md` file in `dir` as a journal. Non-recursive.
-    pub fn sync_journal_directory(
-        &self,
-        dir: &std::path::Path,
-        project_id: Option<&str>,
-    ) -> Result<Vec<i64>> {
-        let mut all_ids = Vec::new();
-        for entry in std::fs::read_dir(dir)
-            .map_err(|e| anyhow::anyhow!("read_dir {} failed: {}", dir.display(), e))?
-        {
-            let entry = entry.map_err(|e| anyhow::anyhow!("dir entry: {}", e))?;
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("md") {
-                continue;
-            }
-            let content = std::fs::read_to_string(&path)
-                .map_err(|e| anyhow::anyhow!("read {} failed: {}", path.display(), e))?;
-            let ids =
-                self.ingest_journal(path.to_str().unwrap_or_default(), &content, project_id)?;
-            all_ids.extend(ids);
-        }
-        Ok(all_ids)
-    }
 }
 
-/// Pull human-readable text out of a discovery entity for embedding.
-///
-/// We mix the symbol/target name, agent name, discovery type, file path,
-/// and a free-form `summary` field so simple word-overlap embeddings work
-/// against any of them.
-fn embed_text_for_entity(entity: &GraphEntity) -> String {
-    let mut parts = vec![entity.kind.clone(), entity.name.clone()];
-    for key in [
-        "target",
-        "agent",
-        "discovery_type",
-        "file",
-        "file_path",
-        "summary",
-        "signature",
-        "kind",
-    ] {
-        if let Some(value) = entity.data.get(key).and_then(|v| v.as_str()) {
-            parts.push(value.to_string());
-        }
-    }
-    parts.join(" ")
-}
-
-/// Deterministic bag-of-words → fixed-dimension vector. Each word's hash
-/// picks a bucket; the resulting vector is L2-normalized so cosine
-/// distance is meaningful. Not as expressive as a real embedding model
-/// but has no dependencies and runs anywhere.
-fn hash_embed(text: &str, dim: usize) -> Vec<f32> {
-    let mut vector = vec![0.0_f32; dim];
-    for token in text
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|t| !t.is_empty())
-    {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        token.to_ascii_lowercase().hash(&mut hasher);
-        let bucket = (hasher.finish() as usize) % dim;
-        vector[bucket] += 1.0;
-    }
-    // L2 normalize so cosine distance reflects direction, not magnitude.
-    let norm: f32 = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > 0.0 {
-        for v in &mut vector {
-            *v /= norm;
-        }
-    }
-    vector
-}
-
-/// Kanban transition states recognized in journal text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KanbanStatus {
-    Todo,
-    InProgress,
-    Done,
-    Blocked,
-}
-
-impl KanbanStatus {
-    /// Canonical uppercase representation (also what gets stored in JSON).
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            KanbanStatus::Todo => "TODO",
-            KanbanStatus::InProgress => "IN_PROGRESS",
-            KanbanStatus::Done => "DONE",
-            KanbanStatus::Blocked => "BLOCKED",
-        }
-    }
-
-    fn parse(s: &str) -> Option<Self> {
-        match s.to_ascii_uppercase().as_str() {
-            "TODO" => Some(KanbanStatus::Todo),
-            "IN_PROGRESS" | "IN-PROGRESS" | "INPROGRESS" => Some(KanbanStatus::InProgress),
-            "DONE" => Some(KanbanStatus::Done),
-            "BLOCKED" => Some(KanbanStatus::Blocked),
-            _ => None,
-        }
-    }
-}
-
-/// A single kanban transition extracted from journal text:
-/// `"Task title" -> STATUS` (or `→` for the unicode arrow).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KanbanUpdate {
-    pub task_title: String,
-    pub new_status: KanbanStatus,
-}
-
-/// One H2-delimited section of a Logseq-style daily journal.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JournalSection {
-    /// Optional `HH:MM` prefix on the H2 header.
-    pub time: Option<String>,
-    /// Heading text after the optional time prefix.
-    pub title: String,
-    /// Everything between this H2 and the next.
-    pub body: String,
-    /// Kanban transitions found inside `body`.
-    pub kanban_updates: Vec<KanbanUpdate>,
-}
-
-/// Extract `[[wikilink]]` targets from markdown body text.
-///
-/// Returns inner text of each `[[...]]` pair in document order. Duplicates
-/// are preserved so callers can reason about reference frequency.
-pub fn extract_wikilinks(content: &str) -> Vec<String> {
-    // The pattern is small enough that compiling once per call is fine for
-    // the volumes atheneum sees (KB-scale wiki bodies).
-    let re = Regex::new(r"\[\[([^\[\]]+?)\]\]").expect("static regex");
-    re.captures_iter(content)
-        .map(|c| c[1].to_string())
-        .collect()
-}
-
-/// Deterministic SHA-256 hex digest of `content`. Used for cheap change
-/// detection on wiki pages — re-ingesting with the same hash means the
-/// body didn't change, so downstream consumers can skip work.
-pub fn content_hash(content: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
-    format!("{:x}", hasher.finalize())
-}
-
-/// Segment a Logseq-style journal on H2 headers. A header may be either
-/// `## HH:MM | Topic` (the Logseq convention) or just `## Topic`.
-///
-/// Each returned section's `body` is everything between its header and the
-/// next header (or end-of-file). `kanban_updates` is pre-extracted from
-/// the body so callers don't need a second pass.
-pub fn parse_journal_sections(content: &str) -> Vec<JournalSection> {
-    // Locate every H2 header line and remember (start_of_body, time, title).
-    let re = Regex::new(r"(?m)^##\s+(?:(\d{2}:\d{2})\s*\|\s*)?(.+?)\s*$").expect("static regex");
-    let mut headers: Vec<(usize, Option<String>, String)> = Vec::new();
-    for m in re.captures_iter(content) {
-        let full = m.get(0).expect("full match");
-        let body_start = full.end();
-        let time = m.get(1).map(|t| t.as_str().to_string());
-        let title = m.get(2).map(|t| t.as_str().to_string()).unwrap_or_default();
-        headers.push((body_start, time, title));
-    }
-
-    let mut sections = Vec::with_capacity(headers.len());
-    for (i, (body_start, time, title)) in headers.iter().enumerate() {
-        let body_end = headers.get(i + 1).map(|h| {
-            // Body ends just before the next header line — back up to the
-            // newline that precedes the next `##` to keep the boundary
-            // clean.
-            let next_header_pos = h.0 - content[..h.0].rfind('\n').map(|n| h.0 - n).unwrap_or(0);
-            next_header_pos.saturating_sub(0).max(*body_start)
-        });
-        // Default: body runs to the next header start (we'll over-include
-        // a newline; trim() in the consumer cleans it up).
-        let raw_end = headers
-            .get(i + 1)
-            .map(|h| {
-                // Walk back to just after the previous newline so the next
-                // `##` line isn't included in *this* section's body.
-                content[..h.0]
-                    .rfind("\n##")
-                    .map(|p| p + 1) // include the newline at end of prev line
-                    .unwrap_or(h.0)
-            })
-            .unwrap_or(content.len());
-        let _ = body_end; // kept for clarity above; raw_end is the real cut
-
-        let body = content[*body_start..raw_end].trim().to_string();
-        let kanban_updates = extract_kanban_updates(&body);
-        sections.push(JournalSection {
-            time: time.clone(),
-            title: title.clone(),
-            body,
-            kanban_updates,
-        });
-    }
-    sections
-}
-
-/// Extract `"task" -> STATUS` (or `→`) transitions from journal text.
-pub fn extract_kanban_updates(content: &str) -> Vec<KanbanUpdate> {
-    let re = Regex::new(r#"["']([^"']+?)["']\s*(?:->|→)\s*(TODO|IN[_ -]?PROGRESS|DONE|BLOCKED)"#)
-        .expect("static regex");
-    re.captures_iter(content)
-        .filter_map(|c| {
-            let task = c.get(1)?.as_str().to_string();
-            let status = KanbanStatus::parse(c.get(2)?.as_str())?;
-            Some(KanbanUpdate {
-                task_title: task,
-                new_status: status,
-            })
-        })
-        .collect()
-}
-
-/// Lenient frontmatter parser used by `ingest_wiki_page`. Returns
-/// `(Value::Object({}), full_content)` when no frontmatter is found instead
-/// of erroring, since wiki pages frequently skip the metadata block.
-fn parse_frontmatter_lenient(content: &str) -> (Value, &str) {
-    parse_frontmatter(content).unwrap_or((Value::Object(serde_json::Map::new()), content))
-}
-
-/// A Symbol row read from a magellan-format sqlitegraph DB.
-///
-/// Mirrors magellan's `SymbolNode` shape but only carries the fields the
-/// code-bridge consumes — magellan uses many more columns under the hood
-/// for indexing and reverse lookup.
-#[derive(Debug, Clone)]
-struct MagellanSymbol {
-    name: String,
-    file_path: Option<String>,
-    data: Value,
-}
-
-/// Read Symbol entities from a magellan-format sqlitegraph DB.
-///
-/// `name_filter=Some(s)` returns rows where `graph_entities.name = s`;
-/// `None` returns all symbols (subject to `limit`). The bridge keeps
-/// this function self-contained so the dependency on magellan's schema
-/// is in one place — if magellan changes its kind tag or table layout
-/// we only update here.
-fn read_magellan_symbols(
-    db_path: &std::path::Path,
-    name_filter: Option<&str>,
-    limit: Option<usize>,
-) -> Result<Vec<MagellanSymbol>> {
-    let conn =
-        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|e| {
-                anyhow::anyhow!("Failed to open magellan DB {}: {}", db_path.display(), e)
-            })?;
-
-    let mut sql =
-        String::from("SELECT name, file_path, data FROM graph_entities WHERE kind = 'Symbol'");
-    if name_filter.is_some() {
-        sql.push_str(" AND name = ?1");
-    }
-    if let Some(n) = limit {
-        sql.push_str(&format!(" LIMIT {}", n));
-    }
-
-    let mut stmt = conn.prepare(&sql)?;
-    let mapper = |row: &rusqlite::Row<'_>| -> rusqlite::Result<MagellanSymbol> {
-        let data_str: String = row.get(2)?;
-        let data: Value = serde_json::from_str(&data_str).unwrap_or(Value::Null);
-        Ok(MagellanSymbol {
-            name: row.get::<_, String>(0)?,
-            file_path: row.get::<_, Option<String>>(1)?,
-            data,
-        })
-    };
-
-    let rows: Vec<MagellanSymbol> = if let Some(filter) = name_filter {
-        stmt.query_map(rusqlite::params![filter], mapper)?
-            .collect::<Result<Vec<_>, _>>()?
-    } else {
-        stmt.query_map([], mapper)?.collect::<Result<Vec<_>, _>>()?
-    };
-    Ok(rows)
-}
-
-/// Build the `metadata` JSON for an atheneum Discovery from a magellan
-/// Symbol row. Picks out the fields callers care about (file, line,
-/// FQN, kind) and leaves the rest of magellan's data under
-/// `magellan_raw` for callers that want everything.
-fn symbol_to_metadata(sym: &MagellanSymbol) -> Value {
-    let start_line = sym.data.get("start_line").cloned().unwrap_or(Value::Null);
-    let end_line = sym.data.get("end_line").cloned().unwrap_or(Value::Null);
-    let fqn = sym.data.get("fqn").cloned().unwrap_or(Value::Null);
-    let kind = sym.data.get("kind").cloned().unwrap_or(Value::Null);
-    json!({
-        "file": sym.file_path,
-        "start_line": start_line,
-        "end_line": end_line,
-        "fqn": fqn,
-        "kind": kind,
-        "magellan_raw": sym.data,
-    })
-}
-
-/// Parse YAML frontmatter from markdown content
-///
-/// Returns (frontmatter as JSON, body content)
 fn parse_frontmatter(content: &str) -> Result<(Value, &str)> {
-    // Find the first ---
     let first_marker = content
         .find("---")
         .ok_or_else(|| anyhow::anyhow!("No frontmatter start marker"))?;
 
-    // Find the second ---
     let second_marker = content[first_marker + 3..]
         .find("---")
         .ok_or_else(|| anyhow::anyhow!("No frontmatter end marker"))?
         + first_marker
         + 3;
 
-    // Extract frontmatter YAML
     let frontmatter_yaml = &content[first_marker + 3..second_marker];
 
-    // Parse YAML to JSON value
     let frontmatter: Value = serde_yaml::from_str(frontmatter_yaml)
         .map_err(|e| anyhow::anyhow!("Failed to parse YAML: {}", e))?;
 
-    // Extract body (everything after the second ---)
     let body = &content[second_marker + 3..];
 
     Ok((frontmatter, body))
 }
 
-// Helper methods for querying edges by direction
-
-/// Query all edges pointing to an entity
 fn get_incoming_edges(graph: &SqliteGraph, entity_id: i64) -> Result<Vec<GraphEdge>> {
-    // Try direct connection first (for in-memory databases)
     let conn = if let Some(direct) = graph.pool.direct_connection() {
         direct
     } else {
-        // Fall back to pooled connection
         &graph
             .pool
             .get()
@@ -3058,13 +538,10 @@ fn get_incoming_edges(graph: &SqliteGraph, entity_id: i64) -> Result<Vec<GraphEd
     Ok(edges)
 }
 
-/// Query all edges originating from an entity
 fn get_outgoing_edges(graph: &SqliteGraph, entity_id: i64) -> Result<Vec<GraphEdge>> {
-    // Try direct connection first (for in-memory databases)
     let conn = if let Some(direct) = graph.pool.direct_connection() {
         direct
     } else {
-        // Fall back to pooled connection
         &graph
             .pool
             .get()

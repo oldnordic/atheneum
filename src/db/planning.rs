@@ -99,7 +99,7 @@ fn backfill_tasks(tx: &Transaction<'_>) -> Result<()> {
                 description,
                 status,
                 project_id,
-                serde_json::to_string(&data).unwrap_or_default(),
+                super::json_to_string(&data)?,
                 created_at,
                 status_updated_at,
             ],

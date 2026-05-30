@@ -1,0 +1,573 @@
+use anyhow::Result;
+use chrono::Utc;
+use regex::Regex;
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use sqlitegraph::GraphEntity;
+
+use super::planning::{KanbanStatus, KanbanUpdate};
+use super::types::EdgeType;
+use super::AtheneumGraph;
+
+pub struct WikiPage {
+    pub id: i64,
+    pub path: String,
+    pub title: Option<String>,
+    pub content_hash: Option<String>,
+    pub body: String,
+    pub wikilinks: Vec<String>,
+    pub project_id: Option<String>,
+    pub metadata: serde_json::Value,
+    pub created_at: String,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JournalSection {
+    pub time: Option<String>,
+    pub title: String,
+    pub body: String,
+    pub kanban_updates: Vec<KanbanUpdate>,
+}
+
+pub fn extract_wikilinks(content: &str) -> Vec<String> {
+    let re = Regex::new(r"\[\[([^\[\]]+?)\]\]").expect("static regex");
+    re.captures_iter(content)
+        .map(|c| c[1].to_string())
+        .collect()
+}
+
+pub fn content_hash(content: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+pub fn parse_journal_sections(content: &str) -> Vec<JournalSection> {
+    let re = Regex::new(r"(?m)^##\s+(?:(\d{2}:\d{2})\s*\|\s*)?(.+?)\s*$").expect("static regex");
+    let mut headers: Vec<(usize, Option<String>, String)> = Vec::new();
+    for m in re.captures_iter(content) {
+        let full = m.get(0).expect("full match");
+        let body_start = full.end();
+        let time = m.get(1).map(|t| t.as_str().to_string());
+        let title = m.get(2).map(|t| t.as_str().to_string()).unwrap_or_default();
+        headers.push((body_start, time, title));
+    }
+
+    let mut sections = Vec::with_capacity(headers.len());
+    for (i, (body_start, time, title)) in headers.iter().enumerate() {
+        let body_end = headers.get(i + 1).map(|h| {
+            let next_header_pos = h.0 - content[..h.0].rfind('\n').map(|n| h.0 - n).unwrap_or(0);
+            next_header_pos.saturating_sub(0).max(*body_start)
+        });
+        let raw_end = headers
+            .get(i + 1)
+            .map(|h| content[..h.0].rfind("\n##").map(|p| p + 1).unwrap_or(h.0))
+            .unwrap_or(content.len());
+        let _ = body_end;
+
+        let body = content[*body_start..raw_end].trim().to_string();
+        let kanban_updates = extract_kanban_updates(&body);
+        sections.push(JournalSection {
+            time: time.clone(),
+            title: title.clone(),
+            body,
+            kanban_updates,
+        });
+    }
+    sections
+}
+
+pub fn extract_kanban_updates(content: &str) -> Vec<KanbanUpdate> {
+    let re = Regex::new(r#"["']([^"']+?)["']\s*(?:->|→)\s*(TODO|IN[_ -]?PROGRESS|DONE|BLOCKED)"#)
+        .expect("static regex");
+    re.captures_iter(content)
+        .filter_map(|c| {
+            let task = c.get(1)?.as_str().to_string();
+            let status = KanbanStatus::parse(c.get(2)?.as_str())?;
+            Some(KanbanUpdate {
+                task_title: task,
+                new_status: status,
+            })
+        })
+        .collect()
+}
+
+fn parse_frontmatter_lenient(content: &str) -> (Value, &str) {
+    super::parse_frontmatter(content).unwrap_or((Value::Object(serde_json::Map::new()), content))
+}
+
+impl AtheneumGraph {
+    pub fn ingest_wiki_page(
+        &self,
+        path: &str,
+        content: &str,
+        project_id: Option<&str>,
+    ) -> Result<i64> {
+        let (frontmatter, body) = parse_frontmatter_lenient(content);
+        let mut data = json!({
+            "path": path,
+            "body": body,
+            "content_hash": content_hash(body),
+            "wikilinks": extract_wikilinks(body),
+        });
+        if let Some(obj) = data.as_object_mut() {
+            if let Some(fm_obj) = frontmatter.as_object() {
+                for (k, v) in fm_obj {
+                    obj.insert(k.clone(), v.clone());
+                }
+            }
+            if let Some(pid) = project_id {
+                obj.insert("project_id".to_string(), Value::String(pid.to_string()));
+            }
+        }
+
+        let path_s = path.to_string();
+        let title = data.get("title").and_then(|v| v.as_str()).map(String::from);
+        let body_s = body.to_string();
+        let content_hash_s = data
+            .get("content_hash")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let wikilinks_s = data
+            .get("wikilinks")
+            .map(super::json_to_string)
+            .transpose()?;
+        let project_s = project_id.map(|s| s.to_string());
+        let metadata_str = super::json_to_string(&data)?;
+        let now = Utc::now().to_rfc3339();
+        let sql_id = self.with_raw_connection(|conn| {
+            conn.execute(
+                "INSERT INTO wiki_pages
+                    (path, title, content_hash, body, wikilinks, project_id, metadata, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+                 ON CONFLICT(path) DO UPDATE SET
+                    title = excluded.title,
+                    content_hash = excluded.content_hash,
+                    body = excluded.body,
+                    wikilinks = excluded.wikilinks,
+                    project_id = excluded.project_id,
+                    metadata = excluded.metadata,
+                    updated_at = excluded.updated_at",
+                rusqlite::params![
+                    path_s,
+                    title,
+                    content_hash_s,
+                    body_s,
+                    wikilinks_s,
+                    project_s,
+                    metadata_str,
+                    now,
+                ],
+            )?;
+            let id: i64 = conn.query_row(
+                "SELECT id FROM wiki_pages WHERE path = ?1",
+                rusqlite::params![path_s],
+                |r| r.get(0),
+            )?;
+            Ok(id)
+        })?;
+
+        if let Some(obj) = data.as_object_mut() {
+            obj.insert("sql_id".to_string(), Value::Number(sql_id.into()));
+        }
+
+        let existing = self.find_ontology_entity("WikiPage", path)?;
+        let page_id = if let Some(id) = existing {
+            self.update_entity_data(id, &data)?;
+            id
+        } else {
+            let entity = GraphEntity {
+                id: 0,
+                kind: "WikiPage".to_string(),
+                name: path.to_string(),
+                file_path: Some(path.to_string()),
+                data: data.clone(),
+            };
+            self.inner
+                .insert_entity(&entity)
+                .map_err(|e| anyhow::anyhow!("Failed to insert WikiPage: {}", e))?
+        };
+
+        // Create wikilink graph edges — create stub targets if they don't exist
+        let wikilinks = extract_wikilinks(body);
+        for target in &wikilinks {
+            let target_id = match self.find_entity_id_by_kind_and_wikilink("WikiPage", target)? {
+                Some(id) => id,
+                None => {
+                    // Create a stub WikiPage entity for the missing target
+                    let stub_entity = GraphEntity {
+                        id: 0,
+                        kind: "WikiPage".to_string(),
+                        name: target.clone(),
+                        file_path: None,
+                        data: serde_json::json!({"stub": true, "name": target}),
+                    };
+                    self.inner
+                        .insert_entity(&stub_entity)
+                        .map_err(|e| anyhow::anyhow!("Failed to insert stub WikiPage: {}", e))?
+                }
+            };
+            let _ = self.insert_edge(
+                page_id,
+                target_id,
+                EdgeType::RelatedTo,
+                serde_json::json!({"link_type": "wikilink", "target": target}),
+            );
+        }
+
+        Ok(page_id)
+    }
+
+    pub fn ingest_journal(
+        &self,
+        path: &str,
+        content: &str,
+        project_id: Option<&str>,
+    ) -> Result<Vec<i64>> {
+        let sections = parse_journal_sections(content);
+        let mut ids = Vec::with_capacity(sections.len());
+        for (idx, section) in sections.iter().enumerate() {
+            let wikilinks_json =
+                serde_json::to_value(extract_wikilinks(&section.body)).unwrap_or(Value::Null);
+            let kanban_json = serde_json::to_value(
+                section
+                    .kanban_updates
+                    .iter()
+                    .map(|u| {
+                        json!({
+                            "task_title": u.task_title,
+                            "new_status": u.new_status.as_str(),
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap_or(Value::Null);
+
+            let mut data = json!({
+                "path": path,
+                "section_index": idx,
+                "time": section.time,
+                "title": section.title,
+                "body": section.body,
+                "wikilinks": wikilinks_json,
+                "kanban_updates": kanban_json,
+            });
+            if let (Some(pid), Some(obj)) = (project_id, data.as_object_mut()) {
+                obj.insert("project_id".to_string(), Value::String(pid.to_string()));
+            }
+
+            let path_s = path.to_string();
+            let idx_i64 = idx as i64;
+            let time_s = section.time.clone();
+            let title_s = section.title.clone();
+            let body_s = section.body.clone();
+            let wikilinks_s = super::json_to_string(&wikilinks_json)?;
+            let kanban_s = super::json_to_string(&kanban_json)?;
+            let project_s = project_id.map(|s| s.to_string());
+            let metadata_str = super::json_to_string(&data)?;
+            let now = Utc::now().to_rfc3339();
+            let sql_id = self.with_raw_connection(|conn| {
+                conn.execute(
+                    "INSERT INTO journal_sections
+                        (path, section_index, time, title, body, kanban_updates,
+                         wikilinks, project_id, metadata, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                     ON CONFLICT(path, section_index) DO UPDATE SET
+                        time = excluded.time,
+                        title = excluded.title,
+                        body = excluded.body,
+                        kanban_updates = excluded.kanban_updates,
+                        wikilinks = excluded.wikilinks,
+                        project_id = excluded.project_id,
+                        metadata = excluded.metadata",
+                    rusqlite::params![
+                        path_s,
+                        idx_i64,
+                        time_s,
+                        title_s,
+                        body_s,
+                        kanban_s,
+                        wikilinks_s,
+                        project_s,
+                        metadata_str,
+                        now,
+                    ],
+                )?;
+                let id: i64 = conn.query_row(
+                    "SELECT id FROM journal_sections WHERE path = ?1 AND section_index = ?2",
+                    rusqlite::params![path_s, idx_i64],
+                    |r| r.get(0),
+                )?;
+                Ok(id)
+            })?;
+
+            if let Some(obj) = data.as_object_mut() {
+                obj.insert("sql_id".to_string(), Value::Number(sql_id.into()));
+            }
+
+            let name = format!("{}#{}", path, idx);
+            let entity = GraphEntity {
+                id: 0,
+                kind: "JournalSection".to_string(),
+                name,
+                file_path: Some(path.to_string()),
+                data,
+            };
+            let id = self
+                .inner
+                .insert_entity(&entity)
+                .map_err(|e| anyhow::anyhow!("Failed to insert JournalSection: {}", e))?;
+            ids.push(id);
+        }
+        Ok(ids)
+    }
+
+    pub fn sync_wiki_directory(
+        &self,
+        dir: &std::path::Path,
+        project_id: Option<&str>,
+    ) -> Result<Vec<i64>> {
+        let mut ids = Vec::new();
+        for entry in std::fs::read_dir(dir)
+            .map_err(|e| anyhow::anyhow!("read_dir {} failed: {}", dir.display(), e))?
+        {
+            let entry = entry.map_err(|e| anyhow::anyhow!("dir entry: {}", e))?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path)
+                .map_err(|e| anyhow::anyhow!("read {} failed: {}", path.display(), e))?;
+            let id =
+                self.ingest_wiki_page(path.to_str().unwrap_or_default(), &content, project_id)?;
+            ids.push(id);
+        }
+        Ok(ids)
+    }
+
+    pub fn query_journal_sections(&self, path: &str) -> Result<Vec<JournalSection>> {
+        self.with_raw_connection(|conn| {
+            let mut stmt = conn.prepare_cached(
+                "SELECT time, title, body, kanban_updates FROM journal_sections WHERE path = ?1 ORDER BY section_index"
+            )?;
+            let rows = stmt.query_map(rusqlite::params![path], |r| {
+                let kanban_str: Option<String> = r.get(3)?;
+                let kanban_updates = kanban_str
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or_default();
+                Ok(JournalSection {
+                    time: r.get(0)?,
+                    title: r.get(1)?,
+                    body: r.get(2)?,
+                    kanban_updates,
+                })
+            })?;
+            let mut sections = Vec::new();
+            for row in rows {
+                sections.push(row?);
+            }
+            Ok(sections)
+        })
+    }
+
+    pub fn sync_journal_directory(
+        &self,
+        dir: &std::path::Path,
+        project_id: Option<&str>,
+    ) -> Result<Vec<i64>> {
+        let mut all_ids = Vec::new();
+        for entry in std::fs::read_dir(dir)
+            .map_err(|e| anyhow::anyhow!("read_dir {} failed: {}", dir.display(), e))?
+        {
+            let entry = entry.map_err(|e| anyhow::anyhow!("dir entry: {}", e))?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path)
+                .map_err(|e| anyhow::anyhow!("read {} failed: {}", path.display(), e))?;
+            let ids =
+                self.ingest_journal(path.to_str().unwrap_or_default(), &content, project_id)?;
+            all_ids.extend(ids);
+        }
+        Ok(all_ids)
+    }
+
+    pub fn get_wiki_page(&self, path: &str) -> Result<Option<WikiPage>> {
+        self.with_raw_connection(|conn| {
+            let mut stmt = conn.prepare_cached(
+                "SELECT id, path, title, content_hash, body, wikilinks, project_id, metadata, created_at, updated_at
+                 FROM wiki_pages WHERE path = ?1"
+            )?;
+            let row = stmt.query_row(rusqlite::params![path], |r| {
+                let wikilinks_str: Option<String> = r.get(5)?;
+                let wikilinks = wikilinks_str
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or_default();
+                let metadata_str: Option<String> = r.get(7)?;
+                let metadata = metadata_str
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or(serde_json::Value::Null);
+                Ok(WikiPage {
+                    id: r.get(0)?,
+                    path: r.get(1)?,
+                    title: r.get(2)?,
+                    content_hash: r.get(3)?,
+                    body: r.get(4)?,
+                    wikilinks,
+                    project_id: r.get(6)?,
+                    metadata,
+                    created_at: r.get(8)?,
+                    updated_at: r.get(9)?,
+                })
+            });
+            match row {
+                Ok(page) => Ok(Some(page)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(e.into()),
+            }
+        })
+    }
+
+    pub fn list_wiki_pages(&self, project_id: Option<&str>) -> Result<Vec<WikiPage>> {
+        self.with_raw_connection(|conn| {
+            let sql = if project_id.is_some() {
+                "SELECT id, path, title, content_hash, body, wikilinks, project_id, metadata, created_at, updated_at
+                 FROM wiki_pages WHERE project_id = ?1 ORDER BY path"
+            } else {
+                "SELECT id, path, title, content_hash, body, wikilinks, project_id, metadata, created_at, updated_at
+                 FROM wiki_pages ORDER BY path"
+            };
+            let mut stmt = conn.prepare_cached(sql)?;
+            let rows = if let Some(pid) = project_id {
+                stmt.query_map(rusqlite::params![pid], wiki_page_from_row)?
+            } else {
+                stmt.query_map([], wiki_page_from_row)?
+            };
+            let mut pages = Vec::new();
+            for row in rows {
+                pages.push(row?);
+            }
+            Ok(pages)
+        })
+    }
+
+    pub fn find_pages_by_wikilink(
+        &self,
+        target: &str,
+        project_id: Option<&str>,
+    ) -> Result<Vec<WikiPage>> {
+        self.with_raw_connection(|conn| {
+            let sql = if project_id.is_some() {
+                "SELECT id, path, title, content_hash, body, wikilinks, project_id, metadata, created_at, updated_at
+                 FROM wiki_pages WHERE project_id = ?1 AND json_extract(wikilinks, '$') LIKE ?2 ORDER BY path"
+            } else {
+                "SELECT id, path, title, content_hash, body, wikilinks, project_id, metadata, created_at, updated_at
+                 FROM wiki_pages WHERE json_extract(wikilinks, '$') LIKE ?1 ORDER BY path"
+            };
+            let mut stmt = conn.prepare_cached(sql)?;
+            let pattern = format!("%{}%", target);
+            let rows = if let Some(pid) = project_id {
+                stmt.query_map(rusqlite::params![pid, pattern], wiki_page_from_row)?
+            } else {
+                stmt.query_map(rusqlite::params![pattern], wiki_page_from_row)?
+            };
+            let mut pages = Vec::new();
+            for row in rows {
+                pages.push(row?);
+            }
+            Ok(pages)
+        })
+    }
+
+    pub fn find_wiki_page_entity_id(&self, path: &str) -> Result<Option<i64>> {
+        self.find_entity_id_by_kind_and_name("WikiPage", path)
+    }
+
+    pub(super) fn find_entity_id_by_kind_and_wikilink(
+        &self,
+        kind: &str,
+        wikilink: &str,
+    ) -> Result<Option<i64>> {
+        self.with_raw_connection(|conn| {
+            // Try exact name match first
+            let exact: Option<i64> = conn
+                .query_row(
+                    "SELECT id FROM graph_entities WHERE kind = ?1 AND name = ?2 LIMIT 1",
+                    rusqlite::params![kind, wikilink],
+                    |r| r.get(0),
+                )
+                .ok();
+            if exact.is_some() {
+                return Ok(exact);
+            }
+            // Try path suffix match (e.g. "Dest" matches "wiki/dest.md")
+            let suffix = format!("%{}.md", wikilink.to_lowercase());
+            let suffix2 = wikilink.to_lowercase();
+            let result: Option<i64> = conn
+                .query_row(
+                    "SELECT id FROM graph_entities WHERE kind = ?1 AND (
+                        LOWER(name) LIKE ?2 OR LOWER(json_extract(data, '$.path')) LIKE ?3
+                    ) LIMIT 1",
+                    rusqlite::params![kind, suffix, suffix2],
+                    |r| r.get(0),
+                )
+                .ok();
+            Ok(result)
+        })
+    }
+
+    pub fn outgoing_wikilinks(&self, page_id: i64) -> Result<Vec<GraphEntity>> {
+        let target_ids = self
+            .inner
+            .query()
+            .outgoing(page_id)
+            .map_err(|e| anyhow::anyhow!("query outgoing failed: {}", e))?;
+        let mut targets = Vec::new();
+        for target_id in target_ids {
+            if let Ok(entity) = self.get_entity(target_id) {
+                targets.push(entity);
+            }
+        }
+        Ok(targets)
+    }
+
+    pub fn incoming_wikilinks(&self, page_id: i64) -> Result<Vec<GraphEntity>> {
+        let source_ids = self
+            .inner
+            .query()
+            .incoming(page_id)
+            .map_err(|e| anyhow::anyhow!("query incoming failed: {}", e))?;
+        let mut sources = Vec::new();
+        for source_id in source_ids {
+            if let Ok(entity) = self.get_entity(source_id) {
+                sources.push(entity);
+            }
+        }
+        Ok(sources)
+    }
+}
+
+fn wiki_page_from_row(r: &rusqlite::Row) -> Result<WikiPage, rusqlite::Error> {
+    let wikilinks_str: Option<String> = r.get(5)?;
+    let wikilinks = wikilinks_str
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    let metadata_str: Option<String> = r.get(7)?;
+    let metadata = metadata_str
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::Value::Null);
+    Ok(WikiPage {
+        id: r.get(0)?,
+        path: r.get(1)?,
+        title: r.get(2)?,
+        content_hash: r.get(3)?,
+        body: r.get(4)?,
+        wikilinks,
+        project_id: r.get(6)?,
+        metadata,
+        created_at: r.get(8)?,
+        updated_at: r.get(9)?,
+    })
+}

@@ -88,7 +88,7 @@ fn backfill_agents(tx: &Transaction<'_>) -> Result<()> {
             params![
                 name,
                 project_id,
-                serde_json::to_string(&data).unwrap_or_default(),
+                super::json_to_string(&data)?,
                 Utc::now().to_rfc3339()
             ],
         )?;
@@ -142,7 +142,7 @@ fn backfill_reasoning_logs(tx: &Transaction<'_>) -> Result<()> {
                 agent_id,
                 content,
                 project_id,
-                serde_json::to_string(&data).unwrap_or_default(),
+                super::json_to_string(&data)?,
                 data.get("timestamp")
                     .and_then(|v| v.as_str())
                     .map(String::from)
@@ -202,7 +202,7 @@ fn backfill_tool_calls(tx: &Transaction<'_>) -> Result<()> {
             params![
                 log_sql_id,
                 tool_name,
-                serde_json::to_string(&args).unwrap_or_default(),
+                super::json_to_string(&args)?,
                 project_id,
                 data.get("timestamp")
                     .and_then(|v| v.as_str())
