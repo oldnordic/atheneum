@@ -20,9 +20,9 @@ pub use planning::{KanbanStatus, KanbanUpdate};
 pub use types::{
     ActionRecord, ActionTrace, AppliedKanbanUpdate, AtheneumError, BlockerType, CommitParams,
     EdgeType, EndSessionParams, EntityType, FileWriteParams, FixChainParams, OntologyClassInfo,
-    OntologyPropertyInfo, PromptParams, RequirementStatus, SearchResult, SessionParams, TaskDetail,
-    TestRunParams, ToolCallParams, ToolCallRecord, ToolCallTrace, ONTOLOGY_CLASS_KIND,
-    ONTOLOGY_PROPERTY_KIND,
+    OntologyPropertyInfo, PromptParams, RequirementStatus, SearchResult, SessionParams,
+    SessionSummary, TaskDetail, TestRunParams, ToolCallParams, ToolCallRecord, ToolCallTrace,
+    ONTOLOGY_CLASS_KIND, ONTOLOGY_PROPERTY_KIND,
 };
 pub use wiki::{
     content_hash, extract_kanban_updates, extract_wikilinks, parse_journal_sections,

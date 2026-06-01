@@ -6,7 +6,7 @@ use sqlitegraph::GraphEntity;
 
 use super::{
     AtheneumGraph, CommitParams, EdgeType, EndSessionParams, EntityType, FileWriteParams,
-    FixChainParams, PromptParams, SessionParams, TestRunParams, ToolCallParams,
+    FixChainParams, PromptParams, SessionParams, SessionSummary, TestRunParams, ToolCallParams,
 };
 
 fn event_row_from_rusqlite(row: &rusqlite::Row<'_>) -> Result<serde_json::Value, rusqlite::Error> {
@@ -37,8 +37,10 @@ impl AtheneumGraph {
         self.with_raw_connection(|conn| {
             conn.execute(
                 "INSERT INTO sessions
-                    (session_id, agent_id, project, tool, trigger, model, started_at, git_branch, git_head)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    (session_id, agent_id, project, tool, trigger, model, started_at,
+                     git_branch, git_head, parent_session_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 ON CONFLICT(session_id) DO NOTHING",
                 rusqlite::params![
                     params.session_id,
                     agent_sql,
@@ -48,7 +50,8 @@ impl AtheneumGraph {
                     params.model,
                     now,
                     params.git_branch,
-                    params.git_head
+                    params.git_head,
+                    params.parent_session_id,
                 ],
             )?;
             Ok::<(), anyhow::Error>(())
@@ -63,6 +66,7 @@ impl AtheneumGraph {
             "started_at": now,
             "git_branch": params.git_branch,
             "git_head": params.git_head,
+            "parent_session_id": params.parent_session_id,
         });
         let entity = GraphEntity {
             id: 0,
@@ -506,6 +510,87 @@ impl AtheneumGraph {
             }
             Ok(events)
         })
+    }
+
+    /// Query recent sessions for a project. Returns up to `last_n`, newest first.
+    pub fn query_sessions(
+        &self,
+        project: &str,
+        last_n: i64,
+        parent_id: Option<&str>,
+    ) -> Result<Vec<SessionSummary>> {
+        let project = project.to_string();
+        let pid = parent_id.map(|s| s.to_string());
+
+        self.with_raw_connection(move |conn| {
+            let mut sql = String::from(
+                "SELECT s.session_id, s.project, s.git_branch, s.trigger,
+                        s.started_at, s.ended_at, s.exit_status,
+                        COALESCE(s.tool_call_count, 0),
+                        COALESCE(s.file_write_count, 0),
+                        COALESCE(s.commit_count, 0),
+                        s.parent_session_id,
+                        (SELECT json_extract(el.payload, '$.tool_name')
+                         FROM event_log el
+                         WHERE el.session_id = s.session_id AND el.event_type = 'tool_call'
+                         ORDER BY el.event_id DESC LIMIT 1),
+                        (SELECT json_extract(el.payload, '$.input_summary')
+                         FROM event_log el
+                         WHERE el.session_id = s.session_id AND el.event_type = 'tool_call'
+                         ORDER BY el.event_id DESC LIMIT 1)
+                 FROM sessions s
+                 WHERE s.project = ?1",
+            );
+            if pid.is_some() {
+                sql.push_str(" AND s.parent_session_id = ?3");
+            }
+            sql.push_str(" ORDER BY s.started_at DESC LIMIT ?2");
+
+            let mut stmt = conn.prepare_cached(&sql)?;
+            let row_fn = |row: &rusqlite::Row<'_>| {
+                Ok(SessionSummary {
+                    session_id: row.get(0)?,
+                    project: row.get(1)?,
+                    git_branch: row.get(2)?,
+                    trigger: row.get::<_, Option<String>>(3)?.unwrap_or_else(|| "cli".into()),
+                    started_at: row.get(4)?,
+                    ended_at: row.get(5)?,
+                    exit_status: row.get(6)?,
+                    tool_call_count: row.get(7)?,
+                    file_write_count: row.get(8)?,
+                    commit_count: row.get(9)?,
+                    parent_session_id: row.get(10)?,
+                    last_tool: row.get(11)?,
+                    last_tool_summary: row.get(12)?,
+                })
+            };
+
+            let rows = match pid {
+                Some(p) => stmt.query_map(rusqlite::params![project, last_n, p], row_fn)?,
+                None => stmt.query_map(rusqlite::params![project, last_n], row_fn)?,
+            };
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+    }
+
+    /// Store a subagent handover note on session stop.
+    pub fn record_subagent_handover(
+        &self,
+        session_id: &str,
+        summary: &str,
+        files_changed: &[String],
+        outcome: &str,
+    ) -> Result<()> {
+        let payload = json!({
+            "summary": summary,
+            "files_changed": files_changed,
+            "outcome": outcome,
+        });
+        self.append_event_log("subagent_handover", session_id, session_id, &payload)
     }
 
     fn append_event_log(

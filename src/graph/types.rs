@@ -190,6 +190,25 @@ pub struct SessionParams {
     pub model: Option<String>,
     pub git_branch: Option<String>,
     pub git_head: Option<String>,
+    pub parent_session_id: Option<String>,
+}
+
+/// Compact session summary for history display and handover queries.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SessionSummary {
+    pub session_id: String,
+    pub project: String,
+    pub git_branch: Option<String>,
+    pub trigger: String,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+    pub exit_status: Option<String>,
+    pub tool_call_count: i64,
+    pub file_write_count: i64,
+    pub commit_count: i64,
+    pub parent_session_id: Option<String>,
+    pub last_tool: Option<String>,
+    pub last_tool_summary: Option<String>,
 }
 
 #[derive(Debug, Clone)]
