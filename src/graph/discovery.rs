@@ -138,6 +138,42 @@ impl AtheneumGraph {
         self.store_discovery(agent, discovery_type, target, metadata)
     }
 
+    /// Return the N most recent discoveries for a project (no target required).
+    /// Used by SubagentStart hook to push project context into initial LLM context.
+    pub fn recent_project_context(
+        &self,
+        project: &str,
+        limit: i64,
+    ) -> Result<Vec<GraphEntity>> {
+        super::with_graph_conn(&self.inner, |conn| {
+            let mut stmt = conn.prepare_cached(
+                "SELECT id, kind, name, file_path, data FROM graph_entities
+                 WHERE kind = ?1
+                   AND (json_extract(data, '$.project_id') = ?2
+                        OR json_extract(data, '$.project') = ?2)
+                 ORDER BY id DESC LIMIT ?3",
+            )?;
+            let rows = stmt.query_map(
+                params![EntityType::Discovery.as_str(), project, limit],
+                |row| {
+                    Ok(GraphEntity {
+                        id: row.get(0)?,
+                        kind: row.get(1)?,
+                        name: row.get(2)?,
+                        file_path: row.get(3)?,
+                        data: serde_json::from_str(row.get_ref(4)?.as_str()?)
+                            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
+                    })
+                },
+            )?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+    }
+
     pub fn query_discoveries_in_project(
         &self,
         target: &str,
