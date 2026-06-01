@@ -28,6 +28,12 @@ fn embed_text_for_entity(entity: &GraphEntity) -> String {
     parts.join(" ")
 }
 
+/// Hash-project `text` into a `dim`-dimensional bag-of-tokens vector.
+///
+/// Each lowercase token is hashed into a bucket; the result is L2-normalized.
+/// This is a lexical approximation — cosine similarity is high for texts that
+/// share tokens, not for texts that are semantically equivalent but lexically
+/// different ("car" vs "automobile" score 0). There is no neural model here.
 fn hash_embed(text: &str, dim: usize) -> Vec<f32> {
     let mut vector = vec![0.0_f32; dim];
     for token in text
@@ -100,7 +106,12 @@ impl AtheneumGraph {
         Ok(())
     }
 
-    pub fn semantic_search(
+    /// Search discoveries using a hash-projected bag-of-tokens index (HNSW).
+    ///
+    /// Finds entities that share tokens with `query`. This is **lexical similarity**,
+    /// not semantic/neural similarity — synonyms with no token overlap will not match.
+    /// For true semantic search, embeddings from a language model would be needed.
+    pub fn lexical_search(
         &self,
         query: &str,
         k: usize,

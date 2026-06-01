@@ -29,7 +29,7 @@ Atheneum is the persistence layer. It stores what agents discovered, what sessio
 cargo add atheneum
 ```
 
-Atheneum is a library. Production use is via [envoy](https://crates.io/crates/envoy) which exposes all endpoints over HTTP. Direct embedding is for custom runtimes.
+Atheneum is a library. Production use is via [agent-envoy](https://crates.io/crates/agent-envoy) which exposes all endpoints over HTTP (`envoy` binary). Direct embedding is for custom runtimes.
 
 ## Quickstart
 
@@ -82,7 +82,7 @@ graph.ingest_wiki_page("my-note.md", content, None)?;
 | Planning | tasks, requirements, blockers, kanban state |
 | Handoffs | inter-agent state transfers with manifests |
 | Ontology | class/property schemas for typed entity reasoning |
-| Search index | FTS5 + HNSW vector index (via sqlitegraph) |
+| Search index | FTS5 full-text + HNSW lexical index (hash-projected tokens, not neural) |
 
 ## HTTP Access
 

@@ -214,13 +214,9 @@ fn my_plugin(graph: &AtheneumGraph) -> anyhow::Result<Vec<WikiPage>> {
 }
 ```
 
-### Python Plugin (via PyO3)
+### Building Bindings
 
-Wrap `AtheneumGraph` methods in a PyO3 extension module. The graph handle can be passed between Python and Rust.
-
-### JS Plugin (via WASM)
-
-Compile `atheneum` to WASM with `sqlitegraph` using `wasm32-unknown-unknown` target. Note: SQLite WASM requires `sqlite3` compiled to WASM (see `rusqlite` WASM support).
+Atheneum is a Rust library. Python/JS bindings are not yet implemented. The `AtheneumGraph` API is the stable interface; future bindings will wrap it.
 
 ## Migrations
 
@@ -232,6 +228,7 @@ const MIGRATIONS: &[(u32, &str, Migration)] = &[
     (2, "planning-domain", planning::migrate_v2_planning),
     (3, "knowledge-domain", knowledge::migrate_v3_knowledge),
     (4, "evidence-domain", evidence::migrate_v4_evidence),
+    (5, "hook-compat", hook_compat::migrate_v5_hook_compat),
 ];
 ```
 
@@ -249,6 +246,7 @@ To add a new table:
 | Created        | Event -> Entity (provenance)               |
 | PerformedBy    | Event -> Agent (who did it)                |
 | AssignedTo     | Task -> Agent (responsibility)             |
+| Called         | Tool call relationships                    |
 | CausedBy       | Event -> Event (causal chain)              |
 | Modified       | ToolCall -> Entity (modification)          |
 | VerifiedBy     | Entity -> Entity (audit/gate verification) |

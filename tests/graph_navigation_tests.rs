@@ -132,9 +132,7 @@ fn test_get_subgraph_depth_1() {
     // should have at least 1 edge
     assert!(!sg.edges.is_empty(), "subgraph should have edges");
     let edge_types: Vec<&str> = sg.edges.iter().map(|e| e.edge_type.as_str()).collect();
-    assert!(
-        edge_types.contains(&"created") || edge_types.contains(&"performed_by")
-    );
+    assert!(edge_types.contains(&"created") || edge_types.contains(&"performed_by"));
 }
 
 #[test]
@@ -227,7 +225,7 @@ fn test_discovery_auto_indexed() {
 
     // After store_discovery we should be able to search WITHOUT manually calling build_search_index()
     let results = g
-        .semantic_search("semantic navigation HNSW traversal", 5, None)
+        .lexical_search("semantic navigation HNSW traversal", 5, None)
         .expect("semantic_search");
 
     assert!(

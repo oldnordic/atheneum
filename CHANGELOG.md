@@ -49,7 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fixed null-byte corruption at end of `tests/ingest_test.rs` that was preventing compilation.
 
-## [0.1.0] — 2025-05-31
+## [0.1.0] — 2026-05-31
 
 - **Wiki query APIs** — `AtheneumGraph` now exposes full CRUD-like query methods for wiki content:
   - `get_wiki_page(path)` — query a single wiki page by path
@@ -82,7 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `KanbanStatus` and `KanbanUpdate` now derive `serde::Serialize` and `serde::Deserialize` for JSON round-tripping in journal section queries.
 
-## [0.1.0] — 2025-05-31
+## [0.1.0] — 2026-05-31
 
 ### Added
 

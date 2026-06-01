@@ -34,7 +34,7 @@ fn test_semantic_search_returns_matching_discoveries() {
 
     // Query that semantically matches the router discovery
     let results = graph
-        .semantic_search("router construction axum routes", 5, None)
+        .lexical_search("router construction axum routes", 5, None)
         .expect("search");
 
     assert!(!results.is_empty(), "search should return some results");
@@ -62,7 +62,7 @@ fn test_semantic_search_respects_k_limit() {
     graph.build_search_index().expect("build_search_index");
 
     let results = graph
-        .semantic_search("test discovery", 3, None)
+        .lexical_search("test discovery", 3, None)
         .expect("search");
     assert!(
         results.len() <= 3,
@@ -97,7 +97,7 @@ fn test_semantic_search_filtered_by_project() {
     graph.build_search_index().expect("build_search_index");
 
     let envoy_only = graph
-        .semantic_search("message", 10, Some("envoy"))
+        .lexical_search("message", 10, Some("envoy"))
         .expect("search");
     assert!(
         envoy_only
@@ -115,7 +115,7 @@ fn test_semantic_search_filtered_by_project() {
     );
 
     let mag_only = graph
-        .semantic_search("message", 10, Some("magellan"))
+        .lexical_search("message", 10, Some("magellan"))
         .expect("search");
     assert!(mag_only
         .iter()

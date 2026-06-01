@@ -237,8 +237,9 @@ graph.ingest_journal_sections(&sections, Some("my-project"))?;
 // Full-text search
 let results = graph.full_text_search("query_sessions")?;
 
-// Semantic vector search (requires fastembed feature)
-let results = graph.semantic_search("SQL parameter ordering bug", 5, Some("atheneum"))?;
+// Lexical search via HNSW hash-projected index.
+// Matches on shared tokens — not neural/semantic. "car" won't match "automobile".
+let results = graph.lexical_search("SQL parameter ordering bug", 5, Some("atheneum"))?;
 ```
 
 ---

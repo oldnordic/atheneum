@@ -257,9 +257,11 @@ Returns count of pages synced.
 
 FTS5 over all entities.
 
-### `semantic_search(query, k, project_id) → Result<Vec<SearchResult>>`
+### `lexical_search(query, k, project_id) → Result<Vec<SearchResult>>`
 
-HNSW vector search via sqlitegraph. Requires embeddings to be built.
+HNSW index over hash-projected token vectors. Finds entities sharing tokens with `query`.
+**Lexical similarity only** — no neural model, no synonym awareness. Synonyms with no token
+overlap score 0. Fast and dependency-free; good for symbol/identifier search.
 
 ```rust
 pub struct SearchResult {

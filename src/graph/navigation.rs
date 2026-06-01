@@ -110,7 +110,11 @@ impl AtheneumGraph {
 
         // Validate the entry itself is in scope before starting traversal.
         if !entity_in_project_scope(&entry, scope) {
-            anyhow::bail!("entry entity {} is not in project scope '{}'", entry_id, scope);
+            anyhow::bail!(
+                "entry entity {} is not in project scope '{}'",
+                entry_id,
+                scope
+            );
         }
 
         let mut visited_entities: HashSet<i64> = HashSet::new();
@@ -186,7 +190,7 @@ impl AtheneumGraph {
         depth: u32,
         project_id: Option<&str>,
     ) -> Result<Vec<SubgraphView>> {
-        let hits = self.semantic_search(query, k, project_id)?;
+        let hits = self.lexical_search(query, k, project_id)?;
         if hits.is_empty() {
             return Ok(Vec::new());
         }
