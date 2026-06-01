@@ -133,8 +133,7 @@ fn test_get_subgraph_depth_1() {
     assert!(!sg.edges.is_empty(), "subgraph should have edges");
     let edge_types: Vec<&str> = sg.edges.iter().map(|e| e.edge_type.as_str()).collect();
     assert!(
-        edge_types.iter().any(|t| *t == "created")
-            || edge_types.iter().any(|t| *t == "performed_by")
+        edge_types.contains(&"created") || edge_types.contains(&"performed_by")
     );
 }
 
