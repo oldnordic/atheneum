@@ -1,6 +1,6 @@
 [package]
 name = "atheneum"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "GPL-3.0-only"
 description = "Agent coordination graph database - episodic and semantic memory for multi-agent workflows"
@@ -11,7 +11,7 @@ keywords = ["graph", "sqlite", "agent", "knowledge-base", "llm"]
 categories = ["database-implementations", "data-structures", "text-processing"]
 authors = ["oldnordic"]
 readme = "README.md"
-rust-version = "1.75"
+rust-version = "1.82"
 
 [dependencies]
 anyhow = "1.0"
@@ -24,7 +24,7 @@ sha2 = "0.10"
 uuid = { version = "1", features = ["v7"] }
 thiserror = "2.0"
 tracing = "0.1"
-sqlitegraph = "= 3.0.5"
+sqlitegraph = "3.0.7"
 
 # Async runtime (optional for future use)
 tokio = { version = "1.44", features = ["full"], optional = true }
