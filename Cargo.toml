@@ -5,8 +5,13 @@ edition = "2021"
 license = "GPL-3.0-only"
 description = "Agent coordination graph database - episodic and semantic memory for multi-agent workflows"
 repository = "https://github.com/oldnordic/atheneum"
-keywords = ["graph", "sqlite", "agent", "wiki", "knowledge-base"]
+homepage = "https://github.com/oldnordic/atheneum"
+documentation = "https://github.com/oldnordic/atheneum/blob/master/MANUAL.md"
+keywords = ["graph", "sqlite", "agent", "knowledge-base", "llm"]
 categories = ["database-implementations", "data-structures", "text-processing"]
+authors = ["oldnordic"]
+readme = "README.md"
+rust-version = "1.75"
 
 [dependencies]
 anyhow = "1.0"

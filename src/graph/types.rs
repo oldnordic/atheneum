@@ -1,5 +1,5 @@
 use serde_json::Value;
-use sqlitegraph::GraphEntity;
+use sqlitegraph::{GraphEdge, GraphEntity};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -302,6 +302,32 @@ pub struct RecordEventParams {
     pub entity_id: String,
     pub session_id: String,
     pub payload: serde_json::Value,
+}
+
+/// One-hop neighborhood: outgoing edges + incoming edges for an entity.
+#[derive(Debug, Clone)]
+pub struct Neighbors {
+    pub entity_id: i64,
+    pub outgoing: Vec<GraphEdge>,
+    pub incoming: Vec<GraphEdge>,
+}
+
+/// Subgraph extracted around an entry point by BFS traversal.
+#[derive(Debug, Clone)]
+pub struct SubgraphView {
+    pub entry: GraphEntity,
+    pub depth: u32,
+    pub entities: Vec<GraphEntity>,
+    pub edges: Vec<GraphEdge>,
+}
+
+/// Topological summary of the graph.
+#[derive(Debug, Clone)]
+pub struct GraphStats {
+    pub total_entities: i64,
+    pub total_edges: i64,
+    pub entity_counts: Vec<(String, i64)>,
+    pub edge_counts: Vec<(String, i64)>,
 }
 
 #[derive(Debug, Clone)]

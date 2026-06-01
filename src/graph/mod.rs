@@ -10,6 +10,7 @@ pub mod evidence;
 pub mod handoff;
 pub mod knowledge;
 pub mod magellan_bridge;
+pub mod navigation;
 pub mod ontology;
 pub mod planning;
 pub mod search;
@@ -19,10 +20,10 @@ pub mod wiki;
 pub use planning::{KanbanStatus, KanbanUpdate};
 pub use types::{
     ActionRecord, ActionTrace, AppliedKanbanUpdate, AtheneumError, BlockerType, CommitParams,
-    EdgeType, EndSessionParams, EntityType, FileWriteParams, FixChainParams, OntologyClassInfo,
-    OntologyPropertyInfo, PromptParams, RecordEventParams, RequirementStatus, SearchResult,
-    SessionParams, SessionSummary, TaskDetail, TestRunParams, ToolCallParams, ToolCallRecord,
-    ToolCallTrace, ONTOLOGY_CLASS_KIND, ONTOLOGY_PROPERTY_KIND,
+    EdgeType, EndSessionParams, EntityType, FileWriteParams, FixChainParams, GraphStats, Neighbors,
+    OntologyClassInfo, OntologyPropertyInfo, PromptParams, RecordEventParams, RequirementStatus,
+    SearchResult, SessionParams, SessionSummary, SubgraphView, TaskDetail, TestRunParams,
+    ToolCallParams, ToolCallRecord, ToolCallTrace, ONTOLOGY_CLASS_KIND, ONTOLOGY_PROPERTY_KIND,
 };
 pub use wiki::{
     content_hash, extract_kanban_updates, extract_wikilinks, parse_journal_sections,

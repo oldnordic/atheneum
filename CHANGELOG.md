@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - README.md with quickstart, features, CLI usage, requirements.
 - `Cargo.toml` metadata: `repository`, `keywords`, `categories`.
+- **`SessionSummary` cost and token tracking** — Added `total_input_tokens`, `total_output_tokens`, and `total_cost_usd` (f64) fields to `SessionSummary` in `graph/types.rs` for tracking spend per session.
+- **`record_event()` public API** — New `AtheneumGraph::record_event(RecordEventParams)` method in `graph/evidence.rs` for persisting generic agent events to the `event_log` table.
+- **Cross-project session queries** — `query_sessions()` project parameter is now `Option<&str>`. When `None`, returns the most recent sessions across all projects, ordered by `started_at DESC`.
+- **`query_events()` robustness** — Switched to anonymous `?` SQL placeholders with explicit `rusqlite::params![]` match arms, eliminating runtime parameter count mismatches when optional filters are omitted.
+- **`EndSessionParams` token/cost fields** — Added `total_input_tokens`, `total_output_tokens`, and `total_cost_usd` to `EndSessionParams` so callers can cap sessions with full cost metadata.
+- **Graph navigation primitives** — New module `graph/navigation.rs` with `get_neighbors`, `get_subgraph`, `navigate`, and `graph_stats`.
+- **Auto-index on discovery write** — `store_discovery()` now calls `add_entity_to_search_index()` after `insert_entity()`, eliminating the need for manual `build_search_index()` before every search.
+- **Lazy HNSW index creation** — `semantic_search()` now calls `ensure_search_index()` which skips creation if the index already exists (replaces full rebuild per query).
 
 ### Fixed
 

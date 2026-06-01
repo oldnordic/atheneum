@@ -72,6 +72,14 @@ impl AtheneumGraph {
             .insert_entity(&entity)
             .map_err(|e| anyhow::anyhow!("Failed to insert discovery: {}", e))?;
 
+        // Auto-index this discovery for semantic search.
+        let mut indexed_entity = entity;
+        indexed_entity.id = discovery_id;
+        if let Err(e) = self.add_entity_to_search_index(&indexed_entity) {
+            // Log but don't fail the store — indexing is a side-effect.
+            eprintln!("[atheneum] auto-index warning: {}", e);
+        }
+
         let event_id = self.insert_event(
             "discovery-stored",
             json!({
@@ -140,11 +148,7 @@ impl AtheneumGraph {
 
     /// Return the N most recent discoveries for a project (no target required).
     /// Used by SubagentStart hook to push project context into initial LLM context.
-    pub fn recent_project_context(
-        &self,
-        project: &str,
-        limit: i64,
-    ) -> Result<Vec<GraphEntity>> {
+    pub fn recent_project_context(&self, project: &str, limit: i64) -> Result<Vec<GraphEntity>> {
         super::with_graph_conn(&self.inner, |conn| {
             let mut stmt = conn.prepare_cached(
                 "SELECT id, kind, name, file_path, data FROM graph_entities

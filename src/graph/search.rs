@@ -48,36 +48,55 @@ fn hash_embed(text: &str, dim: usize) -> Vec<f32> {
     vector
 }
 
+fn search_config() -> Result<sqlitegraph::hnsw::HnswConfig> {
+    HnswConfigBuilder::new()
+        .dimension(SEARCH_EMBED_DIM)
+        .distance_metric(DistanceMetric::Cosine)
+        .build()
+        .map_err(|e| anyhow::anyhow!("HNSW config build failed: {}", e))
+}
+
 impl AtheneumGraph {
+    /// Ensure the HNSW index exists. Creates it lazily on first use.
+    fn ensure_search_index(&self) -> Result<()> {
+        let existing = self
+            .inner
+            .list_hnsw_indexes()
+            .map_err(|e| anyhow::anyhow!("list_hnsw_indexes failed: {}", e))?;
+        if existing.iter().any(|n| n == SEARCH_INDEX_NAME) {
+            return Ok(());
+        }
+        let config = search_config()?;
+        let _guard = self
+            .inner
+            .hnsw_index(SEARCH_INDEX_NAME, config)
+            .map_err(|e| anyhow::anyhow!("hnsw_index create failed: {}", e))?;
+        Ok(())
+    }
+
+    /// Add a single entity's vector to the existing HNSW index.
+    pub(super) fn add_entity_to_search_index(&self, entity: &GraphEntity) -> Result<()> {
+        self.ensure_search_index()?;
+        let text = embed_text_for_entity(entity);
+        let vector = hash_embed(&text, SEARCH_EMBED_DIM);
+        let entity_id = entity.id;
+        self.inner
+            .get_hnsw_index_mut(SEARCH_INDEX_NAME, move |idx| {
+                idx.insert_vector(&vector, Some(json!({"entity_id": entity_id})))
+            })
+            .map_err(|e| anyhow::anyhow!("get_hnsw_index_mut failed: {}", e))?
+            .map_err(|e| anyhow::anyhow!("insert_vector failed: {}", e))?;
+        Ok(())
+    }
+
+    /// Full rebuild of the HNSW index (still useful for manual reindexing).
     pub fn build_search_index(&self) -> Result<()> {
         let _ = self.inner.delete_hnsw_index(SEARCH_INDEX_NAME);
-
-        let config = HnswConfigBuilder::new()
-            .dimension(SEARCH_EMBED_DIM)
-            .distance_metric(DistanceMetric::Cosine)
-            .build()
-            .map_err(|e| anyhow::anyhow!("HNSW config build failed: {}", e))?;
-
-        {
-            let _guard = self
-                .inner
-                .hnsw_index(SEARCH_INDEX_NAME, config)
-                .map_err(|e| anyhow::anyhow!("hnsw_index create failed: {}", e))?;
-        }
-
+        self.ensure_search_index()?;
         let discoveries = self.entities_by_kind(EntityType::Discovery.as_str())?;
         for entity in discoveries {
-            let text = embed_text_for_entity(&entity);
-            let vector = hash_embed(&text, SEARCH_EMBED_DIM);
-            let entity_id = entity.id;
-            self.inner
-                .get_hnsw_index_mut(SEARCH_INDEX_NAME, move |idx| {
-                    idx.insert_vector(&vector, Some(json!({"entity_id": entity_id})))
-                })
-                .map_err(|e| anyhow::anyhow!("get_hnsw_index_mut failed: {}", e))?
-                .map_err(|e| anyhow::anyhow!("insert_vector failed: {}", e))?;
+            self.add_entity_to_search_index(&entity)?;
         }
-
         Ok(())
     }
 
@@ -87,6 +106,7 @@ impl AtheneumGraph {
         k: usize,
         project_id: Option<&str>,
     ) -> Result<Vec<SearchResult>> {
+        self.ensure_search_index()?;
         let query_vec = hash_embed(query, SEARCH_EMBED_DIM);
         let fetch_k = if project_id.is_some() { k * 4 } else { k };
 

@@ -1,0 +1,113 @@
+//! Graph navigation — neighbors, subgraph extraction, stats.
+//!
+//! These primitives let the LLM walk the graph after finding an entry point
+//! via semantic search (search.rs) or direct query.
+
+use std::collections::{HashSet, VecDeque};
+
+use anyhow::Result;
+use sqlitegraph::{GraphEdge, GraphEntity};
+
+use super::{AtheneumGraph, GraphStats, SubgraphView};
+
+impl AtheneumGraph {
+    /// Return (outgoing_edges, incoming_edges) for a single entity.
+    pub fn get_neighbors(&self, entity_id: i64) -> Result<(Vec<GraphEdge>, Vec<GraphEdge>)> {
+        Ok((
+            self.outgoing_edges(entity_id)?,
+            self.incoming_edges(entity_id)?,
+        ))
+    }
+
+    /// Extract a connected subgraph around `entry_id` by BFS up to `depth`.
+    ///
+    /// Returns the entry entity, all reached entities, and all traversed edges.
+    pub fn get_subgraph(&self, entry_id: i64, depth: u32) -> Result<SubgraphView> {
+        let entry = self.get_entity(entry_id)?;
+
+        let mut visited_entities: HashSet<i64> = HashSet::new();
+        let mut visited_edges: HashSet<i64> = HashSet::new();
+        let mut entities: Vec<GraphEntity> = Vec::new();
+        let mut edges: Vec<GraphEdge> = Vec::new();
+        let mut queue: VecDeque<(i64, u32)> = VecDeque::new();
+
+        queue.push_back((entry_id, 0));
+        visited_entities.insert(entry_id);
+        entities.push(entry.clone());
+
+        while let Some((current_id, current_depth)) = queue.pop_front() {
+            if current_depth >= depth {
+                continue;
+            }
+
+            // Navigate both directions — the graph is semantic, not strictly directed
+            let out = self.outgoing_edges(current_id).unwrap_or_default();
+            let inc = self.incoming_edges(current_id).unwrap_or_default();
+
+            for edge in out.into_iter().chain(inc) {
+                if !visited_edges.insert(edge.id) {
+                    continue;
+                }
+                edges.push(edge.clone());
+
+                let neighbor_id = if edge.from_id == current_id {
+                    edge.to_id
+                } else {
+                    edge.from_id
+                };
+
+                if visited_entities.insert(neighbor_id) {
+                    if let Ok(neighbor) = self.get_entity(neighbor_id) {
+                        entities.push(neighbor.clone());
+                        queue.push_back((neighbor_id, current_depth + 1));
+                    }
+                }
+            }
+        }
+
+        Ok(SubgraphView {
+            entry,
+            depth,
+            entities,
+            edges,
+        })
+    }
+
+    /// Semantic search entry point → walk the graph → return subgraph views.
+    ///
+    /// Each view is a `SubgraphView` rooted at a semantic hit.
+    pub fn navigate(
+        &self,
+        query: &str,
+        k: usize,
+        depth: u32,
+        project_id: Option<&str>,
+    ) -> Result<Vec<SubgraphView>> {
+        let hits = self.semantic_search(query, k, project_id)?;
+        if hits.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut views = Vec::with_capacity(hits.len());
+        for hit in hits {
+            let sg = self.get_subgraph(hit.id, depth)?;
+            views.push(sg);
+        }
+        Ok(views)
+    }
+
+    /// Fast topological stats (entity + edge counts by kind / type).
+    pub fn graph_stats(&self) -> Result<GraphStats> {
+        let entity_counts = self.count_entities_by_kind()?;
+        let edge_counts = self.count_edges_by_type()?;
+        let total_entities: i64 = entity_counts.iter().map(|(_, c)| c).sum();
+        let total_edges: i64 = edge_counts.iter().map(|(_, c)| c).sum();
+
+        Ok(GraphStats {
+            total_entities,
+            total_edges,
+            entity_counts,
+            edge_counts,
+        })
+    }
+}
