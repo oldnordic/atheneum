@@ -73,9 +73,92 @@ impl AtheneumGraph {
         })
     }
 
+    /// Extract a connected subgraph scoped to `project_id`.
+    ///
+    /// Neighbors whose `data.project_id` does not match are excluded, along
+    /// with any edges that would point to them. Entities with no `project_id`
+    /// in their data are treated as shared/global and always included.
+    ///
+    /// When `project_id` is None the call delegates to `get_subgraph` (no filter).
+    pub fn get_subgraph_scoped(
+        &self,
+        entry_id: i64,
+        depth: u32,
+        project_id: Option<&str>,
+    ) -> Result<SubgraphView> {
+        let Some(scope) = project_id else {
+            return self.get_subgraph(entry_id, depth);
+        };
+
+        let entry = self.get_entity(entry_id)?;
+
+        let mut visited_entities: HashSet<i64> = HashSet::new();
+        let mut visited_edges: HashSet<i64> = HashSet::new();
+        let mut entities: Vec<GraphEntity> = Vec::new();
+        let mut edges: Vec<GraphEdge> = Vec::new();
+        let mut queue: VecDeque<(i64, u32)> = VecDeque::new();
+
+        queue.push_back((entry_id, 0));
+        visited_entities.insert(entry_id);
+        entities.push(entry.clone());
+
+        while let Some((current_id, current_depth)) = queue.pop_front() {
+            if current_depth >= depth {
+                continue;
+            }
+
+            let out = self.outgoing_edges(current_id).unwrap_or_default();
+            let inc = self.incoming_edges(current_id).unwrap_or_default();
+
+            for edge in out.into_iter().chain(inc) {
+                if !visited_edges.contains(&edge.id) {
+                    let neighbor_id = if edge.from_id == current_id {
+                        edge.to_id
+                    } else {
+                        edge.from_id
+                    };
+
+                    if visited_entities.insert(neighbor_id) {
+                        if let Ok(neighbor) = self.get_entity(neighbor_id) {
+                            // Allow: entity has no project_id (shared/global)
+                            // Allow: entity's project_id matches scope
+                            // Deny:  entity has a different project_id (cross-project leak)
+                            let entity_project = neighbor
+                                .data
+                                .get("project_id")
+                                .and_then(|v| v.as_str());
+                            let in_scope = entity_project.is_none()
+                                || entity_project == Some(scope);
+
+                            if in_scope {
+                                visited_edges.insert(edge.id);
+                                edges.push(edge.clone());
+                                entities.push(neighbor);
+                                queue.push_back((neighbor_id, current_depth + 1));
+                            }
+                            // out-of-scope neighbor: skip entity AND edge
+                        }
+                    } else if visited_edges.insert(edge.id) {
+                        // Already-visited entity that is in scope — include the edge
+                        edges.push(edge.clone());
+                    }
+                }
+            }
+        }
+
+        Ok(SubgraphView {
+            entry,
+            depth,
+            entities,
+            edges,
+        })
+    }
+
     /// Semantic search entry point → walk the graph → return subgraph views.
     ///
-    /// Each view is a `SubgraphView` rooted at a semantic hit.
+    /// Applies the same `project_id` scope to graph traversal as to the
+    /// initial semantic search — cross-project entities are not reachable
+    /// via edges from in-scope hits.
     pub fn navigate(
         &self,
         query: &str,
@@ -90,7 +173,7 @@ impl AtheneumGraph {
 
         let mut views = Vec::with_capacity(hits.len());
         for hit in hits {
-            let sg = self.get_subgraph(hit.id, depth)?;
+            let sg = self.get_subgraph_scoped(hit.id, depth, project_id)?;
             views.push(sg);
         }
         Ok(views)
