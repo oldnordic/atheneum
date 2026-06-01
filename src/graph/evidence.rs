@@ -545,12 +545,12 @@ impl AtheneumGraph {
                  WHERE 1=1",
             );
             if project.is_some() {
-                sql.push_str(" AND s.project = ?1");
+                sql.push_str(" AND s.project = ?");
             }
             if pid.is_some() {
-                sql.push_str(" AND s.parent_session_id = ?3");
+                sql.push_str(" AND s.parent_session_id = ?");
             }
-            sql.push_str(" ORDER BY s.started_at DESC LIMIT ?2");
+            sql.push_str(" ORDER BY s.started_at DESC LIMIT ?");
 
             let mut stmt = conn.prepare_cached(&sql)?;
             let row_fn = |row: &rusqlite::Row<'_>| {
@@ -578,11 +578,11 @@ impl AtheneumGraph {
 
             let rows = match (&project, &pid) {
                 (Some(p), Some(parent)) => {
-                    stmt.query_map(rusqlite::params![p, last_n, parent], row_fn)?
+                    stmt.query_map(rusqlite::params![p, parent, last_n], row_fn)?
                 }
                 (Some(p), None) => stmt.query_map(rusqlite::params![p, last_n], row_fn)?,
                 (None, Some(parent)) => {
-                    stmt.query_map(rusqlite::params![last_n, parent], row_fn)?
+                    stmt.query_map(rusqlite::params![parent, last_n], row_fn)?
                 }
                 (None, None) => stmt.query_map(rusqlite::params![last_n], row_fn)?,
             };
