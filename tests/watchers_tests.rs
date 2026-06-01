@@ -217,7 +217,7 @@ fn test_sync_wiki_directory_ingests_all_md_files() {
     );
 
     let pages = graph.entities_by_kind("WikiPage").expect("list");
-    assert_eq!(pages.len(), 2);
+    assert_eq!(pages.len(), 2, "expected WikiPage and Beta, got {} pages", pages.len());
     let titles: Vec<String> = pages
         .iter()
         .filter_map(|p| {

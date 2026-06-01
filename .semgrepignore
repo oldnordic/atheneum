@@ -1,2 +1,2 @@
 # Semgrep ignores for atheneum
-examples/
+examples/**
