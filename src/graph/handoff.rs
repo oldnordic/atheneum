@@ -47,27 +47,15 @@ impl AtheneumGraph {
     }
 
     pub fn get_pending_handoff(&self, agent: &str) -> Result<Option<GraphEntity>> {
-        let conn = if let Some(direct) = self.inner.pool.direct_connection() {
-            direct
-        } else {
-            &self
-                .inner
-                .pool
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
-        };
-
-        let mut stmt = conn
-            .prepare_cached(
+        super::with_graph_conn(&self.inner, |conn| {
+            let mut stmt = conn.prepare_cached(
                 "SELECT id, kind, name, file_path, data FROM graph_entities
                  WHERE kind=?1 AND json_extract(data, '$.to_agent') = ?2
                  AND NOT json_extract(data, '$.claimed')
                  ORDER BY id DESC LIMIT 1",
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to prepare statement: {}", e))?;
+            )?;
 
-        let mut rows = stmt
-            .query_map(params![EntityType::Handoff.as_str(), agent], |row| {
+            let mut rows = stmt.query_map(params![EntityType::Handoff.as_str(), agent], |row| {
                 Ok(GraphEntity {
                     id: row.get(0)?,
                     kind: row.get(1)?,
@@ -76,27 +64,17 @@ impl AtheneumGraph {
                     data: serde_json::from_str(row.get_ref(4)?.as_str()?)
                         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
                 })
-            })
-            .map_err(|e| anyhow::anyhow!("Failed to query: {}", e))?;
+            })?;
 
-        match rows.next() {
-            Some(Ok(entity)) => Ok(Some(entity)),
-            Some(Err(e)) => Err(anyhow::anyhow!("Failed to read row: {}", e)),
-            None => Ok(None),
-        }
+            match rows.next() {
+                Some(Ok(entity)) => Ok(Some(entity)),
+                Some(Err(e)) => Err(anyhow::anyhow!("Failed to read row: {}", e)),
+                None => Ok(None),
+            }
+        })
     }
 
     pub fn mark_handoff_claimed(&self, handoff_id: i64) -> Result<()> {
-        let conn = if let Some(direct) = self.inner.pool.direct_connection() {
-            direct
-        } else {
-            &self
-                .inner
-                .pool
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
-        };
-
         let entity = self.get_entity(handoff_id)?;
 
         let mut data = entity.data;
@@ -108,13 +86,13 @@ impl AtheneumGraph {
             );
         }
 
-        conn.execute(
-            "UPDATE graph_entities SET data = ?1 WHERE id = ?2",
-            params![serde_json::to_string(&data)?, handoff_id],
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to update handoff: {}", e))?;
-
-        Ok(())
+        super::with_graph_conn(&self.inner, |conn| {
+            conn.execute(
+                "UPDATE graph_entities SET data = ?1 WHERE id = ?2",
+                params![serde_json::to_string(&data)?, handoff_id],
+            )?;
+            Ok(())
+        })
     }
 
     pub fn store_handoff_in_project(
@@ -174,44 +152,33 @@ impl AtheneumGraph {
             return self.get_pending_handoff(agent);
         };
 
-        let conn = if let Some(direct) = self.inner.pool.direct_connection() {
-            direct
-        } else {
-            &self
-                .inner
-                .pool
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
-        };
-
-        let mut stmt = conn
-            .prepare_cached(
+        super::with_graph_conn(&self.inner, |conn| {
+            let mut stmt = conn.prepare_cached(
                 "SELECT id, kind, name, file_path, data FROM graph_entities
                  WHERE kind=?1
                    AND json_extract(data, '$.to_agent') = ?2
                    AND json_extract(data, '$.project_id') = ?3
                    AND NOT json_extract(data, '$.claimed')
                  ORDER BY id DESC LIMIT 1",
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to prepare statement: {}", e))?;
+            )?;
 
-        let mut rows = stmt
-            .query_map(params![EntityType::Handoff.as_str(), agent, pid], |row| {
-                Ok(GraphEntity {
-                    id: row.get(0)?,
-                    kind: row.get(1)?,
-                    name: row.get(2)?,
-                    file_path: row.get(3)?,
-                    data: serde_json::from_str(row.get_ref(4)?.as_str()?)
-                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
-                })
-            })
-            .map_err(|e| anyhow::anyhow!("Failed to query: {}", e))?;
+            let mut rows =
+                stmt.query_map(params![EntityType::Handoff.as_str(), agent, pid], |row| {
+                    Ok(GraphEntity {
+                        id: row.get(0)?,
+                        kind: row.get(1)?,
+                        name: row.get(2)?,
+                        file_path: row.get(3)?,
+                        data: serde_json::from_str(row.get_ref(4)?.as_str()?)
+                            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
+                    })
+                })?;
 
-        match rows.next() {
-            Some(Ok(entity)) => Ok(Some(entity)),
-            Some(Err(e)) => Err(anyhow::anyhow!("Failed to read row: {}", e)),
-            None => Ok(None),
-        }
+            match rows.next() {
+                Some(Ok(entity)) => Ok(Some(entity)),
+                Some(Err(e)) => Err(anyhow::anyhow!("Failed to read row: {}", e)),
+                None => Ok(None),
+            }
+        })
     }
 }

@@ -4,10 +4,31 @@ use regex::Regex;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sqlitegraph::GraphEntity;
+use std::sync::OnceLock;
 
 use super::planning::{KanbanStatus, KanbanUpdate};
 use super::types::EdgeType;
 use super::AtheneumGraph;
+
+fn wikilink_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\[\[([^\[\]]+?)\]\]").expect("static regex"))
+}
+
+fn journal_header_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?m)^##\s+(?:(\d{2}:\d{2})\s*\|\s*)?(.+?)\s*$").expect("static regex")
+    })
+}
+
+fn kanban_update_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"["']([^"']+?)["']\s*(?:->|→)\s*(TODO|IN[_ -]?PROGRESS|DONE|BLOCKED)"#)
+            .expect("static regex")
+    })
+}
 
 pub struct WikiPage {
     pub id: i64,
@@ -31,8 +52,8 @@ pub struct JournalSection {
 }
 
 pub fn extract_wikilinks(content: &str) -> Vec<String> {
-    let re = Regex::new(r"\[\[([^\[\]]+?)\]\]").expect("static regex");
-    re.captures_iter(content)
+    wikilink_re()
+        .captures_iter(content)
         .map(|c| c[1].to_string())
         .collect()
 }
@@ -44,7 +65,7 @@ pub fn content_hash(content: &str) -> String {
 }
 
 pub fn parse_journal_sections(content: &str) -> Vec<JournalSection> {
-    let re = Regex::new(r"(?m)^##\s+(?:(\d{2}:\d{2})\s*\|\s*)?(.+?)\s*$").expect("static regex");
+    let re = journal_header_re();
     let mut headers: Vec<(usize, Option<String>, String)> = Vec::new();
     for m in re.captures_iter(content) {
         let full = m.get(0).expect("full match");
@@ -56,15 +77,10 @@ pub fn parse_journal_sections(content: &str) -> Vec<JournalSection> {
 
     let mut sections = Vec::with_capacity(headers.len());
     for (i, (body_start, time, title)) in headers.iter().enumerate() {
-        let body_end = headers.get(i + 1).map(|h| {
-            let next_header_pos = h.0 - content[..h.0].rfind('\n').map(|n| h.0 - n).unwrap_or(0);
-            next_header_pos.saturating_sub(0).max(*body_start)
-        });
         let raw_end = headers
             .get(i + 1)
             .map(|h| content[..h.0].rfind("\n##").map(|p| p + 1).unwrap_or(h.0))
             .unwrap_or(content.len());
-        let _ = body_end;
 
         let body = content[*body_start..raw_end].trim().to_string();
         let kanban_updates = extract_kanban_updates(&body);
@@ -79,9 +95,8 @@ pub fn parse_journal_sections(content: &str) -> Vec<JournalSection> {
 }
 
 pub fn extract_kanban_updates(content: &str) -> Vec<KanbanUpdate> {
-    let re = Regex::new(r#"["']([^"']+?)["']\s*(?:->|→)\s*(TODO|IN[_ -]?PROGRESS|DONE|BLOCKED)"#)
-        .expect("static regex");
-    re.captures_iter(content)
+    kanban_update_re()
+        .captures_iter(content)
         .filter_map(|c| {
             let task = c.get(1)?.as_str().to_string();
             let status = KanbanStatus::parse(c.get(2)?.as_str())?;
@@ -461,17 +476,20 @@ impl AtheneumGraph {
         self.with_raw_connection(|conn| {
             let sql = if project_id.is_some() {
                 "SELECT id, path, title, content_hash, body, wikilinks, project_id, metadata, created_at, updated_at
-                 FROM wiki_pages WHERE project_id = ?1 AND json_extract(wikilinks, '$') LIKE ?2 ORDER BY path"
+                 FROM wiki_pages WHERE project_id = ?1
+                 AND EXISTS (SELECT 1 FROM json_each(wikilinks) WHERE json_each.value = ?2)
+                 ORDER BY path"
             } else {
                 "SELECT id, path, title, content_hash, body, wikilinks, project_id, metadata, created_at, updated_at
-                 FROM wiki_pages WHERE json_extract(wikilinks, '$') LIKE ?1 ORDER BY path"
+                 FROM wiki_pages
+                 WHERE EXISTS (SELECT 1 FROM json_each(wikilinks) WHERE json_each.value = ?1)
+                 ORDER BY path"
             };
             let mut stmt = conn.prepare_cached(sql)?;
-            let pattern = format!("%{}%", target);
             let rows = if let Some(pid) = project_id {
-                stmt.query_map(rusqlite::params![pid, pattern], wiki_page_from_row)?
+                stmt.query_map(rusqlite::params![pid, target], wiki_page_from_row)?
             } else {
-                stmt.query_map(rusqlite::params![pattern], wiki_page_from_row)?
+                stmt.query_map(rusqlite::params![target], wiki_page_from_row)?
             };
             let mut pages = Vec::new();
             for row in rows {

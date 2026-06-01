@@ -1,7 +1,7 @@
 //! Stage 11e: Evidence-domain SQL tables (v4 migration).
 //!
 //! Agnostic schema for recording LLM-assisted development metrics.
-//! Tables: sessions, commits, test_runs, bench_runs, releases, fix_chains, event_log.
+//! Tables: sessions, commits, test_runs, bench_runs, fix_chains, event_log.
 //! Forge is one client — any tool can use these tables.
 
 use anyhow::Result;

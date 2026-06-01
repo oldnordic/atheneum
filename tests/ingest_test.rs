@@ -1,9 +1,5 @@
-//! Tests for wiki article ingestion
-//! Tests are written FIRST (TDD) and will fail until implementation is complete.
-
-use std::path::PathBuf;
-
-use atheneum::graph::{AtheneumGraph, EdgeType, EntityType};
+//! Tests for wiki article ingestion using the modern `ingest_wiki_page` API.
+use atheneum::graph::{AtheneumGraph, EdgeType};
 
 #[test]
 fn test_ingest_simple_article() {
@@ -25,7 +21,7 @@ This is a test article for ingestion.
 Some content here.
 "#;
 
-    let result = graph.ingest_article("test-article.md", article_content);
+    let result = graph.ingest_wiki_page("test-article.md", article_content, None);
 
     assert!(result.is_ok(), "Article ingestion should succeed");
 
@@ -36,7 +32,7 @@ Some content here.
         .get_entity(article_id)
         .expect("Failed to retrieve article");
 
-    assert_eq!(article.kind, EntityType::Knowledge.as_str());
+    assert_eq!(article.kind, "WikiPage");
     assert_eq!(article.name, "test-article.md");
 
     // Verify frontmatter was extracted
@@ -58,36 +54,37 @@ title: Another Test
 "#;
 
     let _article_id = graph
-        .ingest_article("another.md", article_content)
+        .ingest_wiki_page("another.md", article_content, None)
         .expect("Failed to ingest");
 
-    // Should create an event recording the ingestion
-    // The system agent gets ID 1 (first agent inserted)
-    let events = graph
-        .events_performed_by(1) // System agent
-        .expect("Failed to get events");
-
-    assert!(!events.is_empty(), "Should have created an ingestion event");
-
-    let ingest_event = &events[0];
-    assert_eq!(ingest_event.name, "article-ingested");
+    // Verify the page is queryable via SQL table
+    let page = graph
+        .get_wiki_page("another.md")
+        .expect("Failed to query wiki page")
+        .expect("Wiki page should exist");
+    assert_eq!(page.path, "another.md");
 }
 
 #[test]
 fn test_ingest_real_wiki_article() {
     let graph = AtheneumGraph::open_in_memory().expect("Failed to create graph");
 
-    let article_path =
-        PathBuf::from("/home/feanor/wiki/concepts/core-hypothesis-sparse-inference.md");
+    let content = r#"---
+title: "Core Hypothesis — Sparse Inference"
+type: concept
+confidence: high
+status: working
+---
 
-    // Skip test if file doesn't exist
-    if !article_path.exists() {
-        return;
-    }
+# Core Hypothesis — Sparse Inference
 
-    let content = std::fs::read_to_string(&article_path).expect("Failed to read article");
+Sparse inference is a reasoning strategy that..."#;
 
-    let result = graph.ingest_article(article_path.to_str().unwrap(), &content);
+    let result = graph.ingest_wiki_page(
+        "concepts/core-hypothesis-sparse-inference.md",
+        content,
+        None,
+    );
 
     assert!(result.is_ok(), "Real article ingestion should succeed");
 
@@ -103,7 +100,7 @@ fn test_ingest_real_wiki_article() {
 }
 
 #[test]
-fn test_ingest_creates_event_to_knowledge_edge() {
+fn test_ingest_creates_wikilink_edge() {
     let graph = AtheneumGraph::open_in_memory().expect("Failed to create graph");
 
     let article_content = r#"---
@@ -111,32 +108,43 @@ title: Edge Test
 ---
 
 # Content
+
+Link to [[Another Page]] and [[Missing Page]].
 "#;
 
     let article_id = graph
-        .ingest_article("edge-test.md", article_content)
+        .ingest_wiki_page("edge-test.md", article_content, None)
         .expect("Failed to ingest");
 
-    // Find the ingestion event
-    let events = graph
-        .events_performed_by(1)
-        .expect("Failed to get events for system agent");
+    // Verify outgoing wikilink edges
+    let outgoing = graph
+        .outgoing_wikilinks(article_id)
+        .expect("Failed to get outgoing wikilinks");
 
-    assert!(!events.is_empty(), "Should have an ingestion event");
-    let event = &events[0];
+    assert!(!outgoing.is_empty(), "Should have outgoing wikilink edges");
 
-    // Verify there's an edge from event to the article (Created edge)
-    // This tests graph traversal: Event --Created--> Knowledge
-    let outgoing_edges = graph
-        .outgoing_edges(event.id)
-        .expect("Failed to get outgoing edges");
+    // Verify at least one edge is a RelatedTo edge
+    let wikilink_edges = graph
+        .outgoing_edges(article_id)
+        .expect("Failed to get outgoing edges")
+        .into_iter()
+        .filter(|e| e.edge_type == EdgeType::RelatedTo.as_str())
+        .collect::<Vec<_>>();
 
-    let created_edge = outgoing_edges
-        .iter()
-        .find(|e| e.edge_type == EdgeType::Created.as_str() && e.to_id == article_id)
-        .expect("Should have Created edge from event to article");
+    assert!(
+        !wikilink_edges.is_empty(),
+        "Should have RelatedTo edges from wikilinks"
+    );
 
-    assert_eq!(created_edge.from_id, event.id);
-    assert_eq!(created_edge.to_id, article_id);
-    assert_eq!(created_edge.edge_type, "created");
+    // Missing target should have created a stub entity
+    let stub_exists = outgoing.iter().any(|e| {
+        e.data
+            .get("stub")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    });
+    assert!(
+        stub_exists,
+        "Should create stub for missing wikilink target"
+    );
 }

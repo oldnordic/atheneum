@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use rusqlite::params;
-use serde_json::{json, Value};
+use serde_json::Value;
 use sqlitegraph::{GraphEdge, GraphEntity, SqliteGraph};
 
 pub mod audit;
@@ -73,7 +73,11 @@ impl AtheneumGraph {
     }
 
     pub fn is_healthy(&self) -> bool {
-        true
+        self.with_raw_connection(|conn| {
+            conn.execute_batch("SELECT 1").ok();
+            Ok(())
+        })
+        .is_ok()
     }
 
     pub fn get_entity(&self, id: i64) -> Result<GraphEntity> {
@@ -135,24 +139,12 @@ impl AtheneumGraph {
     }
 
     pub fn entities_by_kind(&self, kind: &str) -> Result<Vec<GraphEntity>> {
-        let conn = if let Some(direct) = self.inner.pool.direct_connection() {
-            direct
-        } else {
-            &self
-                .inner
-                .pool
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
-        };
-
-        let mut stmt = conn
-            .prepare_cached(
+        with_graph_conn(&self.inner, |conn| {
+            let mut stmt = conn.prepare_cached(
                 "SELECT id, kind, name, file_path, data FROM graph_entities WHERE kind=?1",
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to prepare statement: {}", e))?;
+            )?;
 
-        let rows = stmt
-            .query_map(params![kind], |row| {
+            let rows = stmt.query_map(params![kind], |row| {
                 Ok(GraphEntity {
                     id: row.get(0)?,
                     kind: row.get(1)?,
@@ -161,70 +153,50 @@ impl AtheneumGraph {
                     data: serde_json::from_str(row.get_ref(4)?.as_str()?)
                         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
                 })
-            })
-            .map_err(|e| anyhow::anyhow!("Failed to query: {}", e))?;
+            })?;
 
-        let mut entities = Vec::new();
-        for row in rows {
-            entities.push(row.map_err(|e| anyhow::anyhow!("Failed to read row: {}", e))?);
-        }
-        Ok(entities)
+            let mut entities = Vec::new();
+            for row in rows {
+                entities.push(row?);
+            }
+            Ok(entities)
+        })
     }
 
     pub fn count_entities_by_kind(&self) -> Result<Vec<(String, i64)>> {
-        let conn = if let Some(direct) = self.inner.pool.direct_connection() {
-            direct
-        } else {
-            &self
-                .inner
-                .pool
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
-        };
+        with_graph_conn(&self.inner, |conn| {
+            let mut stmt = conn.prepare_cached(
+                "SELECT kind, COUNT(*) as count FROM graph_entities GROUP BY kind ORDER BY count DESC"
+            )?;
 
-        let mut stmt = conn.prepare_cached(
-            "SELECT kind, COUNT(*) as count FROM graph_entities GROUP BY kind ORDER BY count DESC"
-        ).map_err(|e| anyhow::anyhow!("Failed to prepare statement: {}", e))?;
-
-        let rows = stmt
-            .query_map([], |row| {
+            let rows = stmt.query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-            })
-            .map_err(|e| anyhow::anyhow!("Failed to query: {}", e))?;
+            })?;
 
-        let mut counts = Vec::new();
-        for row in rows {
-            counts.push(row.map_err(|e| anyhow::anyhow!("Failed to read row: {}", e))?);
-        }
-        Ok(counts)
+            let mut counts = Vec::new();
+            for row in rows {
+                counts.push(row?);
+            }
+            Ok(counts)
+        })
     }
 
     pub fn count_edges_by_type(&self) -> Result<Vec<(String, i64)>> {
-        let conn = if let Some(direct) = self.inner.pool.direct_connection() {
-            direct
-        } else {
-            &self
-                .inner
-                .pool
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
-        };
+        with_graph_conn(&self.inner, |conn| {
+            let mut stmt = conn.prepare_cached(
+                "SELECT edge_type, COUNT(*) as count FROM graph_edges GROUP BY edge_type ORDER BY count DESC"
+            )?;
 
-        let mut stmt = conn.prepare_cached(
-            "SELECT edge_type, COUNT(*) as count FROM graph_edges GROUP BY edge_type ORDER BY count DESC"
-        ).map_err(|e| anyhow::anyhow!("Failed to prepare statement: {}", e))?;
-
-        let rows = stmt
-            .query_map([], |row| {
+            let rows = stmt.query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-            })
-            .map_err(|e| anyhow::anyhow!("Failed to query: {}", e))?;
+            })?;
 
-        let mut counts = Vec::new();
-        for row in rows {
-            counts.push(row.map_err(|e| anyhow::anyhow!("Failed to read row: {}", e))?);
-        }
-        Ok(counts)
+            let mut counts = Vec::new();
+            for row in rows {
+                counts.push(row?);
+            }
+            Ok(counts)
+        })
     }
 
     pub fn insert_agent(&self, name: &str, data: Value) -> Result<i64> {
@@ -372,63 +344,6 @@ impl AtheneumGraph {
         Ok(chain)
     }
 
-    pub fn ingest_article(&self, path: &str, content: &str) -> Result<i64> {
-        let (frontmatter, body) = parse_frontmatter(content)?;
-
-        let mut data = serde_json::json!({
-            "path": path,
-            "body": body,
-        });
-
-        if let Some(obj) = data.as_object_mut() {
-            if let Some(frontmatter_obj) = frontmatter.as_object() {
-                for (key, value) in frontmatter_obj.iter() {
-                    obj.insert(key.clone(), value.clone());
-                }
-            }
-        }
-
-        let entity = GraphEntity {
-            id: 0,
-            kind: EntityType::Knowledge.as_str().to_string(),
-            name: path.to_string(),
-            file_path: Some(path.to_string()),
-            data,
-        };
-
-        let article_id = self
-            .inner
-            .insert_entity(&entity)
-            .map_err(|e| anyhow::anyhow!("Failed to insert entity: {}", e))?;
-
-        let event_id = self.insert_event(
-            "article-ingested",
-            json!({
-                "article_id": article_id,
-                "path": path,
-                "title": frontmatter.get("title").unwrap_or(&Value::String("Unknown".to_string())).clone()
-            }),
-        )?;
-
-        let _ = self.insert_agent("system", json!({"type": "system"}));
-
-        self.insert_edge(
-            event_id,
-            1,
-            EdgeType::PerformedBy,
-            json!({"provenance": {"actor": "atheneum", "method": "ingest"}}),
-        )?;
-
-        self.insert_edge(
-            event_id,
-            article_id,
-            EdgeType::Created,
-            json!({"provenance": {"actor": "atheneum", "method": "ingest"}}),
-        )?;
-
-        Ok(article_id)
-    }
-
     pub(super) fn find_entity_id_by_data(
         &self,
         kind: &str,
@@ -463,21 +378,13 @@ impl AtheneumGraph {
     }
 
     fn update_entity_data(&self, id: i64, data: &Value) -> Result<()> {
-        let conn = if let Some(direct) = self.inner.pool.direct_connection() {
-            direct
-        } else {
-            &self
-                .inner
-                .pool
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
-        };
-        conn.execute(
-            "UPDATE graph_entities SET data = ?1 WHERE id = ?2",
-            params![serde_json::to_string(data)?, id],
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to update entity: {}", e))?;
-        Ok(())
+        with_graph_conn(&self.inner, |conn| {
+            conn.execute(
+                "UPDATE graph_entities SET data = ?1 WHERE id = ?2",
+                params![serde_json::to_string(data)?, id],
+            )?;
+            Ok(())
+        })
     }
 }
 
@@ -492,34 +399,68 @@ fn parse_frontmatter(content: &str) -> Result<(Value, &str)> {
         + first_marker
         + 3;
 
-    let frontmatter_yaml = &content[first_marker + 3..second_marker];
+    let frontmatter_text = &content[first_marker + 3..second_marker];
 
-    let frontmatter: Value = serde_yaml::from_str(frontmatter_yaml)
-        .map_err(|e| anyhow::anyhow!("Failed to parse YAML: {}", e))?;
+    let mut map = serde_json::Map::new();
+    for line in frontmatter_text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, rest)) = line.split_once(':') else {
+            continue;
+        };
+        let key = key.trim();
+        let rest = rest.trim();
+        let value = if rest.starts_with('[') && rest.ends_with(']') {
+            let inner = &rest[1..rest.len() - 1];
+            let items: Vec<Value> = inner
+                .split(',')
+                .map(|s| Value::String(s.trim().trim_matches('"').trim_matches('\'').to_string()))
+                .collect();
+            Value::Array(items)
+        } else if rest == "true" {
+            Value::Bool(true)
+        } else if rest == "false" {
+            Value::Bool(false)
+        } else if let Ok(n) = rest.parse::<i64>() {
+            Value::Number(n.into())
+        } else if let Ok(n) = rest.parse::<f64>() {
+            serde_json::Number::from_f64(n)
+                .map(Value::Number)
+                .unwrap_or_else(|| Value::String(rest.to_string()))
+        } else {
+            Value::String(rest.trim_matches('"').trim_matches('\'').to_string())
+        };
+        map.insert(key.to_string(), value);
+    }
 
     let body = &content[second_marker + 3..];
 
-    Ok((frontmatter, body))
+    Ok((Value::Object(map), body))
+}
+
+pub(super) fn with_graph_conn<F, R>(graph: &SqliteGraph, f: F) -> Result<R>
+where
+    F: FnOnce(&rusqlite::Connection) -> Result<R>,
+{
+    if let Some(direct) = graph.pool.direct_connection() {
+        f(direct)
+    } else {
+        let pooled = graph
+            .pool
+            .get()
+            .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?;
+        f(&pooled)
+    }
 }
 
 fn get_incoming_edges(graph: &SqliteGraph, entity_id: i64) -> Result<Vec<GraphEdge>> {
-    let conn = if let Some(direct) = graph.pool.direct_connection() {
-        direct
-    } else {
-        &graph
-            .pool
-            .get()
-            .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
-    };
-
-    let mut stmt = conn
-        .prepare_cached(
+    with_graph_conn(graph, |conn| {
+        let mut stmt = conn.prepare_cached(
             "SELECT id, from_id, to_id, edge_type, data FROM graph_edges WHERE to_id=?1 ORDER BY id",
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to prepare statement: {}", e))?;
-
-    let rows = stmt
-        .query_map(params![entity_id], |row| {
+        )?;
+        let rows = stmt.query_map(params![entity_id], |row| {
             Ok(GraphEdge {
                 id: row.get(0)?,
                 from_id: row.get(1)?,
@@ -528,34 +469,21 @@ fn get_incoming_edges(graph: &SqliteGraph, entity_id: i64) -> Result<Vec<GraphEd
                 data: serde_json::from_str(row.get_ref(4)?.as_str()?)
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
             })
-        })
-        .map_err(|e| anyhow::anyhow!("Failed to query edges: {}", e))?;
-
-    let mut edges = Vec::new();
-    for row in rows {
-        edges.push(row.map_err(|e| anyhow::anyhow!("Failed to read row: {}", e))?);
-    }
-    Ok(edges)
+        })?;
+        let mut edges = Vec::new();
+        for row in rows {
+            edges.push(row?);
+        }
+        Ok(edges)
+    })
 }
 
 fn get_outgoing_edges(graph: &SqliteGraph, entity_id: i64) -> Result<Vec<GraphEdge>> {
-    let conn = if let Some(direct) = graph.pool.direct_connection() {
-        direct
-    } else {
-        &graph
-            .pool
-            .get()
-            .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
-    };
-
-    let mut stmt = conn
-        .prepare_cached(
+    with_graph_conn(graph, |conn| {
+        let mut stmt = conn.prepare_cached(
             "SELECT id, from_id, to_id, edge_type, data FROM graph_edges WHERE from_id=?1 ORDER BY id",
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to prepare statement: {}", e))?;
-
-    let rows = stmt
-        .query_map(params![entity_id], |row| {
+        )?;
+        let rows = stmt.query_map(params![entity_id], |row| {
             Ok(GraphEdge {
                 id: row.get(0)?,
                 from_id: row.get(1)?,
@@ -564,12 +492,11 @@ fn get_outgoing_edges(graph: &SqliteGraph, entity_id: i64) -> Result<Vec<GraphEd
                 data: serde_json::from_str(row.get_ref(4)?.as_str()?)
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
             })
-        })
-        .map_err(|e| anyhow::anyhow!("Failed to query edges: {}", e))?;
-
-    let mut edges = Vec::new();
-    for row in rows {
-        edges.push(row.map_err(|e| anyhow::anyhow!("Failed to read row: {}", e))?);
-    }
-    Ok(edges)
+        })?;
+        let mut edges = Vec::new();
+        for row in rows {
+            edges.push(row?);
+        }
+        Ok(edges)
+    })
 }

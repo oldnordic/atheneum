@@ -26,7 +26,9 @@ impl KanbanStatus {
     pub(super) fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_uppercase().as_str() {
             "TODO" => Some(KanbanStatus::Todo),
-            "IN_PROGRESS" | "IN-PROGRESS" | "INPROGRESS" => Some(KanbanStatus::InProgress),
+            "IN_PROGRESS" | "IN-PROGRESS" | "INPROGRESS" | "IN PROGRESS" => {
+                Some(KanbanStatus::InProgress)
+            }
             "DONE" => Some(KanbanStatus::Done),
             "BLOCKED" => Some(KanbanStatus::Blocked),
             _ => None,
@@ -364,5 +366,40 @@ impl AtheneumGraph {
             });
         }
         Ok(applied)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kanban_status_parse_all_variants() {
+        assert_eq!(KanbanStatus::parse("TODO"), Some(KanbanStatus::Todo));
+        assert_eq!(KanbanStatus::parse("todo"), Some(KanbanStatus::Todo));
+        assert_eq!(
+            KanbanStatus::parse("IN_PROGRESS"),
+            Some(KanbanStatus::InProgress)
+        );
+        assert_eq!(
+            KanbanStatus::parse("IN-PROGRESS"),
+            Some(KanbanStatus::InProgress)
+        );
+        assert_eq!(
+            KanbanStatus::parse("INPROGRESS"),
+            Some(KanbanStatus::InProgress)
+        );
+        assert_eq!(
+            KanbanStatus::parse("IN PROGRESS"),
+            Some(KanbanStatus::InProgress)
+        );
+        assert_eq!(
+            KanbanStatus::parse("in progress"),
+            Some(KanbanStatus::InProgress)
+        );
+        assert_eq!(KanbanStatus::parse("DONE"), Some(KanbanStatus::Done));
+        assert_eq!(KanbanStatus::parse("BLOCKED"), Some(KanbanStatus::Blocked));
+        assert_eq!(KanbanStatus::parse("UNKNOWN"), None);
+        assert_eq!(KanbanStatus::parse(""), None);
     }
 }

@@ -1,24 +1,36 @@
 use atheneum::AtheneumGraph;
-use std::fs;
 use std::path::PathBuf;
 
 fn main() -> anyhow::Result<()> {
-    // Persistent storage - keeps articles between runs
-    let db_path = PathBuf::from("/home/feanor/wiki/atheneum.db");
+    let args: Vec<String> = std::env::args().collect();
+
+    if args.len() < 3 {
+        eprintln!("Usage: ingest_wiki <db-path> <markdown-file>");
+        std::process::exit(1);
+    }
+
+    let db_path = PathBuf::from(&args[1]);
+    let md_file = &args[2];
+
     let graph = AtheneumGraph::open(&db_path)?;
+    let content = std::fs::read_to_string(md_file)?;
 
-    let content =
-        fs::read_to_string("/home/feanor/wiki/concepts/core-hypothesis-sparse-inference.md")?;
+    let article_name = std::path::Path::new(md_file)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| md_file.clone());
+    let article_id = graph.ingest_wiki_page(&article_name, &content, None)?;
 
-    let article_id = graph.ingest_article("core-hypothesis-sparse-inference.md", &content)?;
-
-    println!("✅ Article ingested with ID: {}", article_id);
+    println!("Article ingested with ID: {}", article_id);
 
     let article = graph.get_entity(article_id)?;
-    println!("\n📄 Article: {}", article.name);
+    println!("\nArticle: {}", article.name);
     println!("   Type: {}", article.kind);
 
-    let data = article.data.as_object().unwrap();
+    let data = article
+        .data
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("article data is not an object"))?;
     println!("   Title: {}", data["title"]);
     println!("   Article Type: {}", data["type"]);
     println!("   Confidence: {}", data["confidence"]);
@@ -29,29 +41,7 @@ fn main() -> anyhow::Result<()> {
         println!("   Tags: {}", tag_list.join(", "));
     }
 
-    // Show the ingestion event
-    let events = graph.events_performed_by(1)?;
-    if let Some(event) = events.first() {
-        println!("\n📝 Ingestion Event: {}", event.name);
-        let event_data = event.data.as_object().unwrap();
-        println!("   Article ID: {}", event_data["article_id"]);
-        println!(
-            "   Timestamp: {}",
-            event_data["timestamp"].as_str().unwrap_or("N/A")
-        );
-    }
-
-    // Show graph traversal
-    println!("\n🔗 Graph traversal:");
-    if let Some(event) = events.first() {
-        let outgoing = graph.outgoing_edges(event.id)?;
-        for edge in &outgoing {
-            let target = graph.get_entity(edge.to_id)?;
-            println!("   Event --[{}]--> {}", edge.edge_type, target.name);
-        }
-    }
-
-    println!("\n💾 Database: {}", db_path.display());
+    println!("\nDatabase: {}", db_path.display());
 
     Ok(())
 }

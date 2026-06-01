@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-only"
 description = "Agent coordination graph database - episodic and semantic memory for multi-agent workflows"
+repository = "https://github.com/feanor12/atheneum"
+keywords = ["graph", "sqlite", "agent", "wiki", "knowledge-base"]
+categories = ["database-implementations", "data-structures", "text-processing"]
 
 [dependencies]
 anyhow = "1.0"
@@ -12,7 +15,6 @@ regex = "1.11"
 rusqlite = "0.31"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-serde_yaml = "0.9"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v7"] }
 thiserror = "2.0"

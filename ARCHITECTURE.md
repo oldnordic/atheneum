@@ -250,8 +250,8 @@ To add a new table:
 | PerformedBy    | Event -> Agent (who did it)                |
 | AssignedTo     | Task -> Agent (responsibility)             |
 | CausedBy       | Event -> Event (causal chain)              |
-| DependsOn      | Task -> Task (dependency)                  |
-| Blocks         | Task -> Task (blocker)                     |
+| Modified       | ToolCall -> Entity (modification)          |
+| VerifiedBy     | Entity -> Entity (audit/gate verification) |
 
 ## Testing
 

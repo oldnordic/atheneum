@@ -99,25 +99,13 @@ impl AtheneumGraph {
     }
 
     pub fn query_discoveries(&self, target: &str) -> Result<Vec<GraphEntity>> {
-        let conn = if let Some(direct) = self.inner.pool.direct_connection() {
-            direct
-        } else {
-            &self
-                .inner
-                .pool
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
-        };
-
-        let mut stmt = conn
-            .prepare_cached(
+        super::with_graph_conn(&self.inner, |conn| {
+            let mut stmt = conn.prepare_cached(
                 "SELECT id, kind, name, file_path, data FROM graph_entities
                  WHERE kind=?1 AND json_extract(data, '$.target') = ?2",
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to prepare statement: {}", e))?;
+            )?;
 
-        let rows = stmt
-            .query_map(params![EntityType::Discovery.as_str(), target], |row| {
+            let rows = stmt.query_map(params![EntityType::Discovery.as_str(), target], |row| {
                 Ok(GraphEntity {
                     id: row.get(0)?,
                     kind: row.get(1)?,
@@ -126,14 +114,14 @@ impl AtheneumGraph {
                     data: serde_json::from_str(row.get_ref(4)?.as_str()?)
                         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
                 })
-            })
-            .map_err(|e| anyhow::anyhow!("Failed to query: {}", e))?;
+            })?;
 
-        let mut discoveries = Vec::new();
-        for row in rows {
-            discoveries.push(row.map_err(|e| anyhow::anyhow!("Failed to read row: {}", e))?);
-        }
-        Ok(discoveries)
+            let mut discoveries = Vec::new();
+            for row in rows {
+                discoveries.push(row?);
+            }
+            Ok(discoveries)
+        })
     }
 
     pub fn store_discovery_in_project(
@@ -159,27 +147,15 @@ impl AtheneumGraph {
             return self.query_discoveries(target);
         };
 
-        let conn = if let Some(direct) = self.inner.pool.direct_connection() {
-            direct
-        } else {
-            &self
-                .inner
-                .pool
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
-        };
-
-        let mut stmt = conn
-            .prepare_cached(
+        super::with_graph_conn(&self.inner, |conn| {
+            let mut stmt = conn.prepare_cached(
                 "SELECT id, kind, name, file_path, data FROM graph_entities
                  WHERE kind=?1
                    AND json_extract(data, '$.target') = ?2
                    AND json_extract(data, '$.project_id') = ?3",
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to prepare statement: {}", e))?;
+            )?;
 
-        let rows = stmt
-            .query_map(
+            let rows = stmt.query_map(
                 params![EntityType::Discovery.as_str(), target, pid],
                 |row| {
                     Ok(GraphEntity {
@@ -191,13 +167,13 @@ impl AtheneumGraph {
                             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
                     })
                 },
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to query: {}", e))?;
+            )?;
 
-        let mut discoveries = Vec::new();
-        for row in rows {
-            discoveries.push(row.map_err(|e| anyhow::anyhow!("Failed to read row: {}", e))?);
-        }
-        Ok(discoveries)
+            let mut discoveries = Vec::new();
+            for row in rows {
+                discoveries.push(row?);
+            }
+            Ok(discoveries)
+        })
     }
 }

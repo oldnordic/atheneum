@@ -129,23 +129,16 @@ impl AtheneumGraph {
             ("Agent", "An autonomous participant"),
             ("Task", "A unit of work"),
             ("Event", "Something that happened, recorded for provenance"),
-            ("Decision", "A choice made by an agent"),
             ("ToolCall", "An action taken by an agent"),
-            ("FileChange", "A modification to a source file"),
-            ("Verification", "A verification gate result"),
             ("Knowledge", "Persistent contextual information"),
             ("Discovery", "A dynamic insight found by an agent"),
             ("Handoff", "Context transfer between agents"),
-            ("Project", "A workspace namespace"),
-            ("CodeSymbol", "A source code entity"),
             ("WikiPage", "A static knowledge document"),
             ("JournalSection", "An entry in a Logseq journal"),
             ("ReasoningLog", "A stream of thought from an agent"),
             ("Session", "A single invocation of a development tool"),
             ("Commit", "A git commit recorded as evidence"),
             ("TestRun", "A test execution result"),
-            ("Benchmark", "A benchmark execution result"),
-            ("Release", "A software release with aggregated metrics"),
             ("EventLog", "An append-only evidence event"),
         ];
         for (name, description) in STANDARD {
@@ -155,19 +148,12 @@ impl AtheneumGraph {
     }
 
     pub(super) fn find_ontology_entity(&self, kind: &str, name: &str) -> Result<Option<i64>> {
-        let conn = if let Some(direct) = self.inner.pool.direct_connection() {
-            direct
-        } else {
-            &self
-                .inner
-                .pool
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
-        };
-        let mut stmt = conn
-            .prepare_cached("SELECT id FROM graph_entities WHERE kind = ?1 AND name = ?2 LIMIT 1")
-            .map_err(|e| anyhow::anyhow!("Failed to prepare statement: {}", e))?;
-        let id_opt: Option<i64> = stmt.query_row(params![kind, name], |row| row.get(0)).ok();
-        Ok(id_opt)
+        super::with_graph_conn(&self.inner, |conn| {
+            let mut stmt = conn.prepare_cached(
+                "SELECT id FROM graph_entities WHERE kind = ?1 AND name = ?2 LIMIT 1",
+            )?;
+            let id_opt: Option<i64> = stmt.query_row(params![kind, name], |row| row.get(0)).ok();
+            Ok(id_opt)
+        })
     }
 }

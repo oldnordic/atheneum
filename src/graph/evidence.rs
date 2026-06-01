@@ -9,6 +9,18 @@ use super::{
     FixChainParams, PromptParams, SessionParams, TestRunParams, ToolCallParams,
 };
 
+fn event_row_from_rusqlite(row: &rusqlite::Row<'_>) -> Result<serde_json::Value, rusqlite::Error> {
+    Ok(json!({
+        "event_id": row.get::<_, i64>(0)?,
+        "event_type": row.get::<_, String>(1)?,
+        "entity_id": row.get::<_, String>(2)?,
+        "session_id": row.get::<_, String>(3)?,
+        "payload": serde_json::from_str::<Value>(row.get_ref(4)?.as_str()?)
+            .unwrap_or(Value::Null),
+        "timestamp": row.get::<_, String>(5)?,
+    }))
+}
+
 impl AtheneumGraph {
     pub fn record_session(&self, params: SessionParams) -> Result<()> {
         let agent_id = self.ensure_agent(&params.agent_name)?;
@@ -456,62 +468,44 @@ impl AtheneumGraph {
         event_type: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Value>> {
-        let conn = if let Some(direct) = self.inner.pool.direct_connection() {
-            direct
-        } else {
-            &self
-                .inner
-                .pool
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to get connection: {}", e))?
-        };
+        let sid = session_id.map(|s| s.to_string());
+        let et = event_type.map(|s| s.to_string());
+        let lim = limit as i64;
 
-        let mut sql_parts = vec!["1=1".to_string()];
-        let mut param_idx = 1;
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        self.with_raw_connection(move |conn| {
+            let mut sql = String::from(
+                "SELECT event_id, event_type, entity_id, session_id, payload, timestamp
+                 FROM event_log
+                 WHERE 1=1",
+            );
+            if sid.is_some() {
+                sql.push_str(" AND session_id = ?");
+            }
+            if et.is_some() {
+                sql.push_str(" AND event_type = ?");
+            }
+            sql.push_str(" ORDER BY event_id DESC LIMIT ?");
 
-        if let Some(sid) = session_id {
-            sql_parts.push(format!("session_id = ?{param_idx}"));
-            param_idx += 1;
-            param_values.push(Box::new(sid.to_string()));
-        }
-        if let Some(et) = event_type {
-            sql_parts.push(format!("event_type = ?{param_idx}"));
-            param_idx += 1;
-            param_values.push(Box::new(et.to_string()));
-        }
-        sql_parts.push(format!("LIMIT ?{param_idx}"));
-        param_values.push(Box::new(limit as i64));
+            let mut stmt = conn.prepare_cached(&sql)?;
+            let rows = match (sid, et) {
+                (Some(s), Some(e)) => {
+                    stmt.query_map(rusqlite::params![s, e, lim], event_row_from_rusqlite)?
+                }
+                (Some(s), None) => {
+                    stmt.query_map(rusqlite::params![s, lim], event_row_from_rusqlite)?
+                }
+                (None, Some(e)) => {
+                    stmt.query_map(rusqlite::params![e, lim], event_row_from_rusqlite)?
+                }
+                (None, None) => stmt.query_map(rusqlite::params![lim], event_row_from_rusqlite)?,
+            };
 
-        let sql = format!(
-            "SELECT event_id, event_type, entity_id, session_id, payload, timestamp FROM event_log WHERE {} ORDER BY event_id DESC",
-            sql_parts[..sql_parts.len() - 1].join(" AND ")
-        );
-
-        let mut stmt = conn
-            .prepare_cached(&sql)
-            .map_err(|e| anyhow::anyhow!("Failed to prepare statement: {}", e))?;
-
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
-            param_values.iter().map(|p| p.as_ref()).collect();
-        let rows = stmt
-            .query_map(params_refs.as_slice(), |row| {
-                Ok(json!({
-                    "event_id": row.get::<_, i64>(0)?,
-                    "event_type": row.get::<_, String>(1)?,
-                    "entity_id": row.get::<_, String>(2)?,
-                    "session_id": row.get::<_, String>(3)?,
-                    "payload": serde_json::from_str::<Value>(row.get_ref(4)?.as_str()?).unwrap_or(Value::Null),
-                    "timestamp": row.get::<_, String>(5)?,
-                }))
-            })
-            .map_err(|e| anyhow::anyhow!("Failed to query events: {}", e))?;
-
-        let mut events = Vec::new();
-        for row in rows {
-            events.push(row.map_err(|e| anyhow::anyhow!("Failed to read event: {}", e))?);
-        }
-        Ok(events)
+            let mut events = Vec::new();
+            for row in rows {
+                events.push(row?);
+            }
+            Ok(events)
+        })
     }
 
     fn append_event_log(
