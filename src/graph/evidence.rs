@@ -512,15 +512,15 @@ impl AtheneumGraph {
         })
     }
 
-    /// Query recent sessions for a project. Returns up to `last_n`, newest first.
+    /// Query recent sessions. If `project` is Some, filter to that project.
     pub fn query_sessions(
         &self,
-        project: &str,
+        project: Option<&str>,
         last_n: i64,
         parent_id: Option<&str>,
     ) -> Result<Vec<SessionSummary>> {
-        let project = project.to_string();
         let pid = parent_id.map(|s| s.to_string());
+        let project = project.map(|s| s.to_string());
 
         self.with_raw_connection(move |conn| {
             let mut sql = String::from(
@@ -537,10 +537,16 @@ impl AtheneumGraph {
                         (SELECT json_extract(el.payload, '$.input_summary')
                          FROM event_log el
                          WHERE el.session_id = s.session_id AND el.event_type = 'tool_call'
-                         ORDER BY el.event_id DESC LIMIT 1)
+                         ORDER BY el.event_id DESC LIMIT 1),
+                        COALESCE(s.total_input_tokens, 0),
+                        COALESCE(s.total_output_tokens, 0),
+                        COALESCE(s.total_cost_usd, 0.0)
                  FROM sessions s
-                 WHERE s.project = ?1",
+                 WHERE 1=1",
             );
+            if project.is_some() {
+                sql.push_str(" AND s.project = ?1");
+            }
             if pid.is_some() {
                 sql.push_str(" AND s.parent_session_id = ?3");
             }
@@ -552,7 +558,9 @@ impl AtheneumGraph {
                     session_id: row.get(0)?,
                     project: row.get(1)?,
                     git_branch: row.get(2)?,
-                    trigger: row.get::<_, Option<String>>(3)?.unwrap_or_else(|| "cli".into()),
+                    trigger: row
+                        .get::<_, Option<String>>(3)?
+                        .unwrap_or_else(|| "cli".into()),
                     started_at: row.get(4)?,
                     ended_at: row.get(5)?,
                     exit_status: row.get(6)?,
@@ -562,12 +570,21 @@ impl AtheneumGraph {
                     parent_session_id: row.get(10)?,
                     last_tool: row.get(11)?,
                     last_tool_summary: row.get(12)?,
+                    total_input_tokens: row.get(13)?,
+                    total_output_tokens: row.get(14)?,
+                    total_cost_usd: row.get(15)?,
                 })
             };
 
-            let rows = match pid {
-                Some(p) => stmt.query_map(rusqlite::params![project, last_n, p], row_fn)?,
-                None => stmt.query_map(rusqlite::params![project, last_n], row_fn)?,
+            let rows = match (&project, &pid) {
+                (Some(p), Some(parent)) => {
+                    stmt.query_map(rusqlite::params![p, last_n, parent], row_fn)?
+                }
+                (Some(p), None) => stmt.query_map(rusqlite::params![p, last_n], row_fn)?,
+                (None, Some(parent)) => {
+                    stmt.query_map(rusqlite::params![last_n, parent], row_fn)?
+                }
+                (None, None) => stmt.query_map(rusqlite::params![last_n], row_fn)?,
             };
             let mut out = Vec::new();
             for row in rows {
@@ -575,6 +592,16 @@ impl AtheneumGraph {
             }
             Ok(out)
         })
+    }
+
+    /// Record a generic event into the event_log.
+    pub fn record_event(&self, params: super::RecordEventParams) -> Result<()> {
+        self.append_event_log(
+            &params.event_type,
+            &params.entity_id,
+            &params.session_id,
+            &params.payload,
+        )
     }
 
     /// Store a subagent handover note on session stop.

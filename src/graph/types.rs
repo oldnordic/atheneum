@@ -209,6 +209,9 @@ pub struct SessionSummary {
     pub parent_session_id: Option<String>,
     pub last_tool: Option<String>,
     pub last_tool_summary: Option<String>,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub total_cost_usd: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -291,6 +294,14 @@ pub struct TestRunParams {
     pub duration_ms: i64,
     pub logs_summary: Option<String>,
     pub commit_sha: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RecordEventParams {
+    pub event_type: String,
+    pub entity_id: String,
+    pub session_id: String,
+    pub payload: serde_json::Value,
 }
 
 #[derive(Debug, Clone)]
