@@ -217,7 +217,16 @@ fn test_sync_wiki_directory_ingests_all_md_files() {
     );
 
     let pages = graph.entities_by_kind("WikiPage").expect("list");
-    assert_eq!(pages.len(), 2, "expected WikiPage and Beta, got {} pages", pages.len());
+    let real_pages: Vec<_> = pages
+        .iter()
+        .filter(|p| p.data.get("stub").and_then(|s| s.as_bool()) != Some(true))
+        .collect();
+    assert_eq!(
+        real_pages.len(),
+        2,
+        "expected alpha and beta real WikiPages, got {} real pages",
+        real_pages.len()
+    );
     let titles: Vec<String> = pages
         .iter()
         .filter_map(|p| {
