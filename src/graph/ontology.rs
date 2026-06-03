@@ -151,6 +151,10 @@ impl AtheneumGraph {
                 "Failure",
                 "A failing test, bug, regression, or observed defect",
             ),
+            (
+                "Memory",
+                "Stable facts, preferences, and conventions",
+            ),
         ];
         for (name, description) in STANDARD {
             self.define_class(name, Some(description))?;

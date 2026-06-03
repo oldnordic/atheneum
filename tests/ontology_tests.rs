@@ -183,6 +183,7 @@ fn test_seed_standard_ontology_populates_core_kinds() {
         "File",
         "Skill",
         "Failure",
+        "Memory",
     ] {
         assert!(
             names.contains(&required),

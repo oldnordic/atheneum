@@ -15,6 +15,7 @@ pub enum EntityType {
     Commit,
     TestRun,
     EventLog,
+    Memory,
     WikiPage,
 }
 
@@ -32,6 +33,7 @@ impl EntityType {
             EntityType::Commit => "Commit",
             EntityType::TestRun => "TestRun",
             EntityType::EventLog => "EventLog",
+            EntityType::Memory => "Memory",
             EntityType::WikiPage => "WikiPage",
         }
     }
