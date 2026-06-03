@@ -4,7 +4,7 @@ use sqlitegraph::hnsw::{DistanceMetric, HnswConfigBuilder};
 use sqlitegraph::GraphEntity;
 use std::collections::HashSet;
 
-use super::{AtheneumGraph, EntityType, SearchResult};
+use super::{AtheneumGraph, SearchResult};
 
 const SEARCH_INDEX_NAME: &str = "discoveries";
 
@@ -101,10 +101,8 @@ impl AtheneumGraph {
     pub fn build_search_index(&self) -> Result<()> {
         let _ = self.inner.delete_hnsw_index(SEARCH_INDEX_NAME);
         self.ensure_search_index()?;
-        for kind in [EntityType::Discovery.as_str(), "WikiPage", "JournalSection"] {
-            for entity in self.entities_by_kind(kind)? {
-                self.add_entity_to_search_index(&entity)?;
-            }
+        for entity in self.all_entities()? {
+            self.add_entity_to_search_index(&entity)?;
         }
         Ok(())
     }
@@ -181,25 +179,23 @@ impl AtheneumGraph {
         if results.len() < k {
             let tokens = query_tokens(query);
             let mut fallback = Vec::new();
-            for kind in [EntityType::Discovery.as_str(), "WikiPage", "JournalSection"] {
-                for entity in self.entities_by_kind(kind)? {
-                    if seen_entities.contains(&entity.id) {
+            for entity in self.all_entities()? {
+                if seen_entities.contains(&entity.id) {
+                    continue;
+                }
+                if let Some(pid) = project_id {
+                    let entity_project = entity
+                        .data
+                        .get("project_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if entity_project != pid {
                         continue;
                     }
-                    if let Some(pid) = project_id {
-                        let entity_project = entity
-                            .data
-                            .get("project_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        if entity_project != pid {
-                            continue;
-                        }
-                    }
-                    let score = lexical_token_score(&entity, &tokens);
-                    if score > 0.0 {
-                        fallback.push((entity, score));
-                    }
+                }
+                let score = lexical_token_score(&entity, &tokens);
+                if score > 0.0 {
+                    fallback.push((entity, score));
                 }
             }
             fallback.sort_by(|(left, left_score), (right, right_score)| {

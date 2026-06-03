@@ -161,6 +161,30 @@ impl AtheneumGraph {
         })
     }
 
+    pub fn all_entities(&self) -> Result<Vec<GraphEntity>> {
+        with_graph_conn(&self.inner, |conn| {
+            let mut stmt =
+                conn.prepare_cached("SELECT id, kind, name, file_path, data FROM graph_entities")?;
+
+            let rows = stmt.query_map([], |row| {
+                Ok(GraphEntity {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    name: row.get(2)?,
+                    file_path: row.get(3)?,
+                    data: serde_json::from_str(row.get_ref(4)?.as_str()?)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
+                })
+            })?;
+
+            let mut entities = Vec::new();
+            for row in rows {
+                entities.push(row?);
+            }
+            Ok(entities)
+        })
+    }
+
     pub fn entities_by_kind(&self, kind: &str) -> Result<Vec<GraphEntity>> {
         with_graph_conn(&self.inner, |conn| {
             let mut stmt = conn.prepare_cached(

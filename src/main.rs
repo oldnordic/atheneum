@@ -312,6 +312,21 @@ fn run() -> anyhow::Result<()> {
                 "edge_counts": stats.edge_counts,
             }))?;
         }
+        "reindex" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum reindex <db-path>");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let graph = AtheneumGraph::open(&db_path)?;
+            let stats_before = graph.graph_stats()?;
+            graph.build_search_index()?;
+            let stats_after = graph.graph_stats()?;
+            stdoutln(format_args!(
+                "Reindexed: {} entities ({} total), was {} entities before",
+                stats_after.total_entities, stats_after.total_entities, stats_before.total_entities,
+            ))?;
+        }
         _ => {
             eprintln!("Unknown command: {}", args[1]);
             print_usage()?;
@@ -384,6 +399,10 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     )?;
     writeln!(
         writer,
+        "  reindex <db-path>                       Rebuild HNSW search index over all entities"
+    )?;
+    writeln!(
+        writer,
         "  graph-stats <db-path>                   Print graph topology counts as JSON"
     )?;
     writeln!(
@@ -416,6 +435,7 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
         "  atheneum query-journal ./atheneum.db journal/2024-01-15.md"
     )?;
     writeln!(writer, "  atheneum graph-stats ./atheneum.db")?;
+    writeln!(writer, "  atheneum reindex ./atheneum.db")?;
     writeln!(
         writer,
         "  atheneum navigate ./atheneum.db \"router construction\" --k 3 --depth 2 --project envoy"

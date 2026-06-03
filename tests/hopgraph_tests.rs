@@ -781,4 +781,92 @@ mod consolidation_tests {
             assert!(entity.data.get("target").and_then(|v| v.as_str()) == Some(target.as_str()));
         }
     }
+
+    #[test]
+    fn test_build_search_index_covers_all_entity_kinds() {
+        let graph = AtheneumGraph::open_in_memory().expect("open");
+
+        graph
+            .insert_agent("search-test-agent", json!({}))
+            .expect("agent");
+
+        graph
+            .store_discovery(
+                "claude",
+                "Bug",
+                "target_x",
+                json!({
+                    "summary": "parameter ordering bug in query_sessions"
+                }),
+            )
+            .expect("discovery");
+
+        graph
+            .ingest_wiki_page("search-test.md", "# Search Test\nSee [[related]].\n", None)
+            .expect("wiki");
+
+        graph
+            .record_session(atheneum::graph::SessionParams {
+                session_id: "sess-search-1".into(),
+                agent_name: "search-test-agent".into(),
+                project: "search-project".into(),
+                tool: "opencode".into(),
+                trigger: "cli".into(),
+                model: Some("test-model".into()),
+                git_branch: Some("main".into()),
+                git_head: None,
+                parent_session_id: None,
+                relations: vec![],
+            })
+            .expect("session");
+
+        graph.build_search_index().expect("build index");
+
+        let hits = graph
+            .lexical_search("parameter ordering", 10, None)
+            .expect("search");
+        assert!(!hits.is_empty(), "should find discovery via lexical search");
+
+        let session_hits = graph
+            .lexical_search("search-project session", 10, None)
+            .expect("session search");
+        assert!(
+            !session_hits.is_empty(),
+            "build_search_index should index Session entities, not just Discovery/WikiPage"
+        );
+    }
+
+    #[test]
+    fn test_navigate_finds_session_entities() {
+        let graph = AtheneumGraph::open_in_memory().expect("open");
+
+        graph
+            .insert_agent("nav-test-agent", json!({}))
+            .expect("agent");
+
+        graph
+            .record_session(atheneum::graph::SessionParams {
+                session_id: "sess-nav-1".into(),
+                agent_name: "nav-test-agent".into(),
+                project: "nav-project".into(),
+                tool: "opencode".into(),
+                trigger: "cli".into(),
+                model: Some("test-model".into()),
+                git_branch: Some("feat/search".into()),
+                git_head: None,
+                parent_session_id: None,
+                relations: vec![],
+            })
+            .expect("session");
+
+        graph.build_search_index().expect("build index");
+
+        let views = graph
+            .navigate("nav-project session", 5, 2, None)
+            .expect("navigate");
+        assert!(
+            !views.is_empty(),
+            "navigate should find session entities via search index"
+        );
+    }
 }
