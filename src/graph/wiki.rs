@@ -204,6 +204,17 @@ impl AtheneumGraph {
                 .map_err(|e| anyhow::anyhow!("Failed to insert WikiPage: {}", e))?
         };
 
+        let indexed_page = GraphEntity {
+            id: page_id,
+            kind: "WikiPage".to_string(),
+            name: path.to_string(),
+            file_path: Some(path.to_string()),
+            data: data.clone(),
+        };
+        if let Err(e) = self.add_entity_to_search_index(&indexed_page) {
+            eprintln!("[atheneum] wiki auto-index warning: {}", e);
+        }
+
         // Create wikilink graph edges — create stub targets if they don't exist
         let wikilinks = extract_wikilinks(body);
         for target in &wikilinks {
@@ -226,7 +237,7 @@ impl AtheneumGraph {
             let _ = self.insert_edge(
                 page_id,
                 target_id,
-                EdgeType::RelatedTo,
+                EdgeType::Wikilink,
                 serde_json::json!({"link_type": "wikilink", "target": target}),
             );
         }
@@ -333,6 +344,10 @@ impl AtheneumGraph {
                 .inner
                 .insert_entity(&entity)
                 .map_err(|e| anyhow::anyhow!("Failed to insert JournalSection: {}", e))?;
+            let indexed_section = GraphEntity { id, ..entity };
+            if let Err(e) = self.add_entity_to_search_index(&indexed_section) {
+                eprintln!("[atheneum] journal auto-index warning: {}", e);
+            }
             ids.push(id);
         }
         Ok(ids)
@@ -537,34 +552,34 @@ impl AtheneumGraph {
     }
 
     pub fn outgoing_wikilinks(&self, page_id: i64) -> Result<Vec<GraphEntity>> {
-        let target_ids = self
-            .inner
-            .query()
-            .outgoing(page_id)
-            .map_err(|e| anyhow::anyhow!("query outgoing failed: {}", e))?;
         let mut targets = Vec::new();
-        for target_id in target_ids {
-            if let Ok(entity) = self.get_entity(target_id) {
-                targets.push(entity);
+        for edge in self.outgoing_edges(page_id)? {
+            if is_wikilink_edge(&edge.edge_type, &edge.data) {
+                if let Ok(entity) = self.get_entity(edge.to_id) {
+                    targets.push(entity);
+                }
             }
         }
         Ok(targets)
     }
 
     pub fn incoming_wikilinks(&self, page_id: i64) -> Result<Vec<GraphEntity>> {
-        let source_ids = self
-            .inner
-            .query()
-            .incoming(page_id)
-            .map_err(|e| anyhow::anyhow!("query incoming failed: {}", e))?;
         let mut sources = Vec::new();
-        for source_id in source_ids {
-            if let Ok(entity) = self.get_entity(source_id) {
-                sources.push(entity);
+        for edge in self.incoming_edges(page_id)? {
+            if is_wikilink_edge(&edge.edge_type, &edge.data) {
+                if let Ok(entity) = self.get_entity(edge.from_id) {
+                    sources.push(entity);
+                }
             }
         }
         Ok(sources)
     }
+}
+
+fn is_wikilink_edge(edge_type: &str, data: &Value) -> bool {
+    edge_type == EdgeType::Wikilink.as_str()
+        || (edge_type == EdgeType::RelatedTo.as_str()
+            && data.get("link_type").and_then(|v| v.as_str()) == Some("wikilink"))
 }
 
 fn wiki_page_from_row(r: &rusqlite::Row) -> Result<WikiPage, rusqlite::Error> {

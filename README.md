@@ -104,11 +104,74 @@ curl "http://127.0.0.1:9876/atheneum/context?project=my-project&limit=6"
 
 See [envoy's API.md](https://github.com/oldnordic/envoy/blob/master/API.md) for the full HTTP reference.
 
+## HopGraph
+
+HopGraph is atheneum's retrieval model: **embeddings find the door, graph walk retrieves the room.**
+
+1. A text query is embedded and matched against the lexical index to find entry-point entities.
+2. From each hit, a BFS walk expands the subgraph — following only allowed edge types (e.g., `Explains`, `Wikilink`).
+3. The result is truncated to a token budget so it fits in an LLM context window.
+
+```rust
+use atheneum::graph::{AtheneumGraph, hopgraph_query, EdgeType};
+use std::path::Path;
+
+let graph = AtheneumGraph::open(Path::new("atheneum.db"))?;
+
+// Token-budgeted HopGraph query — walk only Explains + Wikilink edges
+let views = graph.hopgraph_query(
+    "session accountability",
+    3,        // k: max entry points
+    2,        // depth: BFS depth
+    Some(&[EdgeType::Explains, EdgeType::Wikilink]),
+    2000,     // max_tokens per view
+    None,     // project_id
+)?;
+
+for view in &views {
+    println!("entry: {} ({} entities, {} edges)",
+        view.entry_id, view.entities.len(), view.edges.len());
+}
+
+// Switch to neural embeddings (requires ollama + nomic-embed-text)
+#[cfg(feature = "neural-embed")]
+{
+    use atheneum::graph::OllamaEmbedder;
+    graph.set_embedder(Box::new(OllamaEmbedder::nomic_embed_text()));
+    graph.build_search_index()?; // rebuild with new dimension
+}
+```
+
+### Discovery Consolidation
+
+```rust
+// Merge all Discovery entities for a target into a single Knowledge entity
+let knowledge_id = graph.consolidate_discoveries("query_sessions", Some("my-project"))?;
+
+// Consolidate all targets at once
+let results = graph.consolidation_pass(Some("my-project"))?;
+for (target, kid) in &results {
+    println!("{} → knowledge {}", target, kid);
+}
+```
+
+### Bridge Wiki to Code Symbols
+
+```rust
+// Link wiki [[wikilinks]] to magellan-indexed code symbols
+graph.link_wiki_to_symbols(
+    "/path/to/magellan.db",
+    "claude",
+    Some("my-project"),
+)?;
+```
+
 ## Features
 
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `default` | ✓ | Core graph, wiki, sessions, planning, search |
+| `neural-embed` | — | Ollama neural embeddings (requires `ureq`, ollama + nomic-embed-text) |
 | `web` | — | Web dashboard (axum + askama templates) |
 | `cli` | — | `atheneum` CLI binary |
 | `async` | — | Async runtime support |
@@ -118,9 +181,26 @@ See [envoy's API.md](https://github.com/oldnordic/envoy/blob/master/API.md) for 
 ```bash
 atheneum sync-wiki    <db> <dir> [project]
 atheneum sync-journal <db> <dir> [project]
+atheneum sync-logseq  <db> <wiki-root> [project]
+atheneum sync-claude-transcript <db> <transcript.jsonl> [project] [agent]
 atheneum query-wiki   <db> <path>
 atheneum query-journal <db> <path>
+atheneum graph-stats  <db>
+atheneum entity       <db> <entity-id>
+atheneum edge         <db> <edge-id>
+atheneum neighbors    <db> <entity-id> [--depth N]
+atheneum navigate     <db> "<query>" [--k N] [--depth N] [--project P]
 ```
+
+`sync-logseq` recursively ingests `<wiki-root>/pages/**/*.md` as wiki pages and
+`<wiki-root>/journals/**/*.md` as journal sections. Wiki `[[links]]` become
+first-class `wikilink` graph edges so `navigate` and `neighbors` can traverse article
+relationships.
+
+`sync-claude-transcript` imports a local Claude Code transcript JSONL into Atheneum's
+session graph. It records prompt/chat summaries, observed tool calls, `accessed`
+file edges for `Read`/`Edit`/`Write`, and session token/cache totals. Re-running the
+command on the same append-only transcript imports only new lines.
 
 ## Requirements
 

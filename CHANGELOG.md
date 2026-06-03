@@ -5,82 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] — 2026-06-03
 
 ### Added
 
-- README.md with quickstart, features, CLI usage, requirements.
-- `Cargo.toml` metadata: `repository`, `keywords`, `categories`.
-- **`SessionSummary` cost and token tracking** — Added `total_input_tokens`, `total_output_tokens`, and `total_cost_usd` (f64) fields to `SessionSummary` in `graph/types.rs` for tracking spend per session.
-- **`record_event()` public API** — New `AtheneumGraph::record_event(RecordEventParams)` method in `graph/evidence.rs` for persisting generic agent events to the `event_log` table.
-- **Cross-project session queries** — `query_sessions()` project parameter is now `Option<&str>`. When `None`, returns the most recent sessions across all projects, ordered by `started_at DESC`.
-- **`query_events()` robustness** — Switched to anonymous `?` SQL placeholders with explicit `rusqlite::params![]` match arms, eliminating runtime parameter count mismatches when optional filters are omitted.
-- **`EndSessionParams` token/cost fields** — Added `total_input_tokens`, `total_output_tokens`, and `total_cost_usd` to `EndSessionParams` so callers can cap sessions with full cost metadata.
-- **Graph navigation primitives** — New module `graph/navigation.rs` with `get_neighbors`, `get_subgraph`, `navigate`, and `graph_stats`.
-- **Auto-index on discovery write** — `store_discovery()` now calls `add_entity_to_search_index()` after `insert_entity()`, eliminating the need for manual `build_search_index()` before every search.
-- **Lazy HNSW index creation** — `semantic_search()` now calls `ensure_search_index()` which skips creation if the index already exists (replaces full rebuild per query).
+- **HopGraph Phase 1: Wiki Pages as First-Class Graph Nodes** — Wiki pages are now full participants in the HopGraph traversal, not just side-table records.
+  - `EdgeType::Explains` — semantic edge from a wiki page to the code symbol it documents (e.g., `wiki/http-handler.md` → `build_router`).
+  - `EdgeType::DerivedFrom` — provenance edge for entities derived from other entities.
+  - `EntityType::WikiPage` — canonical entity type enum variant for wiki page nodes.
+  - `get_subgraph_filtered(entry_id, depth, allowed_types)` — BFS subgraph extraction that only follows edges matching a whitelist of `EdgeType` values. Empty whitelist returns all edges (delegates to `get_subgraph`).
+  - Ontology seed now includes `Explains` (WikiPage→CodeSymbol) and `DerivedFrom` (ANY→ANY) property definitions.
+  - `link_wiki_to_symbols(magellan_db_path, agent_name, project_id)` — bridges wiki content to code symbols via magellan. Idempotent.
 
-### Fixed
+- **HopGraph Phase 2: Token-Budgeted Retrieval API** — Query the knowledge graph with token budgets instead of unbounded subgraph walks.
+  - `estimate_entity_tokens(entity)` — rough token count for a GraphEntity (~4 chars/token).
+  - `truncate_subgraph(view, max_tokens)` — trims entities and edges to fit a token budget. Entry entity always kept. Orphan edges dropped.
+  - `hopgraph_query(query, k, depth, allowed_types, max_tokens, project_id)` — main retrieval API: semantic search → `get_subgraph_filtered` → `truncate_subgraph`. Shared token budget across all result views.
 
-- `is_healthy()` now works for in-memory databases (uses `pool.is_in_memory()` instead of failing `pool.get()`).
-- `test_ingest_real_wiki_article` no longer hardcodes `/home/feanor/` path; uses inline Markdown content.
-- `CHANGELOG` placeholder date fixed.
+- **HopGraph Phase 3: Neural Embedding Interface** — Swappable embedding backend for semantic search.
+  - `TextEmbedder` trait — `embed(text) -> Vec<f32>` + `dimension() -> usize`. Thread-safe (`Send + Sync`).
+  - `HashEmbedder` — existing bag-of-tokens (128-dim), zero dependencies. Now in `graph/embed.rs`.
+  - `OllamaEmbedder` — neural embeddings via ollama `/api/embed` endpoint (768-dim `nomic-embed-text`). Feature-gated behind `neural-embed` (requires `ureq`).
+  - `AtheneumGraph::set_embedder(Box<dyn TextEmbedder>)` — runtime embedder swap. `AtheneumGraph::embedder_dimension()` — query current dimension.
+  - Feature flag `neural-embed` — `cargo build --features neural-embed` enables `OllamaEmbedder`.
 
-### Removed
+- **HopGraph Phase 4: Discovery Consolidation** — Merge duplicate discoveries into Knowledge entities.
+  - `consolidate_discoveries(target, project_id)` — merges all Discovery entities for a target into a single Knowledge entity with `DerivedFrom` edges. Idempotent.
+  - `consolidation_pass(project_id)` — scans all distinct discovery targets and consolidates each. Returns `(target, knowledge_id)` pairs.
 
-- **Removed deprecated `serde_yaml` dependency** — frontmatter parser in `graph/mod.rs` now uses a lightweight inline YAML-like parser instead of the deprecated `serde_yaml` crate. Handles strings, booleans, integers, floats, and arrays.
-- **Removed dead `EntityType` variants** — Pruned 5 unused variants (`Decision`, `FileChange`, `Verification`, `Benchmark`, `Release`) that were defined in `types.rs` and the ontology seed but never actually instantiated by any graph code. Synced `seed_standard_ontology()` and all affected tests.
-- **Removed dead `EdgeType` variants** — Pruned `DependsOn` and `Supersedes` which were never used outside `types.rs`. Kept `Modified` and `VerifiedBy` since they have actual edge insertions in `audit.rs` and `evidence.rs`.
-- **Removed dead `releases` SQL table** — The `releases` table in `db/evidence.rs` schema migration was never written to by any code. Removed from v4 migration to keep the schema lean.
-- **Removed deprecated `ingest_article()`** — Deleted the deprecated method from `graph/mod.rs`. All callers (tests and examples) were already migrated to `ingest_wiki_page()`.
-
-### Internal
-
-- Cleaned up unused `json` import in `graph/mod.rs` after removing `ingest_article`.
-
-## [0.2.0] — 2026-05-31
+- **`neural-embed` feature flag** in Cargo.toml — gates `ureq` dep + `OllamaEmbedder`. Default build has zero new deps.
 
 ### Changed
 
-- **`tests/ingest_test.rs`** — migrated all tests from deprecated `ingest_article()` to modern `ingest_wiki_page()`. Removed `#![allow(deprecated)]` from test file.
-- **`graph/evidence.rs`** — `query_events()` now uses `with_raw_connection` instead of inline connection boilerplate, and uses a `String` builder with explicit `rusqlite::params![]` match arms instead of dynamic SQL string concatenation with `Box<dyn ToSql>`.
+- **`evidence.rs` modularized** — Split the 1143-line file into 5 focused submodules under `evidence/`:
+  - `helpers.rs` (71 LOC) — shared relation/project helpers
+  - `session.rs` (228 LOC) — session lifecycle (record, end, progress)
+  - `recording.rs` (662 LOC) — 8 `record_evidence_*` methods
+  - `events.rs` (207 LOC) — event logging and querying
+  - `mod.rs` (4 LOC) — re-exports
+  - No logic, signature, or behavior changes. Pure file reorganization.
 
-### Security / Robustness
-
-- Fixed null-byte corruption at end of `tests/ingest_test.rs` that was preventing compilation.
-
-## [0.1.0] — 2026-05-31
-
-- **Wiki query APIs** — `AtheneumGraph` now exposes full CRUD-like query methods for wiki content:
-  - `get_wiki_page(path)` — query a single wiki page by path
-  - `list_wiki_pages(project_id)` — list all wiki pages, optionally filtered by project
-  - `find_pages_by_wikilink(target, project_id)` — find pages referencing a wikilink target
-  - `query_journal_sections(path)` — query journal sections by file path
-
-- **Wikilink graph edges** — During `ingest_wiki_page`, `[[...]]` syntax is parsed and `RelatedTo` edges are created in the graph database. Missing target pages become stub entities so LLMs can still navigate to them.
-
-- **Graph navigation** — `outgoing_wikilinks(page_id)` and `incoming_wikilinks(page_id)` for LLM traversal of wiki link graphs.
-
-- **Batch sync methods** — `sync_wiki_directory(dir, project_id)` and `sync_journal_directory(dir, project_id)` for ingesting entire directories of `.md` files.
-
-- **CLI commands** — `main.rs` now supports:
-  - `sync-wiki <db> <dir> [project]`
-  - `sync-journal <db> <dir> [project]`
-  - `query-wiki <db> <path>`
-  - `query-journal <db> <path>`
-
-- **Library exports** — `src/lib.rs` now re-exports `WikiPage`, `JournalSection`, `KanbanStatus`, `KanbanUpdate`, and wiki parsing utilities (`extract_wikilinks`, `content_hash`, `parse_journal_sections`, `extract_kanban_updates`).
-
-- **Integration tests** — `tests/wiki_query_tests.rs` with 7 tests covering query APIs, graph edge creation, project filtering, and backlink navigation.
+- **`graph/search.rs`** — now uses `self.embedder.embed()` instead of static `hash_embed()`. `search_config()` takes dimension as parameter.
 
 ### Fixed
 
-- `outgoing_edges` / `incoming_edges` on `AtheneumGraph` now work for in-memory databases (previously used `pool.direct_connection()` which returns `None` for `:memory:`).
-- `examples/batch_ingest_wiki.rs` now uses `sync_wiki_directory` instead of the deprecated `ingest_article` API.
+- Clippy `collapsible_if` lint in `get_subgraph_scoped` — collapsed nested conditionals.
 
-### Changed
+### Tests
 
-- `KanbanStatus` and `KanbanUpdate` now derive `serde::Serialize` and `serde::Deserialize` for JSON round-tripping in journal section queries.
+- 36 TDD tests in `tests/hopgraph_tests.rs` covering HopGraph P1–P4: enum roundtrips, serde serialization, wiki entity creation, wikilink edges, edge-type filtering, idempotent re-ingestion, token estimation, subgraph truncation, hopgraph queries, embedder trait, ollama embedder, discovery consolidation.
+- Previously failing `test_seed_standard_ontology_populates_hopgraph_relations` now passes with `explains` and `derived_from` in the ontology seed.
+
+### Known Limitations
+
+- `OllamaEmbedder` requires ollama running locally with `nomic-embed-text` model pulled. No fallback — panics on connection failure.
+- `estimate_entity_tokens` uses ~4 chars/token approximation, not a real tokenizer. Budget enforcement is approximate.
+- `link_wiki_to_symbols` requires a magellan database at the given path. No auto-discovery of magellan DB location.
+- `consolidate_discoveries` does not merge metadata fields — keeps the first discovery's metadata. Future: field-level merge strategy.
 
 ## [0.1.0] — 2026-05-31
 
@@ -93,3 +74,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Evidence domain: audit trail, handoff records.
 - Ontology ingestion with class/property extraction.
 - Graph navigation: causal chains, task assignment, event provenance.
+- Wiki query APIs: `get_wiki_page`, `list_wiki_pages`, `find_pages_by_wikilink`, `query_journal_sections`.
+- Wikilink graph edges during `ingest_wiki_page`.
+- Graph navigation: `outgoing_wikilinks`, `incoming_wikilinks`.
+- Batch sync: `sync_wiki_directory`, `sync_journal_directory`.
+- CLI: `sync-wiki`, `sync-journal`, `query-wiki`, `query-journal`, `graph-stats`, `entity`, `edge`, `neighbors`, `navigate`, `sync-logseq`, `sync-claude-transcript`.
+- Library re-exports: `WikiPage`, `JournalSection`, `KanbanStatus`, `KanbanUpdate`, wiki parsing utilities.
+- Session accountability: `SessionSummary` with `total_input_tokens`, `total_output_tokens`, `total_cost_usd`.
+- `record_event()` public API for generic agent events.
+- Cross-project session queries via `query_sessions()` with `Option<&str>` project parameter.
+- `EndSessionParams` token/cost fields.
+- Graph navigation primitives in `graph/navigation.rs`.
+- Auto-index on discovery write.
+- Lazy HNSW index creation.
+- Claude transcript ingestion (incremental, append-safe, replay-safe).
+- HopGraph relation vocabulary: `mentions`, `wikilink`, `implements`, `depends_on`, `calls`, `tested_by`, `fixed_by`, `regressed_by`, `observed_in`, `belongs_to_project`, `similar_failure`, `requires_skill`, `handled_by_tool`.
+- First-class file access relation (`accessed`).
+- Standard relation ontology seed.
+- Evidence-to-HopGraph ingestion for all evidence types.
+- Generic event relation hints via `payload.relations`.
+- `tests/wiki_query_tests.rs` with 7 tests.
+- `tests/ingest_test.rs` migrated to `ingest_wiki_page()`.
+
+### Changed
+
+- `KanbanStatus` and `KanbanUpdate` now derive `serde::Serialize` and `serde::Deserialize`.
+- `query_events()` uses `with_raw_connection` and explicit `rusqlite::params![]` match arms.
+
+### Fixed
+
+- `is_healthy()` works for in-memory databases.
+- `test_ingest_real_wiki_article` no longer hardcodes `/home/feanor/` path.
+- Frontmatter parsing only accepts leading `---` block.
+- Wiki ingestion creates `wikilink` edges instead of overloading `related_to`.
+- `record_evidence_prompt()` uses session's real SQL `agent_id`.
+- `record_evidence_fix_chain()` synthesizes missing SQL commit rows.
+- `EdgeType` JSON serialization uses stable snake_case labels.
+- CLI stdout handles closed pipes cleanly.
+- Claude transcript sync is incremental and replay-safe.
+- `outgoing_edges` / `incoming_edges` work for in-memory databases.
+- `examples/batch_ingest_wiki.rs` uses `sync_wiki_directory`.
+
+### Removed
+
+- Deprecated `serde_yaml` dependency — replaced with lightweight inline YAML-like parser.
+- Dead `EntityType` variants (`Decision`, `FileChange`, `Verification`, `Benchmark`, `Release`).
+- Dead `EdgeType` variant (`Supersedes`).
+- Dead `releases` SQL table.
+- Deprecated `ingest_article()` method.
+
+### Security
+
+- Fixed null-byte corruption at end of `tests/ingest_test.rs`.

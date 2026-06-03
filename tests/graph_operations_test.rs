@@ -134,6 +134,33 @@ fn test_insert_edge_assigned_to() {
 }
 
 #[test]
+fn test_hopgraph_edge_type_labels_are_stable() {
+    let labels: Vec<&str> = EdgeType::all().iter().map(EdgeType::as_str).collect();
+
+    for required in [
+        "mentions",
+        "wikilink",
+        "implements",
+        "depends_on",
+        "calls",
+        "accessed",
+        "tested_by",
+        "fixed_by",
+        "regressed_by",
+        "observed_in",
+        "belongs_to_project",
+        "similar_failure",
+        "requires_skill",
+        "handled_by_tool",
+    ] {
+        assert!(
+            labels.contains(&required),
+            "missing HopGraph relation label {required}; got {labels:?}"
+        );
+    }
+}
+
+#[test]
 fn test_query_events_by_agent() {
     let graph = AtheneumGraph::open_in_memory().expect("Failed to create graph");
 

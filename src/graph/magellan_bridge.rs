@@ -3,7 +3,7 @@ use chrono::Utc;
 use serde_json::{json, Value};
 use sqlitegraph::GraphEntity;
 
-use super::{AtheneumGraph, EntityType};
+use super::{AtheneumGraph, EdgeType, EntityType};
 
 #[derive(Debug, Clone)]
 struct MagellanSymbol {
@@ -101,6 +101,52 @@ impl AtheneumGraph {
             count += 1;
         }
         Ok(count)
+    }
+
+    pub fn link_wiki_to_symbols(
+        &self,
+        magellan_db_path: &std::path::Path,
+        agent_name: &str,
+        project_id: Option<&str>,
+    ) -> Result<usize> {
+        let pages = self.list_wiki_pages(project_id)?;
+        let mut linked = 0;
+
+        for page in &pages {
+            for wikilink in &page.wikilinks {
+                let matches = read_magellan_symbols(magellan_db_path, Some(wikilink), None)?;
+                if matches.is_empty() {
+                    continue;
+                }
+
+                let sym = &matches[0];
+                let metadata = symbol_to_metadata(sym);
+                let symbol_entity_id =
+                    self.upsert_symbol_discovery(agent_name, &sym.name, project_id, metadata)?;
+
+                let existing_edge = self.with_raw_connection(|conn| {
+                    Ok(conn
+                        .query_row(
+                            "SELECT id FROM graph_edges WHERE from_id = ?1 AND to_id = ?2 AND edge_type = ?3 LIMIT 1",
+                            rusqlite::params![page.id, symbol_entity_id, EdgeType::Explains.as_str()],
+                            |r| r.get::<_, i64>(0),
+                        )
+                        .ok())
+                })?;
+
+                if existing_edge.is_none() {
+                    self.insert_edge(
+                        page.id,
+                        symbol_entity_id,
+                        EdgeType::Explains,
+                        json!({"wikilink": wikilink, "symbol": sym.name}),
+                    )?;
+                    linked += 1;
+                }
+            }
+        }
+
+        Ok(linked)
     }
 
     fn upsert_symbol_discovery(

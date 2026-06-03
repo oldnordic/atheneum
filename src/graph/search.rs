@@ -2,12 +2,11 @@ use anyhow::Result;
 use serde_json::json;
 use sqlitegraph::hnsw::{DistanceMetric, HnswConfigBuilder};
 use sqlitegraph::GraphEntity;
-use std::hash::{Hash, Hasher};
+use std::collections::HashSet;
 
 use super::{AtheneumGraph, EntityType, SearchResult};
 
 const SEARCH_INDEX_NAME: &str = "discoveries";
-const SEARCH_EMBED_DIM: usize = 128;
 
 fn embed_text_for_entity(entity: &GraphEntity) -> String {
     let mut parts = vec![entity.kind.clone(), entity.name.clone()];
@@ -19,44 +18,47 @@ fn embed_text_for_entity(entity: &GraphEntity) -> String {
         "file_path",
         "summary",
         "signature",
+        "title",
+        "path",
+        "body",
         "kind",
     ] {
         if let Some(value) = entity.data.get(key).and_then(|v| v.as_str()) {
             parts.push(value.to_string());
         }
     }
+    if let Some(items) = entity.data.get("wikilinks").and_then(|v| v.as_array()) {
+        for item in items {
+            if let Some(value) = item.as_str() {
+                parts.push(value.to_string());
+            }
+        }
+    }
     parts.join(" ")
 }
 
-/// Hash-project `text` into a `dim`-dimensional bag-of-tokens vector.
-///
-/// Each lowercase token is hashed into a bucket; the result is L2-normalized.
-/// This is a lexical approximation — cosine similarity is high for texts that
-/// share tokens, not for texts that are semantically equivalent but lexically
-/// different ("car" vs "automobile" score 0). There is no neural model here.
-fn hash_embed(text: &str, dim: usize) -> Vec<f32> {
-    let mut vector = vec![0.0_f32; dim];
-    for token in text
+fn query_tokens(query: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    query
         .split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
-    {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        token.to_ascii_lowercase().hash(&mut hasher);
-        let bucket = (hasher.finish() as usize) % dim;
-        vector[bucket] += 1.0;
-    }
-    let norm: f32 = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > 0.0 {
-        for v in &mut vector {
-            *v /= norm;
-        }
-    }
-    vector
+        .map(|t| t.to_ascii_lowercase())
+        .filter(|t| seen.insert(t.clone()))
+        .collect()
 }
 
-fn search_config() -> Result<sqlitegraph::hnsw::HnswConfig> {
+fn lexical_token_score(entity: &GraphEntity, tokens: &[String]) -> f32 {
+    if tokens.is_empty() {
+        return 0.0;
+    }
+    let text = embed_text_for_entity(entity).to_ascii_lowercase();
+    let matched = tokens.iter().filter(|token| text.contains(*token)).count();
+    matched as f32 / tokens.len() as f32
+}
+
+fn search_config(dim: usize) -> Result<sqlitegraph::hnsw::HnswConfig> {
     HnswConfigBuilder::new()
-        .dimension(SEARCH_EMBED_DIM)
+        .dimension(dim)
         .distance_metric(DistanceMetric::Cosine)
         .build()
         .map_err(|e| anyhow::anyhow!("HNSW config build failed: {}", e))
@@ -72,7 +74,7 @@ impl AtheneumGraph {
         if existing.iter().any(|n| n == SEARCH_INDEX_NAME) {
             return Ok(());
         }
-        let config = search_config()?;
+        let config = search_config(self.embedder.dimension())?;
         let _guard = self
             .inner
             .hnsw_index(SEARCH_INDEX_NAME, config)
@@ -84,7 +86,7 @@ impl AtheneumGraph {
     pub(super) fn add_entity_to_search_index(&self, entity: &GraphEntity) -> Result<()> {
         self.ensure_search_index()?;
         let text = embed_text_for_entity(entity);
-        let vector = hash_embed(&text, SEARCH_EMBED_DIM);
+        let vector = self.embedder.embed(&text)?;
         let entity_id = entity.id;
         self.inner
             .get_hnsw_index_mut(SEARCH_INDEX_NAME, move |idx| {
@@ -99,9 +101,10 @@ impl AtheneumGraph {
     pub fn build_search_index(&self) -> Result<()> {
         let _ = self.inner.delete_hnsw_index(SEARCH_INDEX_NAME);
         self.ensure_search_index()?;
-        let discoveries = self.entities_by_kind(EntityType::Discovery.as_str())?;
-        for entity in discoveries {
-            self.add_entity_to_search_index(&entity)?;
+        for kind in [EntityType::Discovery.as_str(), "WikiPage", "JournalSection"] {
+            for entity in self.entities_by_kind(kind)? {
+                self.add_entity_to_search_index(&entity)?;
+            }
         }
         Ok(())
     }
@@ -118,7 +121,7 @@ impl AtheneumGraph {
         project_id: Option<&str>,
     ) -> Result<Vec<SearchResult>> {
         self.ensure_search_index()?;
-        let query_vec = hash_embed(query, SEARCH_EMBED_DIM);
+        let query_vec = self.embedder.embed(query)?;
         let fetch_k = if project_id.is_some() { k * 4 } else { k };
 
         let hits = self
@@ -128,6 +131,7 @@ impl AtheneumGraph {
             .map_err(|e| anyhow::anyhow!("hnsw search failed: {}", e))?;
 
         let mut results = Vec::with_capacity(hits.len());
+        let mut seen_entities = HashSet::new();
         for (vector_id, score) in hits {
             let metadata = self
                 .inner
@@ -146,6 +150,9 @@ impl AtheneumGraph {
                 Ok(e) => e,
                 Err(_) => continue,
             };
+            if !seen_entities.insert(entity.id) {
+                continue;
+            }
 
             if let Some(pid) = project_id {
                 let entity_project = entity
@@ -168,6 +175,53 @@ impl AtheneumGraph {
 
             if results.len() >= k {
                 break;
+            }
+        }
+
+        if results.len() < k {
+            let tokens = query_tokens(query);
+            let mut fallback = Vec::new();
+            for kind in [EntityType::Discovery.as_str(), "WikiPage", "JournalSection"] {
+                for entity in self.entities_by_kind(kind)? {
+                    if seen_entities.contains(&entity.id) {
+                        continue;
+                    }
+                    if let Some(pid) = project_id {
+                        let entity_project = entity
+                            .data
+                            .get("project_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        if entity_project != pid {
+                            continue;
+                        }
+                    }
+                    let score = lexical_token_score(&entity, &tokens);
+                    if score > 0.0 {
+                        fallback.push((entity, score));
+                    }
+                }
+            }
+            fallback.sort_by(|(left, left_score), (right, right_score)| {
+                right_score
+                    .partial_cmp(left_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| left.name.cmp(&right.name))
+            });
+            for (entity, score) in fallback {
+                if !seen_entities.insert(entity.id) {
+                    continue;
+                }
+                results.push(SearchResult {
+                    id: entity.id,
+                    name: entity.name,
+                    kind: entity.kind,
+                    score,
+                    data: entity.data,
+                });
+                if results.len() >= k {
+                    break;
+                }
             }
         }
         Ok(results)

@@ -6,7 +6,7 @@
 //! "open mode"): an edge is allowed unless a property explicitly restricts
 //! its domain/range to specific class names.
 
-use atheneum::graph::AtheneumGraph;
+use atheneum::graph::{AtheneumGraph, EdgeType};
 
 #[test]
 fn test_define_class_creates_ontology_entity() {
@@ -178,6 +178,11 @@ fn test_seed_standard_ontology_populates_core_kinds() {
         "Commit",
         "TestRun",
         "EventLog",
+        "Project",
+        "CodeSymbol",
+        "File",
+        "Skill",
+        "Failure",
     ] {
         assert!(
             names.contains(&required),
@@ -186,4 +191,31 @@ fn test_seed_standard_ontology_populates_core_kinds() {
             names
         );
     }
+}
+
+#[test]
+fn test_seed_standard_ontology_populates_hopgraph_relations() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+
+    graph.seed_standard_ontology().expect("seed");
+
+    let props = graph.list_properties().expect("list");
+    let names: Vec<&str> = props.iter().map(|p| p.name.as_str()).collect();
+
+    for edge_type in EdgeType::all() {
+        let required = edge_type.as_str();
+        assert!(
+            names.contains(&required),
+            "seed must include edge property {} (got: {:?})",
+            required,
+            names
+        );
+    }
+
+    let wikilink = props
+        .iter()
+        .find(|p| p.name == EdgeType::Wikilink.as_str())
+        .expect("wikilink property");
+    assert_eq!(wikilink.domain_class, "WikiPage");
+    assert_eq!(wikilink.range_class, "WikiPage");
 }

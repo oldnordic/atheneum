@@ -231,6 +231,99 @@ graph.ingest_journal_sections(&sections, Some("my-project"))?;
 
 ---
 
+## HopGraph
+
+HopGraph is atheneum's retrieval model: **embeddings find the door, graph walk retrieves the room.** Unlike flat RAG, HopGraph uses vector similarity only to locate entry points, then expands connected knowledge via graph traversal.
+
+### Token-Budgeted Retrieval
+
+```rust
+use atheneum::graph::{AtheneumGraph, EdgeType};
+
+let graph = AtheneumGraph::open(Path::new("atheneum.db"))?;
+
+let views = graph.hopgraph_query(
+    "session accountability",      // query text
+    3,                             // k: max entry-point entities
+    2,                             // depth: BFS expansion depth
+    Some(&[EdgeType::Explains, EdgeType::Wikilink]),  // allowed edge types
+    2000,                          // max_tokens budget per view
+    None,                          // project_id filter
+)?;
+
+for view in &views {
+    println!("entry={} entities={} edges={}",
+        view.entry_id, view.entities.len(), view.edges.len());
+}
+```
+
+`hopgraph_query` performs: lexical search → filtered BFS subgraph → token-budgeted truncation. Orphan edges (pointing to removed entities) are dropped. The entry entity is always kept regardless of budget.
+
+### Filtered Subgraph Walk
+
+```rust
+use atheneum::graph::EdgeType;
+
+// Walk only Explains and Wikilink edges from an entity
+let view = graph.get_subgraph_filtered(
+    entity_id,
+    3,      // depth
+    Some(&[EdgeType::Explains, EdgeType::Wikilink]),
+)?;
+```
+
+### Embedding Backends
+
+```rust
+// Default: HashEmbedder (128-dim, zero deps, always available)
+let dim = graph.embedder_dimension(); // 128
+
+// Switch to neural embeddings (requires --features neural-embed)
+#[cfg(feature = "neural-embed")]
+{
+    use atheneum::graph::OllamaEmbedder;
+    graph.set_embedder(Box::new(OllamaEmbedder::nomic_embed_text()));
+    graph.build_search_index()?; // rebuild index with new dimension (768)
+    assert_eq!(graph.embedder_dimension(), 768);
+}
+```
+
+| Backend | Dimension | Dependencies | Quality |
+|---------|-----------|-------------|---------|
+| `HashEmbedder` | 128 | None | Token overlap only ("car" ≠ "automobile") |
+| `OllamaEmbedder` | 768 | ollama + nomic-embed-text | Semantic similarity |
+
+### Discovery Consolidation
+
+Merge duplicate Discovery entities into deduplicated Knowledge entities:
+
+```rust
+// Consolidate a single target
+let knowledge_id = graph.consolidate_discoveries("query_sessions", Some("my-project"))?;
+
+// Consolidate all targets in a project
+let results = graph.consolidation_pass(Some("my-project"))?;
+for (target, kid) in &results {
+    println!("{} → knowledge {}", target, kid);
+}
+```
+
+Consolidation creates `DerivedFrom` edges from Knowledge → source Discoveries. Idempotent — re-running returns the existing Knowledge entity.
+
+### Bridge Wiki to Code Symbols
+
+```rust
+graph.link_wiki_to_symbols(
+    "/path/to/.magellan/magellan/magellan.db",
+    "claude",
+    Some("my-project"),
+)?;
+```
+
+For each wiki page's `[[wikilinks]]`, queries the magellan DB for matching code symbols, imports them as Discovery entities, and creates `Explains` edges from wiki page → symbol. Idempotent.
+
+---
+
 ## Search
 
 ```rust
@@ -253,12 +346,39 @@ atheneum sync-wiki   <db-path> <wiki-dir> [project-id]
 # Sync journal files
 atheneum sync-journal <db-path> <journal-dir> [project-id]
 
+# Recursively sync a Logseq graph root
+atheneum sync-logseq <db-path> <wiki-root> [project-id]
+
+# Import a Claude Code transcript JSONL
+atheneum sync-claude-transcript <db-path> <transcript.jsonl> [project-id] [agent-name]
+
 # Query a wiki page
 atheneum query-wiki   <db-path> <page-path>
 
 # Query a journal
 atheneum query-journal <db-path> <journal-path>
+
+# Query graph topology
+atheneum graph-stats <db-path>
+atheneum entity <db-path> <entity-id>
+atheneum edge <db-path> <edge-id>
+atheneum neighbors <db-path> <entity-id> [--depth N]
+
+# Search indexed knowledge, then BFS-walk each hit
+atheneum navigate <db-path> "<query>" [--k N] [--depth N] [--project P]
 ```
+
+`sync-logseq` expects a Logseq-style root with `pages/` and/or `journals/`.
+It recursively ingests markdown files under those directories. Wiki page
+`[[links]]` are stored as first-class `wikilink` edges, enabling graph traversal through
+article and note relationships.
+
+`sync-claude-transcript` expects a Claude Code transcript JSONL, typically under
+`~/.claude/projects/<encoded-project>/<session-id>.jsonl`. It imports prompt
+summaries, assistant replies, observed tool calls, `accessed` file relations for
+`Read`/`Edit`/`Write`, and session token/cache totals. Re-running the command on the
+same append-only transcript imports only new lines because Atheneum stores a
+transcript cursor in SQL.
 
 ---
 
@@ -267,6 +387,7 @@ atheneum query-journal <db-path> <journal-path>
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `default` | ✓ | Core graph, wiki, sessions, planning |
+| `neural-embed` | — | Ollama neural embeddings (requires `ureq`) |
 | `web` | — | Web dashboard (axum + askama) |
 | `cli` | — | CLI binary |
 | `async` | — | Async runtime support |

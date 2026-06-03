@@ -8,7 +8,73 @@ use std::collections::{HashSet, VecDeque};
 use anyhow::Result;
 use sqlitegraph::{GraphEdge, GraphEntity};
 
-use super::{AtheneumGraph, GraphStats, SubgraphView};
+use super::{AtheneumGraph, EdgeType, GraphStats, SubgraphView};
+
+const CHARS_PER_TOKEN: usize = 4;
+
+pub fn estimate_entity_tokens(entity: &GraphEntity) -> usize {
+    let mut chars = entity.kind.len() + entity.name.len();
+    if let Some(ref fp) = entity.file_path {
+        chars += fp.len();
+    }
+    chars += entity.data.to_string().len();
+    chars / CHARS_PER_TOKEN
+}
+
+fn estimate_edge_tokens(edge: &GraphEdge) -> usize {
+    let chars = edge.edge_type.len() + edge.data.to_string().len() + 20;
+    chars / CHARS_PER_TOKEN
+}
+
+pub fn truncate_subgraph(view: SubgraphView, max_tokens: usize) -> SubgraphView {
+    let entry_id = view.entry.id;
+    let entry_tokens = estimate_entity_tokens(&view.entry);
+
+    if entry_tokens >= max_tokens {
+        return SubgraphView {
+            entry: view.entry,
+            depth: view.depth,
+            entities: vec![],
+            edges: vec![],
+        };
+    }
+
+    let mut budget = max_tokens.saturating_sub(entry_tokens);
+    let mut kept_entities = vec![];
+    let mut kept_entity_ids = HashSet::new();
+    kept_entity_ids.insert(entry_id);
+
+    for entity in &view.entities {
+        if entity.id == entry_id {
+            continue;
+        }
+        let cost = estimate_entity_tokens(entity);
+        if cost <= budget {
+            kept_entities.push(entity.clone());
+            kept_entity_ids.insert(entity.id);
+            budget = budget.saturating_sub(cost);
+        }
+    }
+
+    let mut kept_edges = vec![];
+    for edge in view.edges {
+        if !kept_entity_ids.contains(&edge.from_id) || !kept_entity_ids.contains(&edge.to_id) {
+            continue;
+        }
+        let cost = estimate_edge_tokens(&edge);
+        if cost <= budget {
+            kept_edges.push(edge);
+            budget = budget.saturating_sub(cost);
+        }
+    }
+
+    SubgraphView {
+        entry: view.entry,
+        depth: view.depth,
+        entities: kept_entities,
+        edges: kept_edges,
+    }
+}
 
 /// Scope predicate shared by all navigation and traversal functions.
 ///
@@ -108,7 +174,6 @@ impl AtheneumGraph {
 
         let entry = self.get_entity(entry_id)?;
 
-        // Validate the entry itself is in scope before starting traversal.
         if !entity_in_project_scope(&entry, scope) {
             anyhow::bail!(
                 "entry entity {} is not in project scope '{}'",
@@ -118,7 +183,7 @@ impl AtheneumGraph {
         }
 
         let mut visited_entities: HashSet<i64> = HashSet::new();
-        let mut in_scope_entities: HashSet<i64> = HashSet::new(); // entities confirmed in scope
+        let mut in_scope_entities: HashSet<i64> = HashSet::new();
         let mut visited_edges: HashSet<i64> = HashSet::new();
         let mut entities: Vec<GraphEntity> = Vec::new();
         let mut edges: Vec<GraphEdge> = Vec::new();
@@ -149,7 +214,6 @@ impl AtheneumGraph {
                 };
 
                 if visited_entities.insert(neighbor_id) {
-                    // First time we see this entity — fetch and scope-check it.
                     if let Ok(neighbor) = self.get_entity(neighbor_id) {
                         if entity_in_project_scope(&neighbor, scope) {
                             in_scope_entities.insert(neighbor_id);
@@ -158,15 +222,75 @@ impl AtheneumGraph {
                             entities.push(neighbor);
                             queue.push_back((neighbor_id, current_depth + 1));
                         }
-                        // Out-of-scope: entity and edge both dropped.
                     }
-                } else if in_scope_entities.contains(&neighbor_id) {
-                    // Already-visited entity confirmed in scope — emit the edge.
-                    if visited_edges.insert(edge.id) {
-                        edges.push(edge.clone());
+                } else if in_scope_entities.contains(&neighbor_id) && visited_edges.insert(edge.id)
+                {
+                    edges.push(edge.clone());
+                }
+            }
+        }
+
+        Ok(SubgraphView {
+            entry,
+            depth,
+            entities,
+            edges,
+        })
+    }
+
+    pub fn get_subgraph_filtered(
+        &self,
+        entry_id: i64,
+        depth: u32,
+        allowed_types: &[EdgeType],
+    ) -> Result<SubgraphView> {
+        let entry = self.get_entity(entry_id)?;
+
+        if allowed_types.is_empty() {
+            return self.get_subgraph(entry_id, depth);
+        }
+
+        let allowed_labels: HashSet<&str> = allowed_types.iter().map(|t| t.as_str()).collect();
+
+        let mut visited_entities: HashSet<i64> = HashSet::new();
+        let mut visited_edges: HashSet<i64> = HashSet::new();
+        let mut entities: Vec<GraphEntity> = Vec::new();
+        let mut edges: Vec<GraphEdge> = Vec::new();
+        let mut queue: VecDeque<(i64, u32)> = VecDeque::new();
+
+        queue.push_back((entry_id, 0));
+        visited_entities.insert(entry_id);
+        entities.push(entry.clone());
+
+        while let Some((current_id, current_depth)) = queue.pop_front() {
+            if current_depth >= depth {
+                continue;
+            }
+
+            let out = self.outgoing_edges(current_id).unwrap_or_default();
+            let inc = self.incoming_edges(current_id).unwrap_or_default();
+
+            for edge in out.into_iter().chain(inc) {
+                if !allowed_labels.contains(edge.edge_type.as_str()) {
+                    continue;
+                }
+                if !visited_edges.insert(edge.id) {
+                    continue;
+                }
+                edges.push(edge.clone());
+
+                let neighbor_id = if edge.from_id == current_id {
+                    edge.to_id
+                } else {
+                    edge.from_id
+                };
+
+                if visited_entities.insert(neighbor_id) {
+                    if let Ok(neighbor) = self.get_entity(neighbor_id) {
+                        entities.push(neighbor.clone());
+                        queue.push_back((neighbor_id, current_depth + 1));
                     }
                 }
-                // If neighbor is visited but NOT in in_scope_entities, it was denied — drop edge.
             }
         }
 
@@ -200,6 +324,50 @@ impl AtheneumGraph {
             let sg = self.get_subgraph_scoped(hit.id, depth, project_id)?;
             views.push(sg);
         }
+        Ok(views)
+    }
+
+    pub fn hopgraph_query(
+        &self,
+        query: &str,
+        k: usize,
+        depth: u32,
+        allowed_types: &[EdgeType],
+        max_tokens: usize,
+        project_id: Option<&str>,
+    ) -> Result<Vec<SubgraphView>> {
+        let hits = self.lexical_search(query, k, project_id)?;
+        if hits.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut budget = max_tokens;
+        let mut views = Vec::new();
+
+        for hit in hits {
+            let full_sg = if allowed_types.is_empty() {
+                self.get_subgraph_scoped(hit.id, depth, project_id)?
+            } else {
+                self.get_subgraph_filtered(hit.id, depth, allowed_types)?
+            };
+
+            let sg = truncate_subgraph(full_sg, budget);
+            let used = estimate_entity_tokens(&sg.entry)
+                + sg.entities
+                    .iter()
+                    .map(estimate_entity_tokens)
+                    .sum::<usize>();
+
+            if used > 0 {
+                budget = budget.saturating_sub(used);
+                views.push(sg);
+            }
+
+            if budget == 0 {
+                break;
+            }
+        }
+
         Ok(views)
     }
 

@@ -4,9 +4,140 @@ use rusqlite::params;
 use serde_json::{json, Value};
 use sqlitegraph::GraphEntity;
 
-use super::{AtheneumGraph, EntityType};
+use super::{AtheneumGraph, EdgeType, EntityType};
 
 impl AtheneumGraph {
+    pub fn consolidate_discoveries(
+        &self,
+        target: &str,
+        project_id: Option<&str>,
+    ) -> Result<Option<i64>> {
+        let discoveries = match project_id {
+            Some(pid) => self.query_discoveries_in_project(target, Some(pid))?,
+            None => self.query_discoveries(target)?,
+        };
+
+        if discoveries.is_empty() {
+            return Ok(None);
+        }
+
+        let existing = self.find_entity_id_by_kind_and_name(
+            EntityType::Knowledge.as_str(),
+            &format!("Knowledge: {}", target),
+        )?;
+
+        if let Some(kid) = existing {
+            return Ok(Some(kid));
+        }
+
+        let source_agents: Vec<String> = discoveries
+            .iter()
+            .filter_map(|d| {
+                d.data
+                    .get("agent")
+                    .and_then(|a| a.as_str())
+                    .map(String::from)
+            })
+            .collect();
+
+        let discovery_types: Vec<String> = discoveries
+            .iter()
+            .filter_map(|d| {
+                d.data
+                    .get("discovery_type")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            })
+            .collect();
+
+        let files: Vec<Value> = discoveries
+            .iter()
+            .filter_map(|d| d.data.get("file").cloned())
+            .collect();
+
+        let mut data = json!({
+            "target": target,
+            "discovery_count": discoveries.len(),
+            "source_agents": source_agents,
+            "discovery_types": discovery_types,
+            "consolidated_at": Utc::now().to_rfc3339(),
+        });
+
+        if let Some(obj) = data.as_object_mut() {
+            if !files.is_empty() {
+                obj.insert("source_files".to_string(), Value::Array(files));
+            }
+            if let Some(pid) = project_id {
+                obj.insert("project_id".to_string(), Value::String(pid.to_string()));
+            }
+        }
+
+        let entity = GraphEntity {
+            id: 0,
+            kind: EntityType::Knowledge.as_str().to_string(),
+            name: format!("Knowledge: {}", target),
+            file_path: None,
+            data,
+        };
+
+        let knowledge_id = self
+            .inner
+            .insert_entity(&entity)
+            .map_err(|e| anyhow::anyhow!("Failed to insert Knowledge: {}", e))?;
+
+        for discovery in &discoveries {
+            let _ = self.insert_edge(
+                knowledge_id,
+                discovery.id,
+                EdgeType::DerivedFrom,
+                json!({"consolidation": "auto"}),
+            );
+        }
+
+        let indexed = GraphEntity {
+            id: knowledge_id,
+            ..entity
+        };
+        if let Err(e) = self.add_entity_to_search_index(&indexed) {
+            eprintln!("[atheneum] knowledge auto-index warning: {}", e);
+        }
+
+        Ok(Some(knowledge_id))
+    }
+
+    pub fn consolidation_pass(&self, project_id: Option<&str>) -> Result<Vec<(String, i64)>> {
+        let targets: Vec<String> = self.with_raw_connection(|conn| {
+            let sql = if project_id.is_some() {
+                "SELECT DISTINCT json_extract(data, '$.target') FROM graph_entities
+                 WHERE kind = 'Discovery' AND json_extract(data, '$.target') IS NOT NULL
+                   AND json_extract(data, '$.project_id') = ?1"
+            } else {
+                "SELECT DISTINCT json_extract(data, '$.target') FROM graph_entities
+                 WHERE kind = 'Discovery' AND json_extract(data, '$.target') IS NOT NULL"
+            };
+
+            let mut stmt = conn.prepare_cached(sql)?;
+            let rows: Vec<String> = if let Some(pid) = project_id {
+                stmt.query_map(rusqlite::params![pid], |row| row.get(0))?
+                    .filter_map(|r| r.ok())
+                    .collect()
+            } else {
+                stmt.query_map([], |row| row.get(0))?
+                    .filter_map(|r| r.ok())
+                    .collect()
+            };
+            Ok(rows)
+        })?;
+
+        let mut results = Vec::new();
+        for target in &targets {
+            if let Some(kid) = self.consolidate_discoveries(target, project_id)? {
+                results.push((target.clone(), kid));
+            }
+        }
+        Ok(results)
+    }
+
     pub fn query_knowledge(&self, target: &str) -> Result<Value> {
         let discoveries = self.query_discoveries(target).unwrap_or_default();
 

@@ -5,7 +5,7 @@ use serde_json::json;
 use sqlitegraph::GraphEntity;
 
 use super::{
-    AtheneumGraph, OntologyClassInfo, OntologyPropertyInfo, ONTOLOGY_CLASS_KIND,
+    AtheneumGraph, EdgeType, OntologyClassInfo, OntologyPropertyInfo, ONTOLOGY_CLASS_KIND,
     ONTOLOGY_PROPERTY_KIND,
 };
 
@@ -140,9 +140,170 @@ impl AtheneumGraph {
             ("Commit", "A git commit recorded as evidence"),
             ("TestRun", "A test execution result"),
             ("EventLog", "An append-only evidence event"),
+            ("Project", "A workspace or product scope"),
+            (
+                "CodeSymbol",
+                "A source-level symbol such as a function, type, or module",
+            ),
+            ("File", "A source, document, or generated file"),
+            ("Skill", "An agent instruction pack or capability"),
+            (
+                "Failure",
+                "A failing test, bug, regression, or observed defect",
+            ),
         ];
         for (name, description) in STANDARD {
             self.define_class(name, Some(description))?;
+        }
+
+        const STANDARD_PROPERTIES: &[(EdgeType, &str, &str, &str)] = &[
+            (
+                EdgeType::PerformedBy,
+                "ANY",
+                "Agent",
+                "Action or event was performed by an agent",
+            ),
+            (
+                EdgeType::AssignedTo,
+                "Task",
+                "Agent",
+                "Task is assigned to an agent",
+            ),
+            (
+                EdgeType::Called,
+                "ReasoningLog",
+                "ToolCall",
+                "Reasoning log called a tool",
+            ),
+            (
+                EdgeType::Calls,
+                "CodeSymbol",
+                "CodeSymbol",
+                "Code symbol calls another code symbol",
+            ),
+            (
+                EdgeType::Accessed,
+                "Session",
+                "File",
+                "Session accessed a file or path while gathering context",
+            ),
+            (
+                EdgeType::Modified,
+                "ToolCall",
+                "ANY",
+                "Tool call modified a target entity",
+            ),
+            (
+                EdgeType::VerifiedBy,
+                "ANY",
+                "TestRun",
+                "Entity or session was verified by a test run",
+            ),
+            (
+                EdgeType::CausedBy,
+                "ANY",
+                "ANY",
+                "Entity or event was caused by another entity",
+            ),
+            (
+                EdgeType::Created,
+                "ANY",
+                "ANY",
+                "Entity created another entity",
+            ),
+            (
+                EdgeType::RelatedTo,
+                "ANY",
+                "ANY",
+                "Loose relationship retained for compatibility",
+            ),
+            (
+                EdgeType::Mentions,
+                "ANY",
+                "ANY",
+                "Entity text mentions another entity",
+            ),
+            (
+                EdgeType::Wikilink,
+                "WikiPage",
+                "WikiPage",
+                "Wiki page links to another wiki page",
+            ),
+            (
+                EdgeType::Implements,
+                "CodeSymbol",
+                "ANY",
+                "Code symbol implements a requirement, interface, or design",
+            ),
+            (
+                EdgeType::DependsOn,
+                "ANY",
+                "ANY",
+                "Entity depends on another entity",
+            ),
+            (
+                EdgeType::TestedBy,
+                "ANY",
+                "TestRun",
+                "Entity is tested by a test run or test target",
+            ),
+            (
+                EdgeType::FixedBy,
+                "Failure",
+                "ANY",
+                "Failure was fixed by another entity",
+            ),
+            (
+                EdgeType::RegressedBy,
+                "ANY",
+                "ANY",
+                "Entity regressed because of another entity",
+            ),
+            (
+                EdgeType::ObservedIn,
+                "ANY",
+                "Session",
+                "Entity was observed in a session or run",
+            ),
+            (
+                EdgeType::BelongsToProject,
+                "ANY",
+                "Project",
+                "Entity belongs to a project scope",
+            ),
+            (
+                EdgeType::SimilarFailure,
+                "Failure",
+                "Failure",
+                "Failure resembles another failure",
+            ),
+            (
+                EdgeType::RequiresSkill,
+                "ANY",
+                "Skill",
+                "Task or workflow requires a skill",
+            ),
+            (
+                EdgeType::HandledByTool,
+                "ANY",
+                "ToolCall",
+                "Entity or task was handled by a tool",
+            ),
+            (
+                EdgeType::Explains,
+                "WikiPage",
+                "CodeSymbol",
+                "Wiki page explains a code symbol or concept",
+            ),
+            (
+                EdgeType::DerivedFrom,
+                "ANY",
+                "ANY",
+                "Entity was derived from another entity",
+            ),
+        ];
+        for (edge_type, domain, range, description) in STANDARD_PROPERTIES {
+            self.define_property(edge_type.as_str(), domain, range, Some(description))?;
         }
         Ok(())
     }

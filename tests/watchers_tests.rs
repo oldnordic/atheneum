@@ -131,6 +131,45 @@ fn test_ingest_wiki_page_creates_wikipage_entity() {
 }
 
 #[test]
+fn test_ingest_wiki_page_ignores_body_horizontal_rules_as_frontmatter() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    let content =
+        "# Article\n\nBody before rule.\n\n---\n\nnot: frontmatter\n\n---\n\nBody after rule.";
+
+    let id = graph
+        .ingest_wiki_page("wiki/no-frontmatter.md", content, Some("envoy"))
+        .expect("ingest");
+    let entity = graph.get_entity(id).expect("retrieve");
+    let data = entity.data.as_object().expect("object data");
+
+    assert!(!data.contains_key("not"));
+    assert_eq!(data.get("body").and_then(|v| v.as_str()), Some(content));
+}
+
+#[test]
+fn test_ingest_wiki_page_auto_indexed_for_navigation() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    let content = "---\n\
+                   title: Dynamic Workflows\n\
+                   ---\n\
+                   Claude Code dynamic workflows use subagents and graph navigation.\n";
+
+    graph
+        .ingest_wiki_page("wiki/dynamic-workflows.md", content, Some("forge"))
+        .expect("ingest");
+
+    let hits = graph
+        .lexical_search("dynamic workflows subagents", 5, Some("forge"))
+        .expect("search");
+
+    assert!(
+        hits.iter()
+            .any(|hit| hit.kind == "WikiPage" && hit.name == "wiki/dynamic-workflows.md"),
+        "ingested wiki page should be searchable immediately: {hits:?}"
+    );
+}
+
+#[test]
 fn test_ingest_wiki_page_idempotent_on_same_path() {
     let graph = AtheneumGraph::open_in_memory().expect("open");
     let content_v1 = "---\ntitle: V1\n---\nbody v1\n";

@@ -123,17 +123,17 @@ Link to [[Another Page]] and [[Missing Page]].
 
     assert!(!outgoing.is_empty(), "Should have outgoing wikilink edges");
 
-    // Verify at least one edge is a RelatedTo edge
+    // Verify at least one edge is a first-class Wikilink edge
     let wikilink_edges = graph
         .outgoing_edges(article_id)
         .expect("Failed to get outgoing edges")
         .into_iter()
-        .filter(|e| e.edge_type == EdgeType::RelatedTo.as_str())
+        .filter(|e| e.edge_type == EdgeType::Wikilink.as_str())
         .collect::<Vec<_>>();
 
     assert!(
         !wikilink_edges.is_empty(),
-        "Should have RelatedTo edges from wikilinks"
+        "Should have Wikilink edges from wikilinks"
     );
 
     // Missing target should have created a stub entity

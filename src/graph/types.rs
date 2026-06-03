@@ -15,6 +15,7 @@ pub enum EntityType {
     Commit,
     TestRun,
     EventLog,
+    WikiPage,
 }
 
 impl EntityType {
@@ -31,20 +32,38 @@ impl EntityType {
             EntityType::Commit => "Commit",
             EntityType::TestRun => "TestRun",
             EntityType::EventLog => "EventLog",
+            EntityType::WikiPage => "WikiPage",
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EdgeType {
     PerformedBy,
     AssignedTo,
     Called,
+    Calls,
+    Accessed,
     Modified,
     VerifiedBy,
     CausedBy,
     Created,
     RelatedTo,
+    Mentions,
+    Wikilink,
+    Implements,
+    DependsOn,
+    TestedBy,
+    FixedBy,
+    RegressedBy,
+    ObservedIn,
+    BelongsToProject,
+    SimilarFailure,
+    RequiresSkill,
+    HandledByTool,
+    Explains,
+    DerivedFrom,
 }
 
 impl EdgeType {
@@ -53,12 +72,87 @@ impl EdgeType {
             EdgeType::PerformedBy => "performed_by",
             EdgeType::AssignedTo => "assigned_to",
             EdgeType::Called => "called",
+            EdgeType::Calls => "calls",
+            EdgeType::Accessed => "accessed",
             EdgeType::Modified => "modified",
             EdgeType::VerifiedBy => "verified_by",
             EdgeType::CausedBy => "caused_by",
             EdgeType::Created => "created",
             EdgeType::RelatedTo => "related_to",
+            EdgeType::Mentions => "mentions",
+            EdgeType::Wikilink => "wikilink",
+            EdgeType::Implements => "implements",
+            EdgeType::DependsOn => "depends_on",
+            EdgeType::TestedBy => "tested_by",
+            EdgeType::FixedBy => "fixed_by",
+            EdgeType::RegressedBy => "regressed_by",
+            EdgeType::ObservedIn => "observed_in",
+            EdgeType::BelongsToProject => "belongs_to_project",
+            EdgeType::SimilarFailure => "similar_failure",
+            EdgeType::RequiresSkill => "requires_skill",
+            EdgeType::HandledByTool => "handled_by_tool",
+            EdgeType::Explains => "explains",
+            EdgeType::DerivedFrom => "derived_from",
         }
+    }
+
+    pub fn from_label(label: &str) -> Option<Self> {
+        Some(match label {
+            "performed_by" => EdgeType::PerformedBy,
+            "assigned_to" => EdgeType::AssignedTo,
+            "called" => EdgeType::Called,
+            "calls" => EdgeType::Calls,
+            "accessed" => EdgeType::Accessed,
+            "modified" => EdgeType::Modified,
+            "verified_by" => EdgeType::VerifiedBy,
+            "caused_by" => EdgeType::CausedBy,
+            "created" => EdgeType::Created,
+            "related_to" => EdgeType::RelatedTo,
+            "mentions" => EdgeType::Mentions,
+            "wikilink" => EdgeType::Wikilink,
+            "implements" => EdgeType::Implements,
+            "depends_on" => EdgeType::DependsOn,
+            "tested_by" => EdgeType::TestedBy,
+            "fixed_by" => EdgeType::FixedBy,
+            "regressed_by" => EdgeType::RegressedBy,
+            "observed_in" => EdgeType::ObservedIn,
+            "belongs_to_project" => EdgeType::BelongsToProject,
+            "similar_failure" => EdgeType::SimilarFailure,
+            "requires_skill" => EdgeType::RequiresSkill,
+            "handled_by_tool" => EdgeType::HandledByTool,
+            "explains" => EdgeType::Explains,
+            "derived_from" => EdgeType::DerivedFrom,
+            _ => return None,
+        })
+    }
+
+    pub fn all() -> &'static [EdgeType] {
+        &[
+            EdgeType::PerformedBy,
+            EdgeType::AssignedTo,
+            EdgeType::Called,
+            EdgeType::Calls,
+            EdgeType::Accessed,
+            EdgeType::Modified,
+            EdgeType::VerifiedBy,
+            EdgeType::CausedBy,
+            EdgeType::Created,
+            EdgeType::RelatedTo,
+            EdgeType::Mentions,
+            EdgeType::Wikilink,
+            EdgeType::Implements,
+            EdgeType::DependsOn,
+            EdgeType::TestedBy,
+            EdgeType::FixedBy,
+            EdgeType::RegressedBy,
+            EdgeType::ObservedIn,
+            EdgeType::BelongsToProject,
+            EdgeType::SimilarFailure,
+            EdgeType::RequiresSkill,
+            EdgeType::HandledByTool,
+            EdgeType::Explains,
+            EdgeType::DerivedFrom,
+        ]
     }
 }
 
@@ -191,6 +285,7 @@ pub struct SessionParams {
     pub git_branch: Option<String>,
     pub git_head: Option<String>,
     pub parent_session_id: Option<String>,
+    pub relations: Vec<RelationHint>,
 }
 
 /// Compact session summary for history display and handover queries.
@@ -229,10 +324,25 @@ pub struct EndSessionParams {
 }
 
 #[derive(Debug, Clone)]
+pub struct SessionProgressParams {
+    pub session_id: String,
+    pub model: Option<String>,
+    pub git_branch: Option<String>,
+    pub prompt_count: i64,
+    pub tool_call_count: i64,
+    pub file_write_count: i64,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub total_cost_usd: f64,
+}
+
+#[derive(Debug, Clone)]
 pub struct PromptParams {
     pub session_id: String,
     pub role: String,
     pub sequence: i64,
+    pub content_summary: Option<String>,
+    pub source: Option<String>,
     pub input_hash: String,
     pub input_tokens: Option<i64>,
     pub output_hash: Option<String>,
@@ -240,12 +350,15 @@ pub struct PromptParams {
     pub latency_ms: Option<i64>,
     pub model: Option<String>,
     pub cost_usd: Option<f64>,
+    pub relations: Vec<RelationHint>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ToolCallParams {
     pub session_id: String,
     pub tool_name: String,
+    pub sequence: Option<i64>,
+    pub source: Option<String>,
     pub tool_version: Option<String>,
     pub input_hash: Option<String>,
     pub input_summary: Option<String>,
@@ -255,12 +368,14 @@ pub struct ToolCallParams {
     pub latency_ms: i64,
     pub input_tokens_est: Option<i64>,
     pub tool_category: String,
+    pub relations: Vec<RelationHint>,
 }
 
 #[derive(Debug, Clone)]
 pub struct FileWriteParams {
     pub session_id: String,
     pub file_path: String,
+    pub sequence: Option<i64>,
     pub file_id: Option<String>,
     pub before_hash: Option<String>,
     pub after_hash: Option<String>,
@@ -268,6 +383,18 @@ pub struct FileWriteParams {
     pub lines_deleted: i64,
     pub lines_changed: i64,
     pub write_type: String,
+    pub relations: Vec<RelationHint>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FileAccessParams {
+    pub session_id: String,
+    pub file_path: String,
+    pub sequence: i64,
+    pub access_type: String,
+    pub tool_name: Option<String>,
+    pub source: Option<String>,
+    pub relations: Vec<RelationHint>,
 }
 
 #[derive(Debug, Clone)]
@@ -282,6 +409,7 @@ pub struct CommitParams {
     pub lines_deleted: i64,
     pub commit_type: String,
     pub feature_tag: Option<String>,
+    pub relations: Vec<RelationHint>,
 }
 
 #[derive(Debug, Clone)]
@@ -294,6 +422,7 @@ pub struct TestRunParams {
     pub duration_ms: i64,
     pub logs_summary: Option<String>,
     pub commit_sha: Option<String>,
+    pub relations: Vec<RelationHint>,
 }
 
 #[derive(Debug, Clone)]
@@ -302,6 +431,39 @@ pub struct RecordEventParams {
     pub entity_id: String,
     pub session_id: String,
     pub payload: serde_json::Value,
+    pub relations: Vec<RelationHint>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClaudeTranscriptImportParams {
+    pub transcript_path: std::path::PathBuf,
+    pub session_id: Option<String>,
+    pub project: Option<String>,
+    pub agent_name: String,
+    pub tool: String,
+    pub trigger: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ClaudeTranscriptImportSummary {
+    pub session_id: String,
+    pub project: String,
+    pub model: Option<String>,
+    pub git_branch: Option<String>,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub total_cache_read_tokens: i64,
+    pub total_cache_create_tokens: i64,
+    pub prompt_count: i64,
+    pub tool_call_count: i64,
+    pub file_access_count: i64,
+    pub file_write_count: i64,
+    pub compaction_count: i64,
+    pub imported_prompts: i64,
+    pub imported_tool_calls: i64,
+    pub imported_file_accesses: i64,
+    pub imported_file_writes: i64,
+    pub imported_offset: u64,
 }
 
 /// One-hop neighborhood: outgoing edges + incoming edges for an entity.
@@ -339,4 +501,24 @@ pub struct FixChainParams {
     pub severity: String,
     pub cycles_to_fix: i64,
     pub time_to_fix_ms: i64,
+    pub relations: Vec<RelationHint>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RelationEndpoint {
+    pub kind: String,
+    pub name: String,
+    #[serde(default)]
+    pub file_path: Option<String>,
+    #[serde(default)]
+    pub data: Value,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RelationHint {
+    pub from: RelationEndpoint,
+    pub to: RelationEndpoint,
+    pub edge_type: EdgeType,
+    #[serde(default)]
+    pub data: Value,
 }

@@ -1,7 +1,7 @@
 //! Tests for wiki query APIs and wikilink graph navigation.
 //! TDD: write tests first, watch them fail, then implement.
 
-use atheneum::graph::AtheneumGraph;
+use atheneum::graph::{AtheneumGraph, EdgeType};
 
 #[test]
 fn test_get_wiki_page_by_path() {
@@ -87,6 +87,40 @@ fn test_wikilink_graph_edges_created() {
     let target_names: Vec<_> = outgoing.iter().map(|e| e.name.clone()).collect();
     assert!(target_names.contains(&"Dest1".to_string()));
     assert!(target_names.contains(&"Dest2".to_string()));
+}
+
+#[test]
+fn test_legacy_related_to_wikilink_edges_still_traverse() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    let source = graph
+        .ingest_wiki_page(
+            "wiki/source.md",
+            "---\ntitle: Source\n---\nbody\n",
+            Some("proj"),
+        )
+        .expect("source");
+    let dest = graph
+        .ingest_wiki_page(
+            "wiki/dest.md",
+            "---\ntitle: Dest\n---\nbody\n",
+            Some("proj"),
+        )
+        .expect("dest");
+
+    graph
+        .insert_edge(
+            source,
+            dest,
+            EdgeType::RelatedTo,
+            serde_json::json!({"link_type": "wikilink", "target": "Dest"}),
+        )
+        .expect("legacy edge");
+
+    let outgoing = graph.outgoing_wikilinks(source).expect("outgoing");
+    assert!(
+        outgoing.iter().any(|e| e.id == dest),
+        "legacy related_to wikilink edge should remain traversable"
+    );
 }
 
 #[test]

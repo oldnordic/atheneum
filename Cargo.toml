@@ -1,6 +1,6 @@
 [package]
 name = "atheneum"
-version = "0.1.3"
+version = "0.2.0"
 edition = "2021"
 license = "GPL-3.0-only"
 description = "Agent coordination graph database - episodic and semantic memory for multi-agent workflows"
@@ -26,6 +26,8 @@ thiserror = "2.0"
 tracing = "0.1"
 sqlitegraph = "3.0.7"
 
+ureq = { version = "2", default-features = false, features = ["json"], optional = true }
+
 # Async runtime (optional for future use)
 tokio = { version = "1.44", features = ["full"], optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
@@ -43,3 +45,4 @@ walkdir = "2.5"
 default = []
 web-ui = ["dep:axum", "dep:tower-http", "dep:askama"]
 async = ["tokio", "tracing-subscriber"]
+neural-embed = ["dep:ureq"]

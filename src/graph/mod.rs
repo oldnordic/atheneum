@@ -4,8 +4,12 @@ use rusqlite::params;
 use serde_json::Value;
 use sqlitegraph::{GraphEdge, GraphEntity, SqliteGraph};
 
+use embed::HashEmbedder;
+
 pub mod audit;
+pub mod claude;
 pub mod discovery;
+pub mod embed;
 pub mod evidence;
 pub mod handoff;
 pub mod knowledge;
@@ -17,13 +21,16 @@ pub mod search;
 pub mod types;
 pub mod wiki;
 
+pub use navigation::{estimate_entity_tokens, truncate_subgraph};
 pub use planning::{KanbanStatus, KanbanUpdate};
 pub use types::{
-    ActionRecord, ActionTrace, AppliedKanbanUpdate, AtheneumError, BlockerType, CommitParams,
-    EdgeType, EndSessionParams, EntityType, FileWriteParams, FixChainParams, GraphStats, Neighbors,
-    OntologyClassInfo, OntologyPropertyInfo, PromptParams, RecordEventParams, RequirementStatus,
-    SearchResult, SessionParams, SessionSummary, SubgraphView, TaskDetail, TestRunParams,
-    ToolCallParams, ToolCallRecord, ToolCallTrace, ONTOLOGY_CLASS_KIND, ONTOLOGY_PROPERTY_KIND,
+    ActionRecord, ActionTrace, AppliedKanbanUpdate, AtheneumError, BlockerType,
+    ClaudeTranscriptImportParams, ClaudeTranscriptImportSummary, CommitParams, EdgeType,
+    EndSessionParams, EntityType, FileAccessParams, FileWriteParams, FixChainParams, GraphStats,
+    Neighbors, OntologyClassInfo, OntologyPropertyInfo, PromptParams, RecordEventParams,
+    RelationEndpoint, RelationHint, RequirementStatus, SearchResult, SessionParams,
+    SessionProgressParams, SessionSummary, SubgraphView, TaskDetail, TestRunParams, ToolCallParams,
+    ToolCallRecord, ToolCallTrace, ONTOLOGY_CLASS_KIND, ONTOLOGY_PROPERTY_KIND,
 };
 pub use wiki::{
     content_hash, extract_kanban_updates, extract_wikilinks, parse_journal_sections,
@@ -36,21 +43,36 @@ pub(super) fn json_to_string(v: &Value) -> Result<String> {
 
 pub struct AtheneumGraph {
     inner: SqliteGraph,
+    embedder: Box<dyn embed::TextEmbedder>,
 }
 
 impl AtheneumGraph {
     pub fn open_in_memory() -> Result<Self> {
         let inner = SqliteGraph::open_in_memory()?;
-        let g = Self { inner };
+        let g = Self {
+            inner,
+            embedder: Box::new(HashEmbedder::new(128)),
+        };
         g.run_startup_migrations()?;
         Ok(g)
     }
 
     pub fn open(path: &std::path::Path) -> Result<Self> {
         let inner = SqliteGraph::open(path)?;
-        let g = Self { inner };
+        let g = Self {
+            inner,
+            embedder: Box::new(HashEmbedder::new(128)),
+        };
         g.run_startup_migrations()?;
         Ok(g)
+    }
+
+    pub fn set_embedder(&mut self, embedder: Box<dyn embed::TextEmbedder>) {
+        self.embedder = embedder;
+    }
+
+    pub fn embedder_dimension(&self) -> usize {
+        self.embedder.dimension()
     }
 
     fn run_startup_migrations(&self) -> Result<()> {
@@ -390,17 +412,25 @@ impl AtheneumGraph {
 }
 
 fn parse_frontmatter(content: &str) -> Result<(Value, &str)> {
-    let first_marker = content
-        .find("---")
+    let rest = content
+        .strip_prefix("---\r\n")
+        .or_else(|| content.strip_prefix("---\n"))
         .ok_or_else(|| anyhow::anyhow!("No frontmatter start marker"))?;
 
-    let second_marker = content[first_marker + 3..]
-        .find("---")
-        .ok_or_else(|| anyhow::anyhow!("No frontmatter end marker"))?
-        + first_marker
-        + 3;
+    let mut offset = 0;
+    let mut closing = None;
+    for line in rest.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed == "---" {
+            closing = Some((offset, offset + line.len()));
+            break;
+        }
+        offset += line.len();
+    }
 
-    let frontmatter_text = &content[first_marker + 3..second_marker];
+    let (frontmatter_end, body_start) =
+        closing.ok_or_else(|| anyhow::anyhow!("No frontmatter end marker"))?;
+    let frontmatter_text = &rest[..frontmatter_end];
 
     let mut map = serde_json::Map::new();
     for line in frontmatter_text.lines() {
@@ -436,7 +466,7 @@ fn parse_frontmatter(content: &str) -> Result<(Value, &str)> {
         map.insert(key.to_string(), value);
     }
 
-    let body = &content[second_marker + 3..];
+    let body = &rest[body_start..];
 
     Ok((Value::Object(map), body))
 }
