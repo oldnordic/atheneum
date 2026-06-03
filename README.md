@@ -1,6 +1,6 @@
 # Atheneum
 
-Embedded graph database for AI agent coordination — episodic memory, knowledge persistence, and session accountability across LLM coding sessions.
+Embedded graph database for agent coordination — episodic memory, knowledge persistence, and session accountability across coding sessions.
 
 Part of the **grounded-coding ecosystem**. Used as the storage layer inside [envoy](https://github.com/oldnordic/envoy).
 
@@ -110,7 +110,7 @@ HopGraph is atheneum's retrieval model: **embeddings find the door, graph walk r
 
 1. A text query is embedded and matched against the lexical index to find entry-point entities.
 2. From each hit, a BFS walk expands the subgraph — following only allowed edge types (e.g., `Explains`, `Wikilink`).
-3. The result is truncated to a token budget so it fits in an LLM context window.
+3. The result is truncated to a token budget so it fits in a context window.
 
 ```rust
 use atheneum::graph::{AtheneumGraph, hopgraph_query, EdgeType};

@@ -45,7 +45,7 @@ The database schema is auto-migrated on `open()`. No separate migration step req
 
 ## Agent Sessions
 
-Sessions track every LLM coding session — who, when, what branch, how many tool calls, cost.
+Sessions track every coding session — who, when, what branch, how many tool calls, cost.
 
 ```rust
 use atheneum::graph::{AtheneumGraph, SessionParams};
