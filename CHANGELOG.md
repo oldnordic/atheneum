@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.0] — 2026-06-03
 
+### Fixed
+
+- **`build_search_index()` indexed only 3 entity kinds** — hardcoded `[Discovery, WikiPage, JournalSection]` whitelist excluded Sessions, Agents, ToolCalls, Events, Tasks, Files etc. from the HNSW index. `navigate` and `hopgraph_query` returned empty for any query targeting those entity types. Now indexes ALL entity kinds via new `all_entities()` method.
+- **`lexical_search()` fallback had same whitelist** — token-scoring fallback also skipped non-whitelisted entities. Now scans all entities.
+
 ### Added
 
 - **HopGraph Phase 1: Wiki Pages as First-Class Graph Nodes** — Wiki pages are now full participants in the HopGraph traversal, not just side-table records.
@@ -37,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`build_search_index()` now indexes ALL entity kinds** — previously limited to Discovery, WikiPage, JournalSection. Added `all_entities()` method to AtheneumGraph.
+- **`reindex` CLI command** — `atheneum reindex <db>` rebuilds HNSW index over all entities for existing databases.
 - **`evidence.rs` modularized** — Split the 1143-line file into 5 focused submodules under `evidence/`:
   - `helpers.rs` (71 LOC) — shared relation/project helpers
   - `session.rs` (228 LOC) — session lifecycle (record, end, progress)
@@ -49,11 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **HNSW vectors now persist across process restarts.** `ensure_search_index()` uses `hnsw_index_persistent()` which stores vectors in SQLite's `hnsw_vectors` table via `SQLiteVectorStorage`. Graph edges are rebuilt from vectors on index open (O(N log N)). `build_search_index()` resets `sqlite_sequence` counters after clearing old index data, preventing `InvalidNodeId` errors from stale auto-increment IDs.
 - Clippy `collapsible_if` lint in `get_subgraph_scoped` — collapsed nested conditionals.
 
 ### Tests
 
-- 36 TDD tests in `tests/hopgraph_tests.rs` covering HopGraph P1–P4: enum roundtrips, serde serialization, wiki entity creation, wikilink edges, edge-type filtering, idempotent re-ingestion, token estimation, subgraph truncation, hopgraph queries, embedder trait, ollama embedder, discovery consolidation.
+- 39 TDD tests in `tests/hopgraph_tests.rs` covering HopGraph P1–P4, search index coverage, navigate-for-sessions, and HNSW vector persistence across DB reopen.
 - Previously failing `test_seed_standard_ontology_populates_hopgraph_relations` now passes with `explains` and `derived_from` in the ontology seed.
 
 ### Known Limitations

@@ -869,4 +869,42 @@ mod consolidation_tests {
             "navigate should find session entities via search index"
         );
     }
+
+    #[test]
+    fn test_hnsw_vectors_persist_across_reopen() {
+        let db_file = tempfile::NamedTempFile::new().expect("tempfile");
+        let db_path = db_file.path().to_path_buf();
+
+        {
+            let graph = AtheneumGraph::open(&db_path).expect("open first time");
+
+            graph
+                .store_discovery(
+                    "claude",
+                    "Bug",
+                    "persistent_target",
+                    json!({"summary": "vectors must persist across reopen"}),
+                )
+                .expect("discovery");
+
+            graph.build_search_index().expect("build index");
+
+            let hits = graph
+                .lexical_search("persistent vectors", 5, None)
+                .expect("search first session");
+            assert!(!hits.is_empty(), "should find discovery in first session");
+        }
+
+        {
+            let graph = AtheneumGraph::open(&db_path).expect("reopen");
+
+            let hits = graph
+                .lexical_search("persistent vectors", 5, None)
+                .expect("search second session");
+            assert!(
+                !hits.is_empty(),
+                "HNSW vectors must persist across database reopen — got 0 hits, HNSW index is ephemeral"
+            );
+        }
+    }
 }
