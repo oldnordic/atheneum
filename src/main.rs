@@ -386,6 +386,72 @@ fn run() -> anyhow::Result<()> {
                 json!({"edge_id": id, "from_id": from_id, "to_id": to_id, "edge_type": edge_type_str}),
             )?;
         }
+        "task-create" => {
+            if args.len() < 5 {
+                eprintln!("Usage: atheneum task-create <db-path> <title> [description] [--project P]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let title = &args[3];
+            let description = args.get(4).and_then(|s| if s.starts_with('-') { None } else { Some(s.as_str()) });
+            let opts = parse_options(&args[4..])?;
+            let graph = AtheneumGraph::open(&db_path)?;
+            let id = graph.create_task(title, description, opts.project.as_deref())?;
+            print_json(json!({"task_id": id, "title": title, "status": "TODO"}))?;
+        }
+        "task-list" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum task-list <db-path> [--project P] [--status S]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let opts = parse_options(&args[3..])?;
+            let graph = AtheneumGraph::open(&db_path)?;
+            let tasks: Vec<serde_json::Value> = if let Some(status_str) = &opts.status {
+                let status = atheneum::graph::KanbanStatus::parse(status_str)
+                    .ok_or_else(|| anyhow::anyhow!("unknown status '{}'. Valid: TODO, IN_PROGRESS, DONE, BLOCKED, ARCHIVED", status_str))?;
+                graph.list_tasks_by_status(status, opts.project.as_deref())?
+            } else {
+                graph.list_tasks(opts.project.as_deref())?
+            }.iter().map(|t| entity_to_json(t)).collect();
+            print_json(json!({"tasks": tasks, "count": tasks.len()}))?;
+        }
+        "task-update" => {
+            if args.len() < 5 {
+                eprintln!("Usage: atheneum task-update <db-path> <task-id> <status>");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let task_id = parse_i64_arg(&args[3], "task-id")?;
+            let status_str = &args[4];
+            let status = atheneum::graph::KanbanStatus::parse(status_str)
+                .ok_or_else(|| anyhow::anyhow!("unknown status '{}'. Valid: TODO, IN_PROGRESS, DONE, BLOCKED, ARCHIVED", status_str))?;
+            let graph = AtheneumGraph::open(&db_path)?;
+            graph.update_task_status(task_id, status)?;
+            print_json(json!({"task_id": task_id, "new_status": status.as_str()}))?;
+        }
+        "task-done" => {
+            if args.len() < 4 {
+                eprintln!("Usage: atheneum task-done <db-path> <task-id>");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let task_id = parse_i64_arg(&args[3], "task-id")?;
+            let graph = AtheneumGraph::open(&db_path)?;
+            graph.update_task_status(task_id, atheneum::graph::KanbanStatus::Done)?;
+            print_json(json!({"task_id": task_id, "status": "DONE"}))?;
+        }
+        "task-archive" => {
+            if args.len() < 4 {
+                eprintln!("Usage: atheneum task-archive <db-path> <task-id>");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let task_id = parse_i64_arg(&args[3], "task-id")?;
+            let graph = AtheneumGraph::open(&db_path)?;
+            graph.update_task_status(task_id, atheneum::graph::KanbanStatus::Archived)?;
+            print_json(json!({"task_id": task_id, "status": "ARCHIVED"}))?;
+        }
         "search" => {
             if args.len() < 4 {
                 eprintln!("Usage: atheneum search <db-path> <query> [--k N] [--project P]");
@@ -547,7 +613,28 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
         "  add-edge <db> <from-id> <to-id> <edge-type> [data.json]  Create a relation"
     )?;
     writeln!(writer)?;
-    writeln!(writer, "QUERY:")?;
+    writeln!(writer, "TASKS:")?;
+    writeln!(
+        writer,
+        "  task-create <db> <title> [desc] [--project P]  Create a new task"
+    )?;
+    writeln!(
+        writer,
+        "  task-list <db> [--project P] [--status S]        List tasks (default: non-archived)"
+    )?;
+    writeln!(
+        writer,
+        "  task-update <db> <task-id> <status>                Update task status"
+    )?;
+    writeln!(
+        writer,
+        "  task-done <db> <task-id>                         Mark task as DONE"
+    )?;
+    writeln!(
+        writer,
+        "  task-archive <db> <task-id>                      Archive a task"
+    )?;
+    writeln!(writer)?;
     writeln!(
         writer,
         "  search <db-path> <query> [--k N] [--project P]  HNSW/lexical search"
@@ -659,6 +746,10 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     )?;
     writeln!(writer, "  atheneum graph-stats ./atheneum.db")?;
     writeln!(writer, "  atheneum reindex ./atheneum.db")?;
+    writeln!(writer, "  atheneum task-create ./atheneum.db \"Build search index\" --project forge")?;
+    writeln!(writer, "  atheneum task-list ./atheneum.db --status TODO")?;
+    writeln!(writer, "  atheneum task-done ./atheneum.db 42")?;
+    writeln!(writer, "  atheneum task-archive ./atheneum.db 42")?;
     Ok(())
 }
 
@@ -670,6 +761,7 @@ struct CliOptions {
     limit: Option<String>,
     session: Option<String>,
     event_type: Option<String>,
+    status: Option<String>,
 }
 
 fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
@@ -689,6 +781,7 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
                 "--limit" => opts.limit = Some(value),
                 "--session" => opts.session = Some(value),
                 "--type" => opts.event_type = Some(value),
+                "--status" => opts.status = Some(value),
                 other => anyhow::bail!("unknown option: {}", other),
             }
             i += 2;

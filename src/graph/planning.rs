@@ -11,6 +11,7 @@ pub enum KanbanStatus {
     InProgress,
     Done,
     Blocked,
+    Archived,
 }
 
 impl KanbanStatus {
@@ -20,10 +21,11 @@ impl KanbanStatus {
             KanbanStatus::InProgress => "IN_PROGRESS",
             KanbanStatus::Done => "DONE",
             KanbanStatus::Blocked => "BLOCKED",
+            KanbanStatus::Archived => "ARCHIVED",
         }
     }
 
-    pub(super) fn parse(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_uppercase().as_str() {
             "TODO" => Some(KanbanStatus::Todo),
             "IN_PROGRESS" | "IN-PROGRESS" | "INPROGRESS" | "IN PROGRESS" => {
@@ -31,6 +33,7 @@ impl KanbanStatus {
             }
             "DONE" => Some(KanbanStatus::Done),
             "BLOCKED" => Some(KanbanStatus::Blocked),
+            "ARCHIVED" | "ARCHIVE" => Some(KanbanStatus::Archived),
             _ => None,
         }
     }
@@ -152,6 +155,18 @@ impl AtheneumGraph {
             .entities_by_kind("Task")?
             .into_iter()
             .filter(|t| t.data.get("status").and_then(|v| v.as_str()) == Some(want))
+            .filter(|t| match project_id {
+                None => true,
+                Some(pid) => t.data.get("project_id").and_then(|v| v.as_str()) == Some(pid),
+            })
+            .collect())
+    }
+
+    pub fn list_tasks(&self, project_id: Option<&str>) -> Result<Vec<GraphEntity>> {
+        Ok(self
+            .entities_by_kind("Task")?
+            .into_iter()
+            .filter(|t| t.data.get("status").and_then(|v| v.as_str()) != Some("ARCHIVED"))
             .filter(|t| match project_id {
                 None => true,
                 Some(pid) => t.data.get("project_id").and_then(|v| v.as_str()) == Some(pid),
