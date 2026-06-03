@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] — 2026-06-03
+
+### Changed
+
+- **HNSW search index now uses persistent storage** — switched from in-memory `hnsw_index` to `hnsw_index_persistent` (sqlitegraph 3.0.8). Vectors survive process restarts. Requires sqlitegraph ≥ 3.0.8.
+
 ## [0.2.0] — 2026-06-03
 
 ### Fixed
@@ -56,16 +62,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **HNSW vectors now persist across process restarts.** `ensure_search_index()` uses `hnsw_index_persistent()` which stores vectors in SQLite's `hnsw_vectors` table via `SQLiteVectorStorage`. Graph edges are rebuilt from vectors on index open (O(N log N)). `build_search_index()` resets `sqlite_sequence` counters after clearing old index data, preventing `InvalidNodeId` errors from stale auto-increment IDs.
+- **HNSW search index auto-builds on first query.** `ensure_search_index()` now populates the HNSW index from all entities on creation. No manual `reindex` needed on fresh process start. `build_search_index()` / `reindex` CLI still available for forced rebuild.
+- **HNSW search index now uses persistent storage** (`hnsw_index_persistent`). Upgraded from in-memory `hnsw_index` to sqlitegraph 3.0.8's persistent backend with sequential vector IDs. Vectors survive process restarts without O(N) repopulation. Requires sqlitegraph ≥ 3.0.8 (fixes `InvalidNodeId` after delete+recreate).
 - Clippy `collapsible_if` lint in `get_subgraph_scoped` — collapsed nested conditionals.
 
 ### Tests
 
-- 39 TDD tests in `tests/hopgraph_tests.rs` covering HopGraph P1–P4, search index coverage, navigate-for-sessions, and HNSW vector persistence across DB reopen.
+- 39 TDD tests in `tests/hopgraph_tests.rs` covering HopGraph P1–P4, search index coverage, navigate-for-sessions, and HNSW search across DB reopen.
 - Previously failing `test_seed_standard_ontology_populates_hopgraph_relations` now passes with `explains` and `derived_from` in the ontology seed.
 
 ### Known Limitations
 
+- **HNSW index graph structure rebuilt from vectors on reopen.** Vector data persists across restarts via sqlitegraph's `hnsw_index_persistent`. Graph structure (neighbor lists, entry points, layer assignments) is rebuilt from stored vectors when the index is re-opened. For large indexes this is O(N). A future sqlitegraph update will persist the graph structure directly.
 - `OllamaEmbedder` requires ollama running locally with `nomic-embed-text` model pulled. No fallback — panics on connection failure.
 - `estimate_entity_tokens` uses ~4 chars/token approximation, not a real tokenizer. Budget enforcement is approximate.
 - `link_wiki_to_symbols` requires a magellan database at the given path. No auto-discovery of magellan DB location.

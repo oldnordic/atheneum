@@ -1,7 +1,10 @@
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-use atheneum::{AtheneumGraph, ClaudeTranscriptImportParams, GraphEdge, GraphEntity};
+use atheneum::{
+    AtheneumGraph, ClaudeTranscriptImportParams, EdgeType, GraphEdge, GraphEntity, SearchResult,
+    WikiPage,
+};
 use serde_json::json;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -327,6 +330,168 @@ fn run() -> anyhow::Result<()> {
                 stats_after.total_entities, stats_after.total_entities, stats_before.total_entities,
             ))?;
         }
+        "store-discovery" => {
+            if args.len() < 6 {
+                eprintln!("Usage: atheneum store-discovery <db-path> <agent> <type> <target> [metadata.json]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let agent = &args[3];
+            let discovery_type = &args[4];
+            let target = &args[5];
+            let metadata = if let Some(meta_path) = args.get(6) {
+                let content = std::fs::read_to_string(meta_path)
+                    .map_err(|e| anyhow::anyhow!("read metadata file: {}", e))?;
+                serde_json::from_str(&content)
+                    .map_err(|e| anyhow::anyhow!("parse metadata JSON: {}", e))?
+            } else {
+                json!({})
+            };
+            let graph = AtheneumGraph::open(&db_path)?;
+            let id = graph.store_discovery(agent, discovery_type, target, metadata)?;
+            print_json(
+                json!({"discovery_id": id, "agent": agent, "type": discovery_type, "target": target}),
+            )?;
+        }
+        "add-edge" => {
+            if args.len() < 6 {
+                eprintln!("Usage: atheneum add-edge <db-path> <from-id> <to-id> <edge-type> [metadata.json|--data 'json']");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let from_id = parse_i64_arg(&args[3], "from-id")?;
+            let to_id = parse_i64_arg(&args[4], "to-id")?;
+            let edge_type_str = &args[5];
+            let edge_type = EdgeType::from_label(edge_type_str)
+                .ok_or_else(|| anyhow::anyhow!("unknown edge type '{}'. Valid: performed_by, assigned_to, called, calls, accessed, modified, verified_by, caused_by, created, related_to, mentions, wikilink, implements, depends_on, tested_by, fixed_by, regressed_by, observed_in, belongs_to_project, similar_failure, requires_skill, handled_by_tool, explains, derived_from", edge_type_str))?;
+            let data = if let Some(data_arg) = args.get(6) {
+                if data_arg == "--data" {
+                    let json_str = args
+                        .get(7)
+                        .ok_or_else(|| anyhow::anyhow!("--data requires a JSON argument"))?;
+                    serde_json::from_str(json_str)
+                        .map_err(|e| anyhow::anyhow!("parse JSON: {}", e))?
+                } else {
+                    let content = std::fs::read_to_string(data_arg)
+                        .map_err(|e| anyhow::anyhow!("read data file: {}", e))?;
+                    serde_json::from_str(&content)
+                        .map_err(|e| anyhow::anyhow!("parse data JSON: {}", e))?
+                }
+            } else {
+                json!({})
+            };
+            let graph = AtheneumGraph::open(&db_path)?;
+            let id = graph.insert_edge(from_id, to_id, edge_type, data)?;
+            print_json(
+                json!({"edge_id": id, "from_id": from_id, "to_id": to_id, "edge_type": edge_type_str}),
+            )?;
+        }
+        "search" => {
+            if args.len() < 4 {
+                eprintln!("Usage: atheneum search <db-path> <query> [--k N] [--project P]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let query = &args[3];
+            let opts = parse_options(&args[4..])?;
+            let k = parse_usize_option(opts.k.as_deref(), "k")?.unwrap_or(10);
+            let graph = AtheneumGraph::open(&db_path)?;
+            let hits = graph.lexical_search(query, k, opts.project.as_deref())?;
+            print_json(json!({
+                "query": query,
+                "k": k,
+                "project": opts.project,
+                "results": hits.iter().map(search_result_to_json).collect::<Vec<_>>(),
+            }))?;
+        }
+        "query-knowledge" => {
+            if args.len() < 4 {
+                eprintln!("Usage: atheneum query-knowledge <db-path> <target> [--project P]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let target = &args[3];
+            let opts = parse_options(&args[4..])?;
+            let graph = AtheneumGraph::open(&db_path)?;
+            let result = graph.query_knowledge_in_project(target, opts.project.as_deref())?;
+            print_json(result)?;
+        }
+        "consolidate" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum consolidate <db-path> [target] [--project P]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let target = args
+                .get(3)
+                .filter(|s| !s.starts_with('-'))
+                .map(|s| s.as_str());
+            let start = if target.is_some() { 4 } else { 3 };
+            let opts = parse_options(&args[start..])?;
+            let graph = AtheneumGraph::open(&db_path)?;
+            if let Some(t) = target {
+                let kid = graph.consolidate_discoveries(t, opts.project.as_deref())?;
+                match kid {
+                    Some(id) => {
+                        print_json(json!({"consolidated": true, "target": t, "knowledge_id": id}))?
+                    }
+                    None => print_json(
+                        json!({"consolidated": false, "target": t, "reason": "no discoveries found"}),
+                    )?,
+                }
+            } else {
+                let results = graph.consolidation_pass(opts.project.as_deref())?;
+                print_json(json!({
+                    "consolidated_targets": results.len(),
+                    "results": results.iter().map(|(t, id)| json!({"target": t, "knowledge_id": id})).collect::<Vec<_>>(),
+                }))?;
+            }
+        }
+        "list-pages" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum list-pages <db-path> [--project P]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let opts = parse_options(&args[3..])?;
+            let graph = AtheneumGraph::open(&db_path)?;
+            let pages = graph.list_wiki_pages(opts.project.as_deref())?;
+            print_json(json!({
+                "count": pages.len(),
+                "pages": pages.iter().map(wiki_page_summary_to_json).collect::<Vec<_>>(),
+            }))?;
+        }
+        "query-sessions" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum query-sessions <db-path> [--project P] [--limit N]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let opts = parse_options(&args[3..])?;
+            let limit = parse_i64_option(opts.limit.as_deref(), "limit")?.unwrap_or(20);
+            let graph = AtheneumGraph::open(&db_path)?;
+            let sessions = graph.query_sessions(opts.project.as_deref(), limit, None)?;
+            print_json(json!({
+                "count": sessions.len(),
+                "sessions": sessions,
+            }))?;
+        }
+        "query-events" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum query-events <db-path> [--session <id>] [--type <event-type>] [--limit N]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let opts = parse_options(&args[3..])?;
+            let limit = parse_usize_option(opts.limit.as_deref(), "limit")?.unwrap_or(50);
+            let graph = AtheneumGraph::open(&db_path)?;
+            let events =
+                graph.query_events(opts.session.as_deref(), opts.event_type.as_deref(), limit)?;
+            print_json(json!({
+                "count": events.len(),
+                "events": events,
+            }))?;
+        }
         _ => {
             eprintln!("Unknown command: {}", args[1]);
             print_usage()?;
@@ -352,18 +517,18 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     writeln!(writer, "USAGE:")?;
     writeln!(writer, "  atheneum <command> [args]")?;
     writeln!(writer)?;
-    writeln!(writer, "COMMANDS:")?;
+    writeln!(writer, "INGEST:")?;
     writeln!(
         writer,
         "  init <db-path>                          Initialize a new graph database"
     )?;
     writeln!(
         writer,
-        "  sync-wiki <db-path> <dir> [project]     Ingest all .md files in directory as wiki pages"
+        "  sync-wiki <db-path> <dir> [project]     Ingest all .md files as wiki pages"
     )?;
     writeln!(
         writer,
-        "  sync-journal <db-path> <dir> [project]  Ingest all .md files in directory as journal sections"
+        "  sync-journal <db-path> <dir> [project]  Ingest all .md files as journal sections"
     )?;
     writeln!(
         writer,
@@ -371,7 +536,25 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     )?;
     writeln!(
         writer,
-        "  sync-claude-transcript <db> <jsonl> [project] [agent]  Import Claude Code transcript evidence"
+        "  sync-claude-transcript <db> <jsonl> [project] [agent]  Import Claude transcript"
+    )?;
+    writeln!(
+        writer,
+        "  store-discovery <db> <agent> <type> <target> [meta.json]  Store a discovery"
+    )?;
+    writeln!(
+        writer,
+        "  add-edge <db> <from-id> <to-id> <edge-type> [data.json]  Create a relation"
+    )?;
+    writeln!(writer)?;
+    writeln!(writer, "QUERY:")?;
+    writeln!(
+        writer,
+        "  search <db-path> <query> [--k N] [--project P]  HNSW/lexical search"
+    )?;
+    writeln!(
+        writer,
+        "  navigate <db-path> <query> [opts]       Search then walk graph subgraphs"
     )?;
     writeln!(
         writer,
@@ -383,6 +566,22 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     )?;
     writeln!(
         writer,
+        "  query-knowledge <db-path> <target> [--project P]  Aggregated knowledge"
+    )?;
+    writeln!(
+        writer,
+        "  query-sessions <db-path> [--project P] [--limit N]  Session history"
+    )?;
+    writeln!(
+        writer,
+        "  query-events <db-path> [--session <id>] [--type <t>] [--limit N]  Event log"
+    )?;
+    writeln!(
+        writer,
+        "  list-pages <db-path> [--project P]      List wiki pages"
+    )?;
+    writeln!(
+        writer,
         "  entity <db-path> <id>                   Print a graph entity as JSON"
     )?;
     writeln!(
@@ -391,23 +590,25 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     )?;
     writeln!(
         writer,
-        "  neighbors <db-path> <id> [--depth N]    Print one-hop edges or a BFS subgraph"
+        "  neighbors <db-path> <id> [--depth N]    One-hop edges or BFS subgraph"
     )?;
     writeln!(
         writer,
-        "  navigate <db-path> <query> [opts]       Search then walk graph subgraphs"
+        "  graph-stats <db-path>                   Graph topology counts"
+    )?;
+    writeln!(writer)?;
+    writeln!(writer, "MAINTENANCE:")?;
+    writeln!(
+        writer,
+        "  reindex <db-path>                       Rebuild HNSW search index"
     )?;
     writeln!(
         writer,
-        "  reindex <db-path>                       Rebuild HNSW search index over all entities"
+        "  consolidate <db-path> [target] [--project P]  Merge discoveries into Knowledge"
     )?;
     writeln!(
         writer,
-        "  graph-stats <db-path>                   Print graph topology counts as JSON"
-    )?;
-    writeln!(
-        writer,
-        "  --version, -v                           Print version information"
+        "  --version, -v                           Print version"
     )?;
     writeln!(
         writer,
@@ -424,22 +625,40 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     writeln!(writer, "  atheneum sync-logseq ./atheneum.db ~/wiki forge")?;
     writeln!(
         writer,
-        "  atheneum sync-claude-transcript ./atheneum.db ~/.claude/projects/-home-feanor-Projects-forge/<session>.jsonl forge claude"
+        "  atheneum sync-claude-transcript ./atheneum.db transcript.jsonl forge claude"
     )?;
     writeln!(
         writer,
-        "  atheneum query-wiki ./atheneum.db wiki/getting-started.md"
+        "  atheneum store-discovery ./atheneum.db claude Bug http_handler bug.json"
+    )?;
+    writeln!(writer, "  atheneum add-edge ./atheneum.db 1 2 explains")?;
+    writeln!(
+        writer,
+        "  atheneum search ./atheneum.db \"router\" --k 5 --project envoy"
     )?;
     writeln!(
         writer,
-        "  atheneum query-journal ./atheneum.db journal/2024-01-15.md"
+        "  atheneum navigate ./atheneum.db \"router construction\" --k 3 --depth 2"
+    )?;
+    writeln!(
+        writer,
+        "  atheneum query-knowledge ./atheneum.db http_handler --project envoy"
+    )?;
+    writeln!(
+        writer,
+        "  atheneum consolidate ./atheneum.db --project forge"
+    )?;
+    writeln!(
+        writer,
+        "  atheneum list-pages ./atheneum.db --project forge"
+    )?;
+    writeln!(writer, "  atheneum query-sessions ./atheneum.db --limit 5")?;
+    writeln!(
+        writer,
+        "  atheneum query-events ./atheneum.db --session abc123 --limit 20"
     )?;
     writeln!(writer, "  atheneum graph-stats ./atheneum.db")?;
     writeln!(writer, "  atheneum reindex ./atheneum.db")?;
-    writeln!(
-        writer,
-        "  atheneum navigate ./atheneum.db \"router construction\" --k 3 --depth 2 --project envoy"
-    )?;
     Ok(())
 }
 
@@ -448,24 +667,34 @@ struct CliOptions {
     k: Option<String>,
     depth: Option<String>,
     project: Option<String>,
+    limit: Option<String>,
+    session: Option<String>,
+    event_type: Option<String>,
 }
 
 fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
     let mut opts = CliOptions::default();
     let mut i = 0;
     while i < args.len() {
-        let key = args[i].as_str();
-        let value = args
-            .get(i + 1)
-            .ok_or_else(|| anyhow::anyhow!("missing value for {}", key))?
-            .clone();
-        match key {
-            "--k" => opts.k = Some(value),
-            "--depth" => opts.depth = Some(value),
-            "--project" => opts.project = Some(value),
-            other => anyhow::bail!("unknown option: {}", other),
+        if args[i].starts_with('-') && args[i] != "--data" {
+            let key = args[i].as_str();
+            let value = args
+                .get(i + 1)
+                .ok_or_else(|| anyhow::anyhow!("missing value for {}", key))?
+                .clone();
+            match key {
+                "--k" => opts.k = Some(value),
+                "--depth" => opts.depth = Some(value),
+                "--project" => opts.project = Some(value),
+                "--limit" => opts.limit = Some(value),
+                "--session" => opts.session = Some(value),
+                "--type" => opts.event_type = Some(value),
+                other => anyhow::bail!("unknown option: {}", other),
+            }
+            i += 2;
+        } else {
+            i += 1;
         }
-        i += 2;
     }
     Ok(opts)
 }
@@ -492,6 +721,36 @@ fn parse_usize_option(value: Option<&str>, name: &str) -> anyhow::Result<Option<
                 .map_err(|e| anyhow::anyhow!("invalid {} '{}': {}", name, s, e))
         })
         .transpose()
+}
+
+fn parse_i64_option(value: Option<&str>, name: &str) -> anyhow::Result<Option<i64>> {
+    value
+        .map(|s| {
+            s.parse::<i64>()
+                .map_err(|e| anyhow::anyhow!("invalid {} '{}': {}", name, s, e))
+        })
+        .transpose()
+}
+
+fn search_result_to_json(sr: &SearchResult) -> serde_json::Value {
+    json!({
+        "id": sr.id,
+        "name": sr.name,
+        "kind": sr.kind,
+        "score": sr.score,
+        "data": sr.data,
+    })
+}
+
+fn wiki_page_summary_to_json(page: &WikiPage) -> serde_json::Value {
+    json!({
+        "id": page.id,
+        "path": page.path,
+        "title": page.title,
+        "project_id": page.project_id,
+        "wikilinks": page.wikilinks,
+        "created_at": page.created_at,
+    })
 }
 
 fn print_json(value: serde_json::Value) -> anyhow::Result<()> {

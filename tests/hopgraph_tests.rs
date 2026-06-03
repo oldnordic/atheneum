@@ -887,8 +887,6 @@ mod consolidation_tests {
                 )
                 .expect("discovery");
 
-            graph.build_search_index().expect("build index");
-
             let hits = graph
                 .lexical_search("persistent vectors", 5, None)
                 .expect("search first session");
@@ -903,7 +901,7 @@ mod consolidation_tests {
                 .expect("search second session");
             assert!(
                 !hits.is_empty(),
-                "HNSW vectors must persist across database reopen — got 0 hits, HNSW index is ephemeral"
+                "HNSW vectors must persist across database reopen"
             );
         }
     }

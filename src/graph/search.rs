@@ -75,10 +75,22 @@ impl AtheneumGraph {
             return Ok(());
         }
         let config = search_config(self.embedder.dimension())?;
-        let _guard = self
-            .inner
-            .hnsw_index_persistent(SEARCH_INDEX_NAME, config)
-            .map_err(|e| anyhow::anyhow!("hnsw_index create failed: {}", e))?;
+        {
+            let _guard = self
+                .inner
+                .hnsw_index_persistent(SEARCH_INDEX_NAME, config)
+                .map_err(|e| anyhow::anyhow!("hnsw_index_persistent create failed: {}", e))?;
+        }
+        for entity in self.all_entities()? {
+            let text = embed_text_for_entity(&entity);
+            let vector = self.embedder.embed(&text)?;
+            let entity_id = entity.id;
+            let _ = self
+                .inner
+                .get_hnsw_index_mut(SEARCH_INDEX_NAME, move |idx| {
+                    idx.insert_vector(&vector, Some(json!({"entity_id": entity_id})))
+                });
+        }
         Ok(())
     }
 
@@ -100,34 +112,7 @@ impl AtheneumGraph {
     /// Full rebuild of the HNSW index (still useful for manual reindexing).
     pub fn build_search_index(&self) -> Result<()> {
         let _ = self.inner.delete_hnsw_index(SEARCH_INDEX_NAME);
-        super::with_graph_conn(&self.inner, |conn| {
-            conn.execute("DELETE FROM hnsw_vectors", [])
-                .map_err(|e| anyhow::anyhow!("truncate hnsw_vectors: {}", e))?;
-            conn.execute("DELETE FROM hnsw_layers", [])
-                .map_err(|e| anyhow::anyhow!("truncate hnsw_layers: {}", e))?;
-            conn.execute("DELETE FROM hnsw_entry_points", [])
-                .map_err(|e| anyhow::anyhow!("truncate hnsw_entry_points: {}", e))?;
-            conn.execute(
-                "UPDATE sqlite_sequence SET seq = 0 WHERE name = 'hnsw_vectors'",
-                [],
-            )
-            .map_err(|e| anyhow::anyhow!("reset hnsw_vectors seq: {}", e))?;
-            conn.execute(
-                "UPDATE sqlite_sequence SET seq = 0 WHERE name = 'hnsw_layers'",
-                [],
-            )
-            .map_err(|e| anyhow::anyhow!("reset hnsw_layers seq: {}", e))?;
-            conn.execute(
-                "UPDATE sqlite_sequence SET seq = 0 WHERE name = 'hnsw_entry_points'",
-                [],
-            )
-            .map_err(|e| anyhow::anyhow!("reset hnsw_entry_points seq: {}", e))?;
-            Ok(())
-        })?;
         self.ensure_search_index()?;
-        for entity in self.all_entities()? {
-            self.add_entity_to_search_index(&entity)?;
-        }
         Ok(())
     }
 

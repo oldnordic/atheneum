@@ -1,6 +1,6 @@
 [package]
 name = "atheneum"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 license = "GPL-3.0-only"
 description = "Agent coordination graph database - episodic and semantic memory for multi-agent workflows"
@@ -24,7 +24,7 @@ sha2 = "0.10"
 uuid = { version = "1", features = ["v7"] }
 thiserror = "2.0"
 tracing = "0.1"
-sqlitegraph = "3.0.7"
+sqlitegraph = "3.0.8"
 
 ureq = { version = "2", default-features = false, features = ["json"], optional = true }
 

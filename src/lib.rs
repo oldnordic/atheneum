@@ -8,7 +8,7 @@ pub mod graph;
 
 pub use graph::{
     AtheneumGraph, ClaudeTranscriptImportParams, ClaudeTranscriptImportSummary, EdgeType,
-    EntityType, JournalSection, KanbanStatus, KanbanUpdate, WikiPage,
+    EntityType, JournalSection, KanbanStatus, KanbanUpdate, SearchResult, WikiPage,
 };
 
 // Re-export the sqlitegraph types so consumers can name them as
