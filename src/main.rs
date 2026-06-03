@@ -388,12 +388,20 @@ fn run() -> anyhow::Result<()> {
         }
         "task-create" => {
             if args.len() < 5 {
-                eprintln!("Usage: atheneum task-create <db-path> <title> [description] [--project P]");
+                eprintln!(
+                    "Usage: atheneum task-create <db-path> <title> [description] [--project P]"
+                );
                 std::process::exit(1);
             }
             let db_path = PathBuf::from(&args[2]);
             let title = &args[3];
-            let description = args.get(4).and_then(|s| if s.starts_with('-') { None } else { Some(s.as_str()) });
+            let description = args.get(4).and_then(|s| {
+                if s.starts_with('-') {
+                    None
+                } else {
+                    Some(s.as_str())
+                }
+            });
             let opts = parse_options(&args[4..])?;
             let graph = AtheneumGraph::open(&db_path)?;
             let id = graph.create_task(title, description, opts.project.as_deref())?;
@@ -408,12 +416,19 @@ fn run() -> anyhow::Result<()> {
             let opts = parse_options(&args[3..])?;
             let graph = AtheneumGraph::open(&db_path)?;
             let tasks: Vec<serde_json::Value> = if let Some(status_str) = &opts.status {
-                let status = atheneum::graph::KanbanStatus::parse(status_str)
-                    .ok_or_else(|| anyhow::anyhow!("unknown status '{}'. Valid: TODO, IN_PROGRESS, DONE, BLOCKED, ARCHIVED", status_str))?;
+                let status = atheneum::graph::KanbanStatus::parse(status_str).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "unknown status '{}'. Valid: TODO, IN_PROGRESS, DONE, BLOCKED, ARCHIVED",
+                        status_str
+                    )
+                })?;
                 graph.list_tasks_by_status(status, opts.project.as_deref())?
             } else {
                 graph.list_tasks(opts.project.as_deref())?
-            }.iter().map(|t| entity_to_json(t)).collect();
+            }
+            .iter()
+            .map(|t| entity_to_json(t))
+            .collect();
             print_json(json!({"tasks": tasks, "count": tasks.len()}))?;
         }
         "task-update" => {
@@ -424,8 +439,12 @@ fn run() -> anyhow::Result<()> {
             let db_path = PathBuf::from(&args[2]);
             let task_id = parse_i64_arg(&args[3], "task-id")?;
             let status_str = &args[4];
-            let status = atheneum::graph::KanbanStatus::parse(status_str)
-                .ok_or_else(|| anyhow::anyhow!("unknown status '{}'. Valid: TODO, IN_PROGRESS, DONE, BLOCKED, ARCHIVED", status_str))?;
+            let status = atheneum::graph::KanbanStatus::parse(status_str).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown status '{}'. Valid: TODO, IN_PROGRESS, DONE, BLOCKED, ARCHIVED",
+                    status_str
+                )
+            })?;
             let graph = AtheneumGraph::open(&db_path)?;
             graph.update_task_status(task_id, status)?;
             print_json(json!({"task_id": task_id, "new_status": status.as_str()}))?;
@@ -558,6 +577,56 @@ fn run() -> anyhow::Result<()> {
                 "events": events,
             }))?;
         }
+        "memory-store" => {
+            if args.len() < 5 {
+                eprintln!("Usage: atheneum memory-store <db-path> <key> <content> [--scope S] [--confidence N] [--project P]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let key = &args[3];
+            let content = &args[4];
+            let opts = parse_options(&args[5..])?;
+            let scope = opts.scope.as_deref().unwrap_or("user");
+            let confidence: f64 = opts
+                .confidence
+                .as_deref()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1.0);
+            let graph = AtheneumGraph::open(&db_path)?;
+            let id =
+                graph.store_memory(key, content, scope, confidence, opts.project.as_deref())?;
+            print_json(json!({"memory_id": id, "key": key, "scope": scope}))?;
+        }
+        "memory-get" => {
+            if args.len() < 4 {
+                eprintln!("Usage: atheneum memory-get <db-path> <key> [--scope S] [--project P]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let key = &args[3];
+            let opts = parse_options(&args[4..])?;
+            let graph = AtheneumGraph::open(&db_path)?;
+            let items = graph.query_memory(key, opts.scope.as_deref(), opts.project.as_deref())?;
+            print_json(json!({
+                "key": key,
+                "count": items.len(),
+                "items": items.iter().map(entity_to_json).collect::<Vec<_>>(),
+            }))?;
+        }
+        "memory-list" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum memory-list <db-path> [--scope S] [--project P]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let opts = parse_options(&args[3..])?;
+            let graph = AtheneumGraph::open(&db_path)?;
+            let items = graph.list_memory(opts.scope.as_deref(), opts.project.as_deref())?;
+            print_json(json!({
+                "count": items.len(),
+                "items": items.iter().map(entity_to_json).collect::<Vec<_>>(),
+            }))?;
+        }
         _ => {
             eprintln!("Unknown command: {}", args[1]);
             print_usage()?;
@@ -633,6 +702,20 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     writeln!(
         writer,
         "  task-archive <db> <task-id>                      Archive a task"
+    )?;
+    writeln!(writer)?;
+    writeln!(writer, "MEMORY:")?;
+    writeln!(
+        writer,
+        "  memory-store <db> <key> <content> [--scope S] [--confidence N] [--project P]  Store a memory"
+    )?;
+    writeln!(
+        writer,
+        "  memory-get <db> <key> [--scope S] [--project P]      Retrieve memory by key"
+    )?;
+    writeln!(
+        writer,
+        "  memory-list <db> [--scope S] [--project P]             List all memories"
     )?;
     writeln!(writer)?;
     writeln!(
@@ -746,7 +829,10 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     )?;
     writeln!(writer, "  atheneum graph-stats ./atheneum.db")?;
     writeln!(writer, "  atheneum reindex ./atheneum.db")?;
-    writeln!(writer, "  atheneum task-create ./atheneum.db \"Build search index\" --project forge")?;
+    writeln!(
+        writer,
+        "  atheneum task-create ./atheneum.db \"Build search index\" --project forge"
+    )?;
     writeln!(writer, "  atheneum task-list ./atheneum.db --status TODO")?;
     writeln!(writer, "  atheneum task-done ./atheneum.db 42")?;
     writeln!(writer, "  atheneum task-archive ./atheneum.db 42")?;
@@ -762,6 +848,8 @@ struct CliOptions {
     session: Option<String>,
     event_type: Option<String>,
     status: Option<String>,
+    scope: Option<String>,
+    confidence: Option<String>,
 }
 
 fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
@@ -782,6 +870,8 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
                 "--session" => opts.session = Some(value),
                 "--type" => opts.event_type = Some(value),
                 "--status" => opts.status = Some(value),
+                "--scope" => opts.scope = Some(value),
+                "--confidence" => opts.confidence = Some(value),
                 other => anyhow::bail!("unknown option: {}", other),
             }
             i += 2;

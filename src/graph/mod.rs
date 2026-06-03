@@ -14,6 +14,7 @@ pub mod evidence;
 pub mod handoff;
 pub mod knowledge;
 pub mod magellan_bridge;
+pub mod memory;
 pub mod navigation;
 pub mod ontology;
 pub mod planning;

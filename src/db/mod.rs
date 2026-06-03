@@ -23,6 +23,7 @@ pub mod evidence;
 pub mod execution;
 pub mod hook_compat;
 pub mod knowledge;
+pub mod memory;
 pub mod planning;
 pub mod transcripts;
 
@@ -37,6 +38,7 @@ const MIGRATIONS: &[(u32, &str, Migration)] = &[
     (4, "evidence-domain", evidence::migrate_v4_evidence),
     (5, "hook-compat", hook_compat::migrate_v5_hook_compat),
     (6, "transcript-imports", transcripts::migrate_v6_transcripts),
+    (7, "memory-domain", memory::migrate_v7_memory),
 ];
 
 /// Apply any pending migrations to the connection. Idempotent — already-

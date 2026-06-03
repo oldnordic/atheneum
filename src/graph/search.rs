@@ -130,7 +130,11 @@ impl AtheneumGraph {
     ) -> Result<Vec<SearchResult>> {
         self.ensure_search_index()?;
         let query_vec = self.embedder.embed(query)?;
-        let fetch_k = if project_id.is_some() || entity_kind.is_some() { k * 4 } else { k };
+        let fetch_k = if project_id.is_some() || entity_kind.is_some() {
+            k * 4
+        } else {
+            k
+        };
 
         let hits = self
             .inner

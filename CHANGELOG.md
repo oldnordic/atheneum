@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] — 2026-06-04
+
+### Added
+
+- **Memory domain** — stable-fact storage distinct from Knowledge (merged discoveries) and WikiPage (documents).
+  - `EntityType::Memory` — new entity kind with `"Memory"` ontology class.
+  - `memory_entries` SQL table — `id, key, scope, content, confidence, project_id, created_at`. Scope: `user` | `project` | `agent`.
+  - `db/memory.rs` — `migrate_v7_memory()` migration.
+  - `graph/memory.rs` — `store_memory(key, content, scope, confidence, project_id)` creates both SQL row and graph entity, auto-indexes in HNSW. `query_memory(key, scope, project_id)` and `list_memory(scope, project_id)` filter via `json_extract` on graph entity data.
+  - CLI commands: `memory-store <db> <key> <content> [--scope S] [--confidence N] [--project P]`, `memory-get <db> <key> [--scope S] [--project P]`, `memory-list <db> [--scope S] [--project P]`.
+  - Tests: 8 memory CRUD tests in `tests/memory_tests.rs` covering store, query by key, scope/project filtering, list, entity type kind, and lexical search visibility.
+
+### Changed
+
+- `lexical_search()` and `navigate()` — `entity_kind` parameter changed from `Option<&str>` to accept `Option<EntityType>` filter (post-filter on `SearchResult.kind`). CLI `--kind` flag works for all entity kinds including `Memory`.
+
 ## [0.2.1] — 2026-06-03
 
 ### Changed
