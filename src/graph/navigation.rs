@@ -313,8 +313,9 @@ impl AtheneumGraph {
         k: usize,
         depth: u32,
         project_id: Option<&str>,
+        entity_kind: Option<&str>,
     ) -> Result<Vec<SubgraphView>> {
-        let hits = self.lexical_search(query, k, project_id)?;
+        let hits = self.lexical_search(query, k, project_id, entity_kind)?;
         if hits.is_empty() {
             return Ok(Vec::new());
         }
@@ -336,7 +337,7 @@ impl AtheneumGraph {
         max_tokens: usize,
         project_id: Option<&str>,
     ) -> Result<Vec<SubgraphView>> {
-        let hits = self.lexical_search(query, k, project_id)?;
+        let hits = self.lexical_search(query, k, project_id, None)?;
         if hits.is_empty() {
             return Ok(Vec::new());
         }

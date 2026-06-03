@@ -158,7 +158,7 @@ fn test_navigate_finds_entry_points_and_walks() {
 
     // Navigate on "router" should find build_router → walk graph
     let views = g
-        .navigate("router construction axum", 5, 2, None)
+        .navigate("router construction axum", 5, 2, None, None)
         .expect("navigate");
 
     assert!(
@@ -225,7 +225,7 @@ fn test_discovery_auto_indexed() {
 
     // After store_discovery we should be able to search WITHOUT manually calling build_search_index()
     let results = g
-        .lexical_search("semantic navigation HNSW traversal", 5, None)
+        .lexical_search("semantic navigation HNSW traversal", 5, None, None)
         .expect("semantic_search");
 
     assert!(

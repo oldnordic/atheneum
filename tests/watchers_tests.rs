@@ -159,7 +159,7 @@ fn test_ingest_wiki_page_auto_indexed_for_navigation() {
         .expect("ingest");
 
     let hits = graph
-        .lexical_search("dynamic workflows subagents", 5, Some("forge"))
+        .lexical_search("dynamic workflows subagents", 5, Some("forge"), None)
         .expect("search");
 
     assert!(

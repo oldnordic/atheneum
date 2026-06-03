@@ -580,7 +580,7 @@ mod embedder_tests {
             .expect("ingest");
 
         let results = graph
-            .lexical_search("router", 5, Some("proj"))
+            .lexical_search("router", 5, Some("proj"), None)
             .expect("search");
         assert!(!results.is_empty(), "should find router page");
     }
@@ -823,12 +823,12 @@ mod consolidation_tests {
         graph.build_search_index().expect("build index");
 
         let hits = graph
-            .lexical_search("parameter ordering", 10, None)
+            .lexical_search("parameter ordering", 10, None, None)
             .expect("search");
         assert!(!hits.is_empty(), "should find discovery via lexical search");
 
         let session_hits = graph
-            .lexical_search("search-project session", 10, None)
+            .lexical_search("search-project session", 10, None, None)
             .expect("session search");
         assert!(
             !session_hits.is_empty(),
@@ -862,7 +862,7 @@ mod consolidation_tests {
         graph.build_search_index().expect("build index");
 
         let views = graph
-            .navigate("nav-project session", 5, 2, None)
+            .navigate("nav-project session", 5, 2, None, None)
             .expect("navigate");
         assert!(
             !views.is_empty(),
@@ -888,7 +888,7 @@ mod consolidation_tests {
                 .expect("discovery");
 
             let hits = graph
-                .lexical_search("persistent vectors", 5, None)
+                .lexical_search("persistent vectors", 5, None, None)
                 .expect("search first session");
             assert!(!hits.is_empty(), "should find discovery in first session");
         }
@@ -897,7 +897,7 @@ mod consolidation_tests {
             let graph = AtheneumGraph::open(&db_path).expect("reopen");
 
             let hits = graph
-                .lexical_search("persistent vectors", 5, None)
+                .lexical_search("persistent vectors", 5, None, None)
                 .expect("search second session");
             assert!(
                 !hits.is_empty(),

@@ -82,9 +82,20 @@ impl AtheneumGraph {
             file_path: None,
             data,
         };
-        self.inner
+        let task_id = self
+            .inner
             .insert_entity(&entity)
-            .map_err(|e| anyhow::anyhow!("Failed to insert Task: {}", e))
+            .map_err(|e| anyhow::anyhow!("Failed to insert Task: {}", e))?;
+
+        let indexed = GraphEntity {
+            id: task_id,
+            ..entity
+        };
+        if let Err(e) = self.add_entity_to_search_index(&indexed) {
+            eprintln!("[atheneum] task auto-index warning: {}", e);
+        }
+
+        Ok(task_id)
     }
 
     pub fn update_task_status(&self, task_id: i64, status: KanbanStatus) -> Result<()> {

@@ -291,7 +291,7 @@ fn run() -> anyhow::Result<()> {
             let k = parse_usize_option(opts.k.as_deref(), "k")?.unwrap_or(5);
             let depth = parse_u32_option(opts.depth.as_deref(), "depth")?.unwrap_or(2);
             let graph = AtheneumGraph::open(&db_path)?;
-            let views = graph.navigate(query, k, depth, opts.project.as_deref())?;
+            let views = graph.navigate(query, k, depth, opts.project.as_deref(), None)?;
             print_json(json!({
                 "query": query,
                 "k": k,
@@ -396,7 +396,7 @@ fn run() -> anyhow::Result<()> {
             let opts = parse_options(&args[4..])?;
             let k = parse_usize_option(opts.k.as_deref(), "k")?.unwrap_or(10);
             let graph = AtheneumGraph::open(&db_path)?;
-            let hits = graph.lexical_search(query, k, opts.project.as_deref())?;
+            let hits = graph.lexical_search(query, k, opts.project.as_deref(), None)?;
             print_json(json!({
                 "query": query,
                 "k": k,

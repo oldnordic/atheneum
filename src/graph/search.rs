@@ -126,10 +126,11 @@ impl AtheneumGraph {
         query: &str,
         k: usize,
         project_id: Option<&str>,
+        entity_kind: Option<&str>,
     ) -> Result<Vec<SearchResult>> {
         self.ensure_search_index()?;
         let query_vec = self.embedder.embed(query)?;
-        let fetch_k = if project_id.is_some() { k * 4 } else { k };
+        let fetch_k = if project_id.is_some() || entity_kind.is_some() { k * 4 } else { k };
 
         let hits = self
             .inner
@@ -172,6 +173,12 @@ impl AtheneumGraph {
                 }
             }
 
+            if let Some(kind) = entity_kind {
+                if entity.kind != kind {
+                    continue;
+                }
+            }
+
             results.push(SearchResult {
                 id: entity.id,
                 name: entity.name,
@@ -199,6 +206,11 @@ impl AtheneumGraph {
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
                     if entity_project != pid {
+                        continue;
+                    }
+                }
+                if let Some(kind) = entity_kind {
+                    if entity.kind != kind {
                         continue;
                     }
                 }
