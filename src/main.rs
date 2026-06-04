@@ -587,11 +587,8 @@ fn run() -> anyhow::Result<()> {
             let content = &args[4];
             let opts = parse_options(&args[5..])?;
             let scope = opts.scope.as_deref().unwrap_or("user");
-            let confidence: f64 = opts
-                .confidence
-                .as_deref()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(1.0);
+            let confidence: f64 =
+                parse_f64_option(opts.confidence.as_deref(), "confidence")?.unwrap_or(1.0);
             let graph = AtheneumGraph::open(&db_path)?;
             let id =
                 graph.store_memory(key, content, scope, confidence, opts.project.as_deref())?;
@@ -910,6 +907,15 @@ fn parse_i64_option(value: Option<&str>, name: &str) -> anyhow::Result<Option<i6
     value
         .map(|s| {
             s.parse::<i64>()
+                .map_err(|e| anyhow::anyhow!("invalid {} '{}': {}", name, s, e))
+        })
+        .transpose()
+}
+
+fn parse_f64_option(value: Option<&str>, name: &str) -> anyhow::Result<Option<f64>> {
+    value
+        .map(|s| {
+            s.parse::<f64>()
                 .map_err(|e| anyhow::anyhow!("invalid {} '{}': {}", name, s, e))
         })
         .transpose()

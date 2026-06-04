@@ -35,7 +35,8 @@ fn backfill_memories(tx: &Transaction<'_>) -> Result<()> {
     let mut stmt = tx.prepare(
         "SELECT id, name, data FROM graph_entities
          WHERE kind = 'Memory'
-           AND (data IS NULL OR json_extract(data, '$.sql_id') IS NULL)",
+           AND data IS NOT NULL
+           AND json_extract(data, '$.sql_id') IS NULL",
     )?;
     let rows: Vec<(i64, String, String)> = stmt
         .query_map([], |r| {

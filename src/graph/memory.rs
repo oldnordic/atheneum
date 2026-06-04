@@ -23,14 +23,96 @@ impl AtheneumGraph {
         confidence: f64,
         project_id: Option<&str>,
     ) -> Result<i64> {
-        let created_at = Utc::now().to_rfc3339();
+        let now = Utc::now().to_rfc3339();
 
+        // Check for existing memory by composite key (key, scope, project_id).
+        let existing_id = super::with_graph_conn(&self.inner, |conn| {
+            let sql = if project_id.is_some() {
+                "SELECT id FROM graph_entities
+                 WHERE kind = ?1 AND name = ?2
+                   AND json_extract(data, '$.scope') = ?3
+                   AND json_extract(data, '$.project_id') = ?4"
+            } else {
+                "SELECT id FROM graph_entities
+                 WHERE kind = ?1 AND name = ?2
+                   AND json_extract(data, '$.scope') = ?3
+                   AND json_extract(data, '$.project_id') IS NULL"
+            };
+            let mut stmt = conn.prepare(sql)?;
+            let id: Option<i64> = if let Some(pid) = project_id {
+                stmt.query_row(params![EntityType::Memory.as_str(), key, scope, pid], |r| {
+                    r.get(0)
+                })
+                .ok()
+            } else {
+                stmt.query_row(params![EntityType::Memory.as_str(), key, scope], |r| {
+                    r.get(0)
+                })
+                .ok()
+            };
+            Ok(id)
+        })?;
+
+        if let Some(memory_id) = existing_id {
+            // Preserve original created_at and sql_id from existing entity.
+            let entity = self.get_entity(memory_id)?;
+            let created_at = entity
+                .data
+                .get("created_at")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .unwrap_or_else(|| now.clone());
+            let sql_id = entity
+                .data
+                .get("sql_id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            self.with_raw_connection(|conn| {
+                conn.execute(
+                    "UPDATE memory_entries
+                     SET content = ?1, confidence = ?2, updated_at = ?3
+                     WHERE key = ?4 AND scope = ?5
+                       AND COALESCE(project_id, '') = COALESCE(?6, '')",
+                    params![content, confidence, &now, key, scope, project_id],
+                )?;
+                Ok(())
+            })?;
+
+            let mut data = json!({
+                "sql_id": sql_id,
+                "key": key,
+                "scope": scope,
+                "content": content,
+                "confidence": confidence,
+                "created_at": created_at,
+                "updated_at": now,
+            });
+            if let (Some(pid), Some(obj)) = (project_id, data.as_object_mut()) {
+                obj.insert("project_id".to_string(), Value::String(pid.to_string()));
+            }
+
+            self.update_entity_data(memory_id, &data)?;
+            let indexed = GraphEntity {
+                id: memory_id,
+                kind: EntityType::Memory.as_str().to_string(),
+                name: key.to_string(),
+                file_path: None,
+                data: data.clone(),
+            };
+            if let Err(e) = self.add_entity_to_search_index(&indexed) {
+                eprintln!("[atheneum] memory auto-index warning: {}", e);
+            }
+            return Ok(memory_id);
+        }
+
+        // Insert new SQL row.
         let sql_id = self.with_raw_connection(|conn| {
             conn.execute(
                 "INSERT INTO memory_entries
-                    (key, scope, content, confidence, project_id, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![key, scope, content, confidence, project_id, created_at],
+                    (key, scope, content, confidence, project_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                params![key, scope, content, confidence, project_id, &now],
             )?;
             Ok(conn.last_insert_rowid())
         })?;
@@ -41,7 +123,8 @@ impl AtheneumGraph {
             "scope": scope,
             "content": content,
             "confidence": confidence,
-            "created_at": created_at,
+            "created_at": now,
+            "updated_at": now,
         });
         if let (Some(pid), Some(obj)) = (project_id, data.as_object_mut()) {
             obj.insert("project_id".to_string(), Value::String(pid.to_string()));

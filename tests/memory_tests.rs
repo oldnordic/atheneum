@@ -130,3 +130,107 @@ fn test_memory_searchable() {
         "lexical search should find memory entity"
     );
 }
+
+#[test]
+fn test_store_memory_upsert_updates_content() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    let id1 = graph
+        .store_memory(
+            "prefers_concise",
+            "User prefers concise output",
+            "user",
+            1.0,
+            None,
+        )
+        .expect("store_memory first");
+
+    let id2 = graph
+        .store_memory(
+            "prefers_concise",
+            "Updated: very concise",
+            "user",
+            0.95,
+            None,
+        )
+        .expect("store_memory second");
+
+    assert_eq!(id1, id2, "upsert should return same entity id");
+
+    let items = graph.query_memory("prefers_concise", None, None).unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0].data.get("content").and_then(|v| v.as_str()),
+        Some("Updated: very concise")
+    );
+    assert_eq!(
+        items[0].data.get("confidence").and_then(|v| v.as_f64()),
+        Some(0.95)
+    );
+}
+
+#[test]
+fn test_store_memory_preserves_created_at_on_upsert() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    let id = graph
+        .store_memory("timezone", "UTC+0", "user", 1.0, None)
+        .unwrap();
+
+    let first = graph.get_entity(id).unwrap();
+    let created_at = first
+        .data
+        .get("created_at")
+        .and_then(|v| v.as_str())
+        .expect("created_at on first store");
+
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    graph
+        .store_memory("timezone", "UTC+1", "user", 1.0, None)
+        .unwrap();
+
+    let second = graph.get_entity(id).unwrap();
+    let created_at2 = second
+        .data
+        .get("created_at")
+        .and_then(|v| v.as_str())
+        .expect("created_at on upsert");
+    let updated_at = second.data.get("updated_at").and_then(|v| v.as_str());
+
+    assert_eq!(created_at, created_at2, "created_at should be preserved");
+    assert!(updated_at.is_some(), "updated_at should be set on upsert");
+}
+
+#[test]
+fn test_store_memory_upsert_with_project_scope() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    graph
+        .store_memory("convention", "use anyhow", "project", 1.0, Some("p1"))
+        .unwrap();
+    graph
+        .store_memory("convention", "use thiserror", "project", 1.0, Some("p2"))
+        .unwrap();
+
+    // Same key, different project — should be separate entities
+    let p1 = graph
+        .query_memory("convention", Some("project"), Some("p1"))
+        .unwrap();
+    let p2 = graph
+        .query_memory("convention", Some("project"), Some("p2"))
+        .unwrap();
+    assert_eq!(p1.len(), 1);
+    assert_eq!(p2.len(), 1);
+    assert_ne!(p1[0].id, p2[0].id);
+
+    // Upsert p1
+    graph
+        .store_memory("convention", "use eyre", "project", 1.0, Some("p1"))
+        .unwrap();
+    let p1_updated = graph
+        .query_memory("convention", Some("project"), Some("p1"))
+        .unwrap();
+    assert_eq!(p1_updated.len(), 1);
+    assert_eq!(
+        p1_updated[0].data.get("content").and_then(|v| v.as_str()),
+        Some("use eyre")
+    );
+}
