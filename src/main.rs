@@ -427,7 +427,7 @@ fn run() -> anyhow::Result<()> {
                 graph.list_tasks(opts.project.as_deref())?
             }
             .iter()
-            .map(|t| entity_to_json(t))
+            .map(entity_to_json)
             .collect();
             print_json(json!({"tasks": tasks, "count": tasks.len()}))?;
         }

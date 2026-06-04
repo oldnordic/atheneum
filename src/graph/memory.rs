@@ -86,11 +86,11 @@ impl AtheneumGraph {
                            AND json_extract(data, '$.scope') = ?3
                            AND json_extract(data, '$.project_id') = ?4",
                     )?;
-                    let mut rows = stmt.query_map(
+                    let rows = stmt.query_map(
                         params![EntityType::Memory.as_str(), key, s, pid],
                         row_to_entity,
                     )?;
-                    while let Some(row) = rows.next() {
+                    for row in rows {
                         out.push(row?);
                     }
                 }
@@ -100,9 +100,9 @@ impl AtheneumGraph {
                          WHERE kind = ?1 AND name = ?2
                            AND json_extract(data, '$.scope') = ?3",
                     )?;
-                    let mut rows = stmt
+                    let rows = stmt
                         .query_map(params![EntityType::Memory.as_str(), key, s], row_to_entity)?;
-                    while let Some(row) = rows.next() {
+                    for row in rows {
                         out.push(row?);
                     }
                 }
@@ -112,11 +112,11 @@ impl AtheneumGraph {
                          WHERE kind = ?1 AND name = ?2
                            AND json_extract(data, '$.project_id') = ?3",
                     )?;
-                    let mut rows = stmt.query_map(
+                    let rows = stmt.query_map(
                         params![EntityType::Memory.as_str(), key, pid],
                         row_to_entity,
                     )?;
-                    while let Some(row) = rows.next() {
+                    for row in rows {
                         out.push(row?);
                     }
                 }
@@ -125,9 +125,9 @@ impl AtheneumGraph {
                         "SELECT id, kind, name, file_path, data FROM graph_entities
                          WHERE kind = ?1 AND name = ?2",
                     )?;
-                    let mut rows =
+                    let rows =
                         stmt.query_map(params![EntityType::Memory.as_str(), key], row_to_entity)?;
-                    while let Some(row) = rows.next() {
+                    for row in rows {
                         out.push(row?);
                     }
                 }
@@ -152,9 +152,9 @@ impl AtheneumGraph {
                            AND json_extract(data, '$.scope') = ?2
                            AND json_extract(data, '$.project_id') = ?3",
                     )?;
-                    let mut rows = stmt
+                    let rows = stmt
                         .query_map(params![EntityType::Memory.as_str(), s, pid], row_to_entity)?;
-                    while let Some(row) = rows.next() {
+                    for row in rows {
                         out.push(row?);
                     }
                 }
@@ -164,9 +164,9 @@ impl AtheneumGraph {
                          WHERE kind = ?1
                            AND json_extract(data, '$.scope') = ?2",
                     )?;
-                    let mut rows =
+                    let rows =
                         stmt.query_map(params![EntityType::Memory.as_str(), s], row_to_entity)?;
-                    while let Some(row) = rows.next() {
+                    for row in rows {
                         out.push(row?);
                     }
                 }
@@ -176,9 +176,9 @@ impl AtheneumGraph {
                          WHERE kind = ?1
                            AND json_extract(data, '$.project_id') = ?2",
                     )?;
-                    let mut rows =
+                    let rows =
                         stmt.query_map(params![EntityType::Memory.as_str(), pid], row_to_entity)?;
-                    while let Some(row) = rows.next() {
+                    for row in rows {
                         out.push(row?);
                     }
                 }
@@ -187,9 +187,9 @@ impl AtheneumGraph {
                         "SELECT id, kind, name, file_path, data FROM graph_entities
                          WHERE kind = ?1",
                     )?;
-                    let mut rows =
+                    let rows =
                         stmt.query_map(params![EntityType::Memory.as_str()], row_to_entity)?;
-                    while let Some(row) = rows.next() {
+                    for row in rows {
                         out.push(row?);
                     }
                 }
