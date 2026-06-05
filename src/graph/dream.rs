@@ -51,6 +51,8 @@ pub enum DreamPhase {
     Verbose,
     /// Entries that were merged or superseded.
     Consolidated,
+    /// Wiki page has no incoming wikilinks from other pages (isolated stub).
+    Orphan,
 }
 
 /// Full output of a dream pass.
@@ -60,6 +62,8 @@ pub struct DreamReport {
     pub scope: Option<String>,
     pub project_id: Option<String>,
     pub memories_scanned: usize,
+    /// Populated by wiki_dream_pass; 0 for memory dream passes.
+    pub pages_scanned: usize,
     pub findings: Vec<DreamFinding>,
     pub started_at: String,
     pub finished_at: String,
@@ -356,6 +360,163 @@ impl AtheneumGraph {
             scope: scope.map(String::from),
             project_id: project_id.map(String::from),
             memories_scanned: n,
+            pages_scanned: 0,
+            findings,
+            started_at,
+            finished_at,
+        })
+    }
+
+    /// Run a dreaming pass over WikiPage entities.
+    ///
+    /// Phases:
+    /// - **Deduplicate**: pages with near-identical body content (Jaccard ≥ threshold).
+    /// - **Stale**: pages not updated in `stale_days` and with short body (likely stubs).
+    /// - **Verbose**: long pages with low unique-word ratio.
+    /// - **Orphan**: pages with no incoming wikilinks from other pages in the same project.
+    pub fn wiki_dream_pass(
+        &self,
+        mode: DreamMode,
+        project_id: Option<&str>,
+        config: &DreamConfig,
+    ) -> Result<DreamReport> {
+        let started_at = Utc::now().to_rfc3339();
+        let mut findings: Vec<DreamFinding> = Vec::new();
+
+        let pages = self.list_wiki_pages(project_id)?;
+        let n = pages.len();
+
+        // Build incoming-link map: path -> count of pages that link to it
+        let mut incoming: HashMap<String, usize> = HashMap::new();
+        for page in &pages {
+            for link in &page.wikilinks {
+                *incoming.entry(link.clone()).or_default() += 1;
+            }
+        }
+
+        // Phase 2: DEDUPLICATE — pairwise Jaccard on body
+        let mut merged_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for i in 0..pages.len() {
+            let pi = &pages[i];
+            if merged_paths.contains(&pi.path) {
+                continue;
+            }
+            for pj in pages.iter().skip(i + 1) {
+                if merged_paths.contains(&pj.path) {
+                    continue;
+                }
+                let sim = jaccard_similarity(&pi.body, &pj.body);
+                if sim >= config.dedup_threshold {
+                    let mut action = None;
+                    if mode == DreamMode::AutoMerge {
+                        let _ = self.insert_edge(
+                            pj.id,
+                            pi.id,
+                            EdgeType::SupersededBy,
+                            serde_json::json!({
+                                "reason": "wiki_dream_dedup",
+                                "similarity": sim as f32,
+                            }),
+                        );
+                        merged_paths.insert(pj.path.clone());
+                        action = Some(format!(
+                            "superseded {} -> {} (sim={:.2})",
+                            pj.id, pi.id, sim
+                        ));
+                    }
+                    findings.push(DreamFinding {
+                        phase: DreamPhase::Deduplicate,
+                        entity_ids: vec![pi.id, pj.id],
+                        description: format!(
+                            "Near-duplicate pages (Jaccard {:.2}): '{}' and '{}'",
+                            sim, pi.path, pj.path
+                        ),
+                        action_taken: action,
+                    });
+                }
+            }
+        }
+
+        // Phase 3: STALE — old page with short body (stub likely abandoned)
+        let now = Utc::now();
+        let stub_len = 120; // bodies shorter than this are "stub"
+        for page in &pages {
+            if merged_paths.contains(&page.path) {
+                continue;
+            }
+            let updated = page.updated_at.as_deref().unwrap_or(&page.created_at);
+            if let Ok(dt) = updated.parse::<DateTime<Utc>>() {
+                let age_days = (now - dt).num_days();
+                if age_days > config.stale_days && page.body.len() < stub_len {
+                    findings.push(DreamFinding {
+                        phase: DreamPhase::Stale,
+                        entity_ids: vec![page.id],
+                        description: format!(
+                            "Stale stub: '{}' not updated in {}d, body only {} chars",
+                            page.path,
+                            age_days,
+                            page.body.len()
+                        ),
+                        action_taken: None,
+                    });
+                }
+            }
+        }
+
+        // Phase 5: VERBOSE — long body, low information density
+        for page in &pages {
+            if merged_paths.contains(&page.path) {
+                continue;
+            }
+            if page.body.len() > config.verbose_length_threshold {
+                let density = unique_word_ratio(&page.body);
+                if density < config.verbose_density_threshold {
+                    findings.push(DreamFinding {
+                        phase: DreamPhase::Verbose,
+                        entity_ids: vec![page.id],
+                        description: format!(
+                            "Verbose: '{}' is {} chars, unique-word ratio {:.2}",
+                            page.path,
+                            page.body.len(),
+                            density
+                        ),
+                        action_taken: None,
+                    });
+                }
+            }
+        }
+
+        // Phase ORPHAN — no incoming links from other pages in same project
+        for page in &pages {
+            if merged_paths.contains(&page.path) {
+                continue;
+            }
+            // Strip directory prefix to get the link target (e.g. "pages/foo.md" -> "foo")
+            let link_key = page
+                .path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&page.path)
+                .trim_end_matches(".md");
+            let count = incoming.get(link_key).copied().unwrap_or(0);
+            if count == 0 {
+                findings.push(DreamFinding {
+                    phase: DreamPhase::Orphan,
+                    entity_ids: vec![page.id],
+                    description: format!("Orphan: '{}' has no incoming wikilinks", page.path),
+                    action_taken: None,
+                });
+            }
+        }
+
+        let finished_at = Utc::now().to_rfc3339();
+
+        Ok(DreamReport {
+            mode,
+            scope: None,
+            project_id: project_id.map(String::from),
+            memories_scanned: 0,
+            pages_scanned: n,
             findings,
             started_at,
             finished_at,
@@ -522,6 +683,182 @@ mod tests {
             has_superseded,
             "id2 should have a superseded_by edge pointing to id1"
         );
+    }
+
+    #[test]
+    fn wiki_dream_dedup_similar_pages() {
+        let graph = AtheneumGraph::open_in_memory().expect("in-memory graph");
+        graph
+            .ingest_wiki_page(
+                "pages/rust-async.md",
+                "# Rust Async Guide\nTokio enables async IO in Rust. Use async/await syntax. Spawn tasks with tokio::spawn.",
+                Some("grounded"),
+            )
+            .unwrap();
+        graph
+            .ingest_wiki_page(
+                "pages/async-rust.md",
+                "# Async Rust Guide\nTokio enables async IO in Rust. Use async/await syntax. Spawn tasks with tokio::spawn.",
+                Some("grounded"),
+            )
+            .unwrap();
+
+        let report = graph
+            .wiki_dream_pass(DreamMode::DryRun, Some("grounded"), &DreamConfig::default())
+            .unwrap();
+
+        assert_eq!(report.pages_scanned, 2);
+        let dedup: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.phase == DreamPhase::Deduplicate)
+            .collect();
+        assert_eq!(
+            dedup.len(),
+            1,
+            "identical bodies should flag as near-duplicate"
+        );
+        assert!(dedup[0].action_taken.is_none(), "dry run takes no action");
+    }
+
+    #[test]
+    fn wiki_dream_orphan_no_incoming_links() {
+        let graph = AtheneumGraph::open_in_memory().expect("in-memory graph");
+        // Page A links to B; C is isolated
+        graph
+            .ingest_wiki_page(
+                "pages/a.md",
+                "# Page A\nSee also [[b]] for more details.",
+                Some("grounded"),
+            )
+            .unwrap();
+        graph
+            .ingest_wiki_page(
+                "pages/b.md",
+                "# Page B\nThis is page B with real content about something useful.",
+                Some("grounded"),
+            )
+            .unwrap();
+        graph
+            .ingest_wiki_page(
+                "pages/orphan.md",
+                "# Orphan Page\nNobody links to me, I am lost and forgotten in the wiki.",
+                Some("grounded"),
+            )
+            .unwrap();
+
+        let report = graph
+            .wiki_dream_pass(DreamMode::DryRun, Some("grounded"), &DreamConfig::default())
+            .unwrap();
+
+        assert_eq!(report.pages_scanned, 3);
+        let orphans: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.phase == DreamPhase::Orphan)
+            .collect();
+        // page A and orphan.md have no incoming links; b.md is linked from A
+        assert!(
+            orphans.iter().any(|f| f.description.contains("orphan")),
+            "orphan.md should be flagged"
+        );
+    }
+
+    #[test]
+    fn wiki_dream_verbose_page() {
+        let graph = AtheneumGraph::open_in_memory().expect("in-memory graph");
+        let repetitive = "the the the the the the the the the data ".repeat(60);
+        graph
+            .ingest_wiki_page("pages/verbose.md", &repetitive, Some("grounded"))
+            .unwrap();
+
+        let cfg = DreamConfig {
+            verbose_length_threshold: 50,
+            verbose_density_threshold: 0.25,
+            ..DreamConfig::default()
+        };
+        let report = graph
+            .wiki_dream_pass(DreamMode::DryRun, Some("grounded"), &cfg)
+            .unwrap();
+
+        let verbose: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.phase == DreamPhase::Verbose)
+            .collect();
+        assert_eq!(
+            verbose.len(),
+            1,
+            "repetitive page should be flagged as verbose"
+        );
+    }
+
+    #[test]
+    fn wiki_dream_stale_page() {
+        use rusqlite::params;
+        let graph = AtheneumGraph::open_in_memory().expect("in-memory graph");
+        let id = graph
+            .ingest_wiki_page("pages/old.md", "# Old Page\nShort stub.", Some("grounded"))
+            .unwrap();
+
+        // Back-date updated_at to 60 days ago using RFC3339 so chrono can parse it
+        let old_date = (Utc::now() - chrono::Duration::days(60)).to_rfc3339();
+        graph
+            .with_raw_connection(|conn| {
+                conn.execute(
+                    "UPDATE wiki_pages SET updated_at = ?1 WHERE id = ?2",
+                    params![old_date, id],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        let cfg = DreamConfig {
+            stale_days: 30,
+            stale_confidence_threshold: 1.0, // everything below 1.0 is stale — but wiki uses body length
+            verbose_length_threshold: 500,
+            ..DreamConfig::default()
+        };
+        let report = graph
+            .wiki_dream_pass(DreamMode::DryRun, Some("grounded"), &cfg)
+            .unwrap();
+
+        let stale: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.phase == DreamPhase::Stale)
+            .collect();
+        assert_eq!(stale.len(), 1, "60-day-old short page should be stale");
+        assert!(stale[0].entity_ids.contains(&id));
+    }
+
+    #[test]
+    fn wiki_dream_project_filter() {
+        let graph = AtheneumGraph::open_in_memory().expect("in-memory graph");
+        graph
+            .ingest_wiki_page(
+                "pages/a.md",
+                "content about Rust async programming patterns",
+                Some("proj1"),
+            )
+            .unwrap();
+        graph
+            .ingest_wiki_page(
+                "pages/b.md",
+                "content about Rust async programming patterns",
+                Some("proj2"),
+            )
+            .unwrap();
+
+        let report = graph
+            .wiki_dream_pass(DreamMode::DryRun, Some("proj1"), &DreamConfig::default())
+            .unwrap();
+
+        assert_eq!(
+            report.pages_scanned, 1,
+            "project filter should only scan proj1"
+        );
+        assert_eq!(report.project_id.as_deref(), Some("proj1"));
     }
 
     #[test]

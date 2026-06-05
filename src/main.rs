@@ -647,6 +647,27 @@ fn run() -> anyhow::Result<()> {
             )?;
             print_json(serde_json::to_value(&report)?)?;
         }
+        "wiki-dream" => {
+            if args.len() < 3 {
+                eprintln!(
+                    "Usage: atheneum wiki-dream <db-path> [--project P] [--dry-run|--auto-merge]"
+                );
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let opts = parse_options(&args[3..])?;
+            let graph = AtheneumGraph::open(&db_path)?;
+
+            use atheneum::{DreamConfig, DreamMode, DreamReport};
+            let mode = if opts.auto_merge {
+                DreamMode::AutoMerge
+            } else {
+                DreamMode::DryRun
+            };
+            let report: DreamReport =
+                graph.wiki_dream_pass(mode, opts.project.as_deref(), &DreamConfig::default())?;
+            print_json(serde_json::to_value(&report)?)?;
+        }
         _ => {
             eprintln!("Unknown command: {}", args[1]);
             print_usage()?;
