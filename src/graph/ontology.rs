@@ -302,6 +302,18 @@ impl AtheneumGraph {
                 "ANY",
                 "Entity was derived from another entity",
             ),
+            (
+                EdgeType::SupersededBy,
+                "Memory",
+                "Memory",
+                "Memory entry was superseded by a newer or canonical memory entry",
+            ),
+            (
+                EdgeType::ConsolidatedFrom,
+                "Memory",
+                "Memory",
+                "Memory entry was consolidated into another memory entry",
+            ),
         ];
         for (edge_type, domain, range, description) in STANDARD_PROPERTIES {
             self.define_property(edge_type.as_str(), domain, range, Some(description))?;
