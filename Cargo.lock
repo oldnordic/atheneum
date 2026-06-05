@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "atheneum"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "askama",
@@ -1448,9 +1448,9 @@ dependencies = [
 
 [[package]]
 name = "sqlitegraph"
-version = "3.0.8"
+version = "3.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48288858de0c60eea85e705c8372ac6ac5b5811981cf3a1d088edd8e4b944620"
+checksum = "7b8a6a6da2a868a80fbab7d14593d09102e25964592d0e4f925a375ff0336515"
 dependencies = [
  "ahash",
  "arc-swap",

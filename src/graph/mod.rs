@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::Utc;
 use rusqlite::params;
 use serde_json::Value;
-use sqlitegraph::{GraphEdge, GraphEntity, SqliteGraph};
+use sqlitegraph::{GraphEdge, GraphEntity, SqliteConfig, SqliteGraph};
 
 use embed::HashEmbedder;
 
@@ -59,7 +59,8 @@ impl AtheneumGraph {
     }
 
     pub fn open(path: &std::path::Path) -> Result<Self> {
-        let inner = SqliteGraph::open(path)?;
+        let cfg = SqliteConfig::new().with_pragma("busy_timeout", "5000");
+        let inner = SqliteGraph::open_with_config(path, &cfg)?;
         let g = Self {
             inner,
             embedder: Box::new(HashEmbedder::new(128)),
