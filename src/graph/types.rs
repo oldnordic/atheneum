@@ -66,6 +66,10 @@ pub enum EdgeType {
     HandledByTool,
     Explains,
     DerivedFrom,
+    /// Dream: superseded entry points to the entry that replaced it.
+    SupersededBy,
+    /// Dream: merged entry points to the consolidation that absorbed it.
+    ConsolidatedFrom,
 }
 
 impl EdgeType {
@@ -95,6 +99,8 @@ impl EdgeType {
             EdgeType::HandledByTool => "handled_by_tool",
             EdgeType::Explains => "explains",
             EdgeType::DerivedFrom => "derived_from",
+            EdgeType::SupersededBy => "superseded_by",
+            EdgeType::ConsolidatedFrom => "consolidated_from",
         }
     }
 
@@ -124,6 +130,8 @@ impl EdgeType {
             "handled_by_tool" => EdgeType::HandledByTool,
             "explains" => EdgeType::Explains,
             "derived_from" => EdgeType::DerivedFrom,
+            "superseded_by" => EdgeType::SupersededBy,
+            "consolidated_from" => EdgeType::ConsolidatedFrom,
             _ => return None,
         })
     }
@@ -154,6 +162,8 @@ impl EdgeType {
             EdgeType::HandledByTool,
             EdgeType::Explains,
             EdgeType::DerivedFrom,
+            EdgeType::SupersededBy,
+            EdgeType::ConsolidatedFrom,
         ]
     }
 }

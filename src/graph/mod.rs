@@ -9,6 +9,7 @@ use embed::HashEmbedder;
 pub mod audit;
 pub mod claude;
 pub mod discovery;
+pub mod dream;
 pub mod embed;
 pub mod evidence;
 pub mod handoff;
@@ -22,6 +23,7 @@ pub mod search;
 pub mod types;
 pub mod wiki;
 
+pub use dream::{DreamConfig, DreamFinding, DreamMode, DreamPhase, DreamReport};
 pub use navigation::{estimate_entity_tokens, truncate_subgraph};
 pub use planning::{KanbanStatus, KanbanUpdate};
 pub use types::{

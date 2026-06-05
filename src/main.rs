@@ -363,7 +363,7 @@ fn run() -> anyhow::Result<()> {
             let to_id = parse_i64_arg(&args[4], "to-id")?;
             let edge_type_str = &args[5];
             let edge_type = EdgeType::from_label(edge_type_str)
-                .ok_or_else(|| anyhow::anyhow!("unknown edge type '{}'. Valid: performed_by, assigned_to, called, calls, accessed, modified, verified_by, caused_by, created, related_to, mentions, wikilink, implements, depends_on, tested_by, fixed_by, regressed_by, observed_in, belongs_to_project, similar_failure, requires_skill, handled_by_tool, explains, derived_from", edge_type_str))?;
+                .ok_or_else(|| anyhow::anyhow!("unknown edge type '{}'. Valid: performed_by, assigned_to, called, calls, accessed, modified, verified_by, caused_by, created, related_to, mentions, wikilink, implements, depends_on, tested_by, fixed_by, regressed_by, observed_in, belongs_to_project, similar_failure, requires_skill, handled_by_tool, explains, derived_from, superseded_by, consolidated_from", edge_type_str))?;
             let data = if let Some(data_arg) = args.get(6) {
                 if data_arg == "--data" {
                     let json_str = args
@@ -624,6 +624,29 @@ fn run() -> anyhow::Result<()> {
                 "items": items.iter().map(entity_to_json).collect::<Vec<_>>(),
             }))?;
         }
+        "dream" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum dream <db-path> [--scope S] [--project P] [--dry-run|--auto-merge]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let opts = parse_options(&args[3..])?;
+            let graph = AtheneumGraph::open(&db_path)?;
+
+            use atheneum::{DreamConfig, DreamMode, DreamReport};
+            let mode = if opts.auto_merge {
+                DreamMode::AutoMerge
+            } else {
+                DreamMode::DryRun
+            };
+            let report: DreamReport = graph.dream_pass(
+                mode,
+                opts.scope.as_deref(),
+                opts.project.as_deref(),
+                &DreamConfig::default(),
+            )?;
+            print_json(serde_json::to_value(&report)?)?;
+        }
         _ => {
             eprintln!("Unknown command: {}", args[1]);
             print_usage()?;
@@ -714,6 +737,13 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
         writer,
         "  memory-list <db> [--scope S] [--project P]             List all memories"
     )?;
+    writeln!(writer)?;
+    writeln!(writer, "DREAM:")?;
+    writeln!(
+        writer,
+        "  dream <db> [--scope S] [--project P] [--dry-run|--auto-merge]"
+    )?;
+    writeln!(writer, "    Run reflective memory consolidation pass")?;
     writeln!(writer)?;
     writeln!(
         writer,
@@ -847,13 +877,21 @@ struct CliOptions {
     status: Option<String>,
     scope: Option<String>,
     confidence: Option<String>,
+    dry_run: bool,
+    auto_merge: bool,
 }
 
 fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
     let mut opts = CliOptions::default();
     let mut i = 0;
     while i < args.len() {
-        if args[i].starts_with('-') && args[i] != "--data" {
+        if args[i] == "--dry-run" {
+            opts.dry_run = true;
+            i += 1;
+        } else if args[i] == "--auto-merge" {
+            opts.auto_merge = true;
+            i += 1;
+        } else if args[i].starts_with('-') && args[i] != "--data" {
             let key = args[i].as_str();
             let value = args
                 .get(i + 1)

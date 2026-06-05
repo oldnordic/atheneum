@@ -5,7 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.2] — 2026-06-04
+## [0.3.0] — 2026-06-05
+
+### Added
+
+- **Dreaming module** — reflective memory consolidation pass inspired by AutoDream.
+  - `src/graph/dream.rs` — 6-phase pipeline: SCAN → DEDUPLICATE → STALE → CONTRADICTION → VERBOSE → CONSOLIDATED.
+  - Trigram Jaccard similarity for near-duplicate detection (configurable threshold, default 0.65).
+  - Staleness detection: entries not updated in N days with confidence below threshold.
+  - Contradiction detection: same key across different scopes with low content similarity.
+  - Verbosity scoring: content length vs unique-word ratio.
+  - `DreamMode::DryRun` (report only) and `DreamMode::AutoMerge` (creates SupersededBy edges).
+  - `DreamConfig` with tunable knobs for all thresholds.
+  - `DreamReport` / `DreamFinding` / `DreamPhase` serializable output types.
+  - CLI command: `atheneum dream <db> [--scope S] [--project P] [--dry-run|--auto-merge]`.
+  - 9 unit tests covering Jaccard similarity, dry-run, auto-merge edge creation, contradiction detection, and edge cases.
+- `EdgeType::SupersededBy` — marks superseded memories pointing to their replacement.
+- `EdgeType::ConsolidatedFrom` — marks entries absorbed by consolidation (reserved for future merge use).
+- CLI flags `--dry-run` and `--auto-merge` added to option parser.
+
+## [0.2.3] — 2026-06-04
 
 ### Added
 
@@ -21,7 +40,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `lexical_search()` and `navigate()` — `entity_kind` parameter changed from `Option<&str>` to accept `Option<EntityType>` filter (post-filter on `SearchResult.kind`). CLI `--kind` flag works for all entity kinds including `Memory`.
 
-## [0.2.1] — 2026-06-03
+## [0.2.3] — 2026-06-04
+
+### Fixed
+
+- **SQLite busy_timeout** — set 5000ms on connection open to reduce lock contention under concurrent access (wiki-watcher + CLI + agent sessions).
+- **Memory upsert** — `store_memory()` now correctly updates existing entry by composite key (key, scope, project_id) instead of creating duplicates.
+- Parse errors in memory content fail fast instead of silently corrupting graph entity data.
+- `updated_at` tracking: upserts now set `updated_at` to current timestamp.
+
+## [0.2.2] — 2026-06-04
 
 ### Changed
 
