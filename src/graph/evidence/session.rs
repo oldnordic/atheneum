@@ -5,7 +5,8 @@ use sqlitegraph::GraphEntity;
 
 use super::super::cache::CacheDomain;
 use super::super::{
-    AtheneumGraph, EdgeType, EndSessionParams, EntityType, SessionParams, SessionProgressParams,
+    AtheneumGraph, EdgeType, EndSessionParams, EntityType, ProvenanceData, SessionParams,
+    SessionProgressParams,
 };
 
 impl AtheneumGraph {
@@ -165,11 +166,12 @@ impl AtheneumGraph {
             .insert_entity(&entity)
             .map_err(|e| anyhow::anyhow!("Failed to insert Session entity: {}", e))?;
 
+        let session_prov = ProvenanceData::new("record_session").to_value();
         self.insert_edge(
             agent_id,
             entity_id,
             EdgeType::PerformedBy,
-            json!({"provenance": {"method": "record_session"}}),
+            json!({"provenance": session_prov}),
         )?;
         self.link_entity_to_project(entity_id, Some(&params.project))?;
 
@@ -179,7 +181,7 @@ impl AtheneumGraph {
                     entity_id,
                     parent_entity_id,
                     EdgeType::DependsOn,
-                    json!({"provenance": {"method": "record_session"}}),
+                    json!({"provenance": ProvenanceData::new("record_session").to_value()}),
                 )?;
             }
         }

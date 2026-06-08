@@ -628,3 +628,107 @@ pub struct RelationHint {
     #[serde(default)]
     pub data: Value,
 }
+
+/// Structured provenance metadata for graph edges.
+///
+/// Replaces the ad-hoc `{"provenance": {"method": "..."}}` pattern with a typed
+/// struct that carries `method`, `actor`, `created_at`, `extraction_mode`, and
+/// `source_text`. Serialized as the `"provenance"` key inside edge data JSON.
+///
+/// Backward-compatible: deserializes old format (`{"method": "..."}` without
+/// the new fields) by providing defaults.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProvenanceData {
+    pub method: String,
+    #[serde(default = "default_actor")]
+    pub actor: String,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub extraction_mode: Option<String>,
+    #[serde(default)]
+    pub source_text: Option<String>,
+}
+
+fn default_actor() -> String {
+    "atheneum".to_string()
+}
+
+impl ProvenanceData {
+    pub fn new(method: &str) -> Self {
+        Self {
+            method: method.to_string(),
+            actor: default_actor(),
+            created_at: Some(chrono::Utc::now().to_rfc3339()),
+            extraction_mode: None,
+            source_text: None,
+        }
+    }
+
+    pub fn with_extraction_mode(mut self, mode: &str) -> Self {
+        self.extraction_mode = Some(mode.to_string());
+        self
+    }
+
+    pub fn with_source_text(mut self, text: &str) -> Self {
+        self.source_text = Some(text.to_string());
+        self
+    }
+
+    /// Convert to a serde_json Value for embedding in edge data.
+    pub fn to_value(&self) -> Value {
+        serde_json::to_value(self).unwrap_or_else(|_| {
+            serde_json::json!({
+                "method": &self.method,
+                "actor": &self.actor,
+            })
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provenance_data_serializes_method_and_actor() {
+        let p = ProvenanceData::new("record_evidence_prompt");
+        let val = p.to_value();
+        assert_eq!(val["method"], "record_evidence_prompt");
+        assert_eq!(val["actor"], "atheneum");
+        assert!(val["created_at"].is_string());
+    }
+
+    #[test]
+    fn provenance_data_roundtrips_through_json() {
+        let p = ProvenanceData::new("store_discovery")
+            .with_extraction_mode("wiki_ingest")
+            .with_source_text("some prose text");
+        let json = serde_json::to_value(&p).unwrap();
+        let back: ProvenanceData = serde_json::from_value(json).unwrap();
+        assert_eq!(back.method, "store_discovery");
+        assert_eq!(back.extraction_mode.as_deref(), Some("wiki_ingest"));
+        assert_eq!(back.source_text.as_deref(), Some("some prose text"));
+    }
+
+    #[test]
+    fn provenance_data_deserializes_old_format() {
+        // Old format: just method, no actor/created_at
+        let old = serde_json::json!({"method": "record_evidence_prompt"});
+        let p: ProvenanceData = serde_json::from_value(old).unwrap();
+        assert_eq!(p.method, "record_evidence_prompt");
+        assert_eq!(p.actor, "atheneum"); // default
+        assert!(p.created_at.is_none()); // no default for backward compat
+        assert!(p.extraction_mode.is_none());
+        assert!(p.source_text.is_none());
+    }
+
+    #[test]
+    fn provenance_data_old_format_with_actor() {
+        // Old format with actor
+        let old = serde_json::json!({"actor": "atheneum", "method": "insert_reasoning_log"});
+        let p: ProvenanceData = serde_json::from_value(old).unwrap();
+        assert_eq!(p.method, "insert_reasoning_log");
+        assert_eq!(p.actor, "atheneum");
+    }
+}
