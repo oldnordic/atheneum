@@ -6,7 +6,7 @@ use sqlitegraph::GraphEntity;
 
 use super::cache::CacheDomain;
 use super::hashing::json_sha256_hex;
-use super::{AtheneumGraph, DiscoveryPreview, EdgeType, EntityType};
+use super::{AtheneumGraph, DiscoveryPreview, EdgeType, EntityType, ProvenanceData};
 
 impl AtheneumGraph {
     pub fn preview_discovery(
@@ -155,7 +155,7 @@ impl AtheneumGraph {
             event_id,
             agent_id,
             EdgeType::PerformedBy,
-            json!({"provenance": {"actor": "atheneum", "method": "store_discovery"}}),
+            json!({"provenance": ProvenanceData::new("store_discovery").to_value()}),
         )?;
 
         self.runtime.record_knowledge_write();

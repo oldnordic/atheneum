@@ -4,7 +4,8 @@ use serde_json::{json, Value};
 use sqlitegraph::GraphEntity;
 
 use super::{
-    ActionRecord, ActionTrace, AtheneumGraph, EdgeType, EntityType, ToolCallRecord, ToolCallTrace,
+    ActionRecord, ActionTrace, AtheneumGraph, EdgeType, EntityType, ProvenanceData, ToolCallRecord,
+    ToolCallTrace,
 };
 
 impl AtheneumGraph {
@@ -65,7 +66,7 @@ impl AtheneumGraph {
             agent_entity_id,
             log_entity_id,
             EdgeType::PerformedBy,
-            json!({"provenance": {"actor": "atheneum", "method": "insert_reasoning_log"}}),
+            json!({"provenance": ProvenanceData::new("insert_reasoning_log").to_value()}),
         )?;
 
         Ok(log_entity_id)
@@ -130,7 +131,7 @@ impl AtheneumGraph {
             reasoning_log_id,
             tool_entity_id,
             EdgeType::Called,
-            json!({"provenance": {"actor": "atheneum", "method": "insert_tool_call"}}),
+            json!({"provenance": ProvenanceData::new("insert_tool_call").to_value()}),
         )?;
 
         Ok(tool_entity_id)
@@ -141,7 +142,7 @@ impl AtheneumGraph {
             tool_call_id,
             target_id,
             EdgeType::Modified,
-            json!({"provenance": {"actor": "atheneum", "method": "record_tool_modifies"}}),
+            json!({"provenance": ProvenanceData::new("record_tool_modifies").to_value()}),
         )
     }
 

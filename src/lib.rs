@@ -10,7 +10,7 @@ pub use graph::{
     AtheneumGraph, ClaudeTranscriptImportParams, ClaudeTranscriptImportSummary, DiscoveryPreview,
     DreamConfig, DreamFinding, DreamMode, DreamPhase, DreamReport, EdgeType, EntityType,
     HandoffPreview, JournalSection, KanbanStatus, KanbanUpdate, MemoryPreview, NavigateQueryPlan,
-    RuntimeStats, SearchResult, WikiPage,
+    ProvenanceData, RuntimeStats, SearchResult, WikiPage,
 };
 
 // Re-export the sqlitegraph types so consumers can name them as

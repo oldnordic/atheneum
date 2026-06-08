@@ -30,6 +30,7 @@ pub use cache::RuntimeStats;
 pub use dream::{DreamConfig, DreamFinding, DreamMode, DreamPhase, DreamReport};
 pub use navigation::{estimate_entity_tokens, truncate_subgraph};
 pub use planning::{KanbanStatus, KanbanUpdate};
+pub use types::ProvenanceData;
 pub use types::{
     ActionRecord, ActionTrace, AppliedKanbanUpdate, AtheneumError, BlockerType,
     ClaudeTranscriptImportParams, ClaudeTranscriptImportSummary, CommitParams, DiscoveryPreview,

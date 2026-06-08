@@ -6,7 +6,7 @@ use sqlitegraph::GraphEntity;
 use super::super::json_to_string;
 use super::super::{
     AtheneumGraph, CommitParams, EdgeType, EntityType, FileAccessParams, FileWriteParams,
-    FixChainParams, PromptParams, RelationEndpoint, TestRunParams, ToolCallParams,
+    FixChainParams, PromptParams, ProvenanceData, RelationEndpoint, TestRunParams, ToolCallParams,
 };
 
 impl AtheneumGraph {
@@ -106,7 +106,7 @@ impl AtheneumGraph {
                 prompt_entity_id,
                 session_entity_id,
                 EdgeType::ObservedIn,
-                json!({"provenance": {"method": "record_evidence_prompt"}}),
+                json!({"provenance": ProvenanceData::new("record_evidence_prompt").to_value()}),
             )?;
         }
         self.link_entity_to_project(
@@ -187,17 +187,18 @@ impl AtheneumGraph {
             .map_err(|e| anyhow::anyhow!("Failed to insert tool call entity: {}", e))?;
 
         if let Some(session_entity_id) = self.maybe_session_entity_id(&session_id)? {
+            let tool_prov = ProvenanceData::new("record_evidence_tool_call").to_value();
             self.insert_edge(
                 tool_entity_id,
                 session_entity_id,
                 EdgeType::ObservedIn,
-                json!({"provenance": {"method": "record_evidence_tool_call"}}),
+                json!({"provenance": tool_prov}),
             )?;
             self.insert_edge(
                 session_entity_id,
                 tool_entity_id,
                 EdgeType::HandledByTool,
-                json!({"provenance": {"method": "record_evidence_tool_call"}}),
+                json!({"provenance": tool_prov}),
             )?;
         }
         self.link_entity_to_project(
@@ -252,7 +253,7 @@ impl AtheneumGraph {
                 file_entity_id,
                 session_entity_id,
                 EdgeType::ObservedIn,
-                json!({"provenance": {"method": "record_evidence_file_write"}}),
+                json!({"provenance": ProvenanceData::new("record_evidence_file_write").to_value()}),
             )?;
         }
         self.link_entity_to_project(
@@ -296,6 +297,7 @@ impl AtheneumGraph {
             }),
         })?;
         if let Some(session_entity_id) = self.maybe_session_entity_id(&session_id)? {
+            let file_access_prov = ProvenanceData::new("record_evidence_file_access").to_value();
             self.insert_edge(
                 session_entity_id,
                 file_entity_id,
@@ -305,7 +307,7 @@ impl AtheneumGraph {
                     "access_type": params.access_type,
                     "tool_name": params.tool_name,
                     "source": params.source,
-                    "provenance": {"method": "record_evidence_file_access"},
+                    "provenance": file_access_prov,
                 }),
             )?;
             self.insert_edge(
@@ -314,7 +316,7 @@ impl AtheneumGraph {
                 EdgeType::ObservedIn,
                 json!({
                     "source": params.source,
-                    "provenance": {"method": "record_evidence_file_access"}
+                    "provenance": file_access_prov,
                 }),
             )?;
         }
@@ -393,17 +395,18 @@ impl AtheneumGraph {
         if let Some(session_entity_id) =
             self.find_entity_id_by_data("Session", "session_id", &session_id)?
         {
+            let commit_prov = ProvenanceData::new("record_evidence_commit").to_value();
             self.insert_edge(
                 session_entity_id,
                 commit_entity_id,
                 EdgeType::Created,
-                json!({"provenance": {"method": "record_evidence_commit"}}),
+                json!({"provenance": commit_prov}),
             )?;
             self.insert_edge(
                 commit_entity_id,
                 session_entity_id,
                 EdgeType::ObservedIn,
-                json!({"provenance": {"method": "record_evidence_commit"}}),
+                json!({"provenance": commit_prov}),
             )?;
         }
         self.link_entity_to_project(
@@ -470,17 +473,18 @@ impl AtheneumGraph {
         if let Some(session_entity_id) =
             self.find_entity_id_by_data("Session", "session_id", &session_id)?
         {
+            let test_prov = ProvenanceData::new("record_evidence_test_run").to_value();
             self.insert_edge(
                 session_entity_id,
                 test_entity_id,
                 EdgeType::VerifiedBy,
-                json!({"provenance": {"method": "record_evidence_test_run"}}),
+                json!({"provenance": test_prov}),
             )?;
             self.insert_edge(
                 test_entity_id,
                 session_entity_id,
                 EdgeType::ObservedIn,
-                json!({"provenance": {"method": "record_evidence_test_run"}}),
+                json!({"provenance": test_prov}),
             )?;
         }
         if let Some(commit_sha) = params.commit_sha.as_deref() {
@@ -491,7 +495,7 @@ impl AtheneumGraph {
                     commit_entity_id,
                     test_entity_id,
                     EdgeType::TestedBy,
-                    json!({"provenance": {"method": "record_evidence_test_run"}}),
+                    json!({"provenance": ProvenanceData::new("record_evidence_test_run").to_value()}),
                 )?;
             }
         }
@@ -577,7 +581,7 @@ impl AtheneumGraph {
                 fix_entity_id,
                 session_entity_id,
                 EdgeType::ObservedIn,
-                json!({"provenance": {"method": "record_evidence_fix_chain"}}),
+                json!({"provenance": ProvenanceData::new("record_evidence_fix_chain").to_value()}),
             )?;
         }
         self.link_entity_to_project(fix_entity_id, self.session_project(&session_id)?.as_deref())?;
@@ -632,17 +636,18 @@ impl AtheneumGraph {
                 }),
             })?;
             if let Some(session_entity_id) = self.maybe_session_entity_id(&session_id)? {
+                let bench_prov = ProvenanceData::new("record_evidence_bench_run").to_value();
                 self.insert_edge(
                     regression_id,
                     session_entity_id,
                     EdgeType::RegressedBy,
-                    json!({"provenance": {"method": "record_evidence_bench_run"}}),
+                    json!({"provenance": bench_prov}),
                 )?;
                 self.insert_edge(
                     regression_id,
                     session_entity_id,
                     EdgeType::ObservedIn,
-                    json!({"provenance": {"method": "record_evidence_bench_run"}}),
+                    json!({"provenance": bench_prov}),
                 )?;
             }
             self.link_entity_to_project(
