@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::RwLock;
+use parking_lot::RwLock;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -137,7 +137,7 @@ impl GraphRuntime {
     ) -> Option<QueryCacheValue> {
         let generation = self.generation(domain);
         let now = Instant::now();
-        let mut cache = self.cache.write().unwrap_or_else(|err| err.into_inner());
+        let mut cache = self.cache.write();
 
         match cache.get_mut(key) {
             Some(entry) if entry.generation == generation && entry.expires_at > now => {
@@ -176,7 +176,7 @@ impl GraphRuntime {
             expires_at: Instant::now() + BASE_TTL,
             hits: 0,
         };
-        let mut cache = self.cache.write().unwrap_or_else(|err| err.into_inner());
+        let mut cache = self.cache.write();
         cache.insert(key, entry);
     }
 

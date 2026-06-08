@@ -110,6 +110,7 @@ dependencies = [
  "askama",
  "axum",
  "chrono",
+ "parking_lot",
  "regex",
  "rusqlite",
  "serde",
