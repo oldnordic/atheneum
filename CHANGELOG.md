@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AtheneumGraph::preview_entity_candidates()` — a no-mutation candidate-preview API for fuzzy entity lookup over the existing search index.
 - `AtheneumGraph::preview_discovery()`, `AtheneumGraph::preview_memory()`, and `AtheneumGraph::preview_handoff()` — read-only proposal APIs that return normalized payloads, deterministic content hashes, and likely existing matches before commit.
 - `AtheneumGraph::preview_navigate_query()` — staged validation/repair for navigation queries, including normalized query text, canonical entity-kind resolution, and explicit warnings/errors before execution.
+- `ProvenanceData` — typed struct for edge provenance metadata (method, actor, created_at, extraction_mode, source_text). Replaces all 20 ad-hoc JSON provenance sites. Backward-compatible deserialization. Builder pattern. Public API export (ATH-19).
 
 ### Changed
 
@@ -36,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Navigation kind filters no longer fail silently on lowercase or plural inputs such as `memory`, `memories`, `wiki`, or `discoveries`.
   - `preview_navigate_query()` repairs those aliases to canonical `EntityType` labels before traversal.
   - Invalid kinds are rejected before search with a clear error listing the accepted entity kinds.
+- `insert_edge()` now validates domain/range constraints against the ontology before insertion. Edges that violate domain/range rules are rejected with `AtheneumError::EdgeValidation` containing structured fields (ATH-20).
 
 ### Documentation
 
