@@ -7,12 +7,14 @@ use sqlitegraph::{GraphEdge, GraphEntity, SqliteConfig, SqliteGraph};
 use embed::HashEmbedder;
 
 pub mod audit;
+mod cache;
 pub mod claude;
 pub mod discovery;
 pub mod dream;
 pub mod embed;
 pub mod evidence;
 pub mod handoff;
+mod hashing;
 pub mod knowledge;
 pub mod magellan_bridge;
 pub mod memory;
@@ -23,17 +25,20 @@ pub mod search;
 pub mod types;
 pub mod wiki;
 
+use cache::GraphRuntime;
+pub use cache::RuntimeStats;
 pub use dream::{DreamConfig, DreamFinding, DreamMode, DreamPhase, DreamReport};
 pub use navigation::{estimate_entity_tokens, truncate_subgraph};
 pub use planning::{KanbanStatus, KanbanUpdate};
 pub use types::{
     ActionRecord, ActionTrace, AppliedKanbanUpdate, AtheneumError, BlockerType,
-    ClaudeTranscriptImportParams, ClaudeTranscriptImportSummary, CommitParams, EdgeType,
-    EndSessionParams, EntityType, FileAccessParams, FileWriteParams, FixChainParams, GraphStats,
-    Neighbors, OntologyClassInfo, OntologyPropertyInfo, PromptParams, RecordEventParams,
-    RelationEndpoint, RelationHint, RequirementStatus, SearchResult, SessionParams,
-    SessionProgressParams, SessionSummary, SubgraphView, TaskDetail, TestRunParams, ToolCallParams,
-    ToolCallRecord, ToolCallTrace, ONTOLOGY_CLASS_KIND, ONTOLOGY_PROPERTY_KIND,
+    ClaudeTranscriptImportParams, ClaudeTranscriptImportSummary, CommitParams, DiscoveryPreview,
+    EdgeType, EndSessionParams, EntityType, FileAccessParams, FileWriteParams, FixChainParams,
+    GraphStats, HandoffPreview, MemoryPreview, NavigateQueryPlan, Neighbors, OntologyClassInfo,
+    OntologyPropertyInfo, PromptParams, RecordEventParams, RelationEndpoint, RelationHint,
+    RequirementStatus, SearchResult, SessionParams, SessionProgressParams, SessionSummary,
+    SubgraphView, TaskDetail, TestRunParams, ToolCallParams, ToolCallRecord, ToolCallTrace,
+    ONTOLOGY_CLASS_KIND, ONTOLOGY_PROPERTY_KIND,
 };
 pub use wiki::{
     content_hash, extract_kanban_updates, extract_wikilinks, parse_journal_sections,
@@ -47,6 +52,7 @@ pub(super) fn json_to_string(v: &Value) -> Result<String> {
 pub struct AtheneumGraph {
     inner: SqliteGraph,
     embedder: Box<dyn embed::TextEmbedder>,
+    runtime: GraphRuntime,
 }
 
 impl AtheneumGraph {
@@ -55,6 +61,7 @@ impl AtheneumGraph {
         let g = Self {
             inner,
             embedder: Box::new(HashEmbedder::new(128)),
+            runtime: GraphRuntime::default(),
         };
         g.run_startup_migrations()?;
         Ok(g)
@@ -66,6 +73,7 @@ impl AtheneumGraph {
         let g = Self {
             inner,
             embedder: Box::new(HashEmbedder::new(128)),
+            runtime: GraphRuntime::default(),
         };
         g.run_startup_migrations()?;
         Ok(g)
@@ -77,6 +85,10 @@ impl AtheneumGraph {
 
     pub fn embedder_dimension(&self) -> usize {
         self.embedder.dimension()
+    }
+
+    pub fn runtime_stats(&self) -> RuntimeStats {
+        self.runtime.snapshot()
     }
 
     fn run_startup_migrations(&self) -> Result<()> {

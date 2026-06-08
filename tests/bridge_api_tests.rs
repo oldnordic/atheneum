@@ -149,6 +149,95 @@ fn test_store_discovery_creates_provenance() {
     assert_eq!(data["agent"], "hermes");
 }
 
+#[test]
+fn test_store_discovery_stamps_stable_content_hash() {
+    let graph = AtheneumGraph::open_in_memory().expect("Failed to create graph");
+
+    let first_id = graph
+        .store_discovery(
+            "hermes",
+            "pattern",
+            "canonical-hash",
+            json!({
+                "description": "stable hash",
+                "evidence": {"line": 42, "file": "src/hash.rs"}
+            }),
+        )
+        .expect("store first discovery");
+    let second_id = graph
+        .store_discovery(
+            "hermes",
+            "pattern",
+            "canonical-hash",
+            json!({
+                "evidence": {"file": "src/hash.rs", "line": 42},
+                "description": "stable hash"
+            }),
+        )
+        .expect("store second discovery");
+
+    let first = graph.get_entity(first_id).expect("first entity");
+    let second = graph.get_entity(second_id).expect("second entity");
+
+    let first_hash = first
+        .data
+        .get("content_hash")
+        .and_then(|value| value.as_str())
+        .expect("first content_hash");
+    let second_hash = second
+        .data
+        .get("content_hash")
+        .and_then(|value| value.as_str())
+        .expect("second content_hash");
+
+    assert_eq!(first_hash, second_hash, "hash should ignore JSON key order");
+}
+
+#[test]
+fn test_preview_discovery_is_read_only_and_returns_matches() {
+    let graph = AtheneumGraph::open_in_memory().expect("Failed to create graph");
+    graph
+        .store_discovery(
+            "claude1",
+            "symbol",
+            "http_handler",
+            json!({"file": "src/http.rs", "line": 42, "project_id": "envoy"}),
+        )
+        .expect("seed discovery");
+
+    let before = graph
+        .entities_by_kind(EntityType::Discovery.as_str())
+        .expect("discovery count before")
+        .len();
+
+    let preview = graph
+        .preview_discovery(
+            "claude2",
+            "cfg",
+            "http_handler",
+            json!({"complexity": 5, "project_id": "envoy"}),
+            5,
+            0.1,
+        )
+        .expect("preview discovery");
+
+    let after = graph
+        .entities_by_kind(EntityType::Discovery.as_str())
+        .expect("discovery count after")
+        .len();
+
+    assert_eq!(before, after, "preview must not store a discovery");
+    assert_eq!(preview.proposed_name, "claude2: http_handler");
+    assert_eq!(preview.exact_matches.len(), 1);
+    assert!(
+        preview
+            .candidate_matches
+            .iter()
+            .any(|candidate| candidate.name == "claude1: http_handler"),
+        "preview should surface the existing discovery candidate"
+    );
+}
+
 // ============================================================================
 // Handoff API Tests
 // ============================================================================
@@ -182,6 +271,101 @@ fn test_store_handoff() {
     assert_eq!(data["from_agent"], "claude1");
     assert_eq!(data["to_agent"], "claude2");
     assert!(data.contains_key("manifest"));
+}
+
+#[test]
+fn test_store_handoff_stamps_stable_content_hash() {
+    let graph = AtheneumGraph::open_in_memory().expect("Failed to create graph");
+
+    let first_id = graph
+        .store_handoff(
+            "claude1",
+            "claude2",
+            json!({
+                "task": "implement auth",
+                "files_analyzed": ["src/auth.rs", "src/user.rs"],
+                "next_steps": ["write tests", "ship it"]
+            }),
+        )
+        .expect("store first handoff");
+    let second_id = graph
+        .store_handoff(
+            "claude1",
+            "claude2",
+            json!({
+                "next_steps": ["write tests", "ship it"],
+                "files_analyzed": ["src/auth.rs", "src/user.rs"],
+                "task": "implement auth"
+            }),
+        )
+        .expect("store second handoff");
+
+    let first = graph.get_entity(first_id).expect("first handoff");
+    let second = graph.get_entity(second_id).expect("second handoff");
+
+    let first_hash = first
+        .data
+        .get("content_hash")
+        .and_then(|value| value.as_str())
+        .expect("first content_hash");
+    let second_hash = second
+        .data
+        .get("content_hash")
+        .and_then(|value| value.as_str())
+        .expect("second content_hash");
+
+    assert_eq!(
+        first_hash, second_hash,
+        "hash should ignore manifest key order"
+    );
+}
+
+#[test]
+fn test_preview_handoff_is_read_only_and_returns_existing_matches() {
+    let graph = AtheneumGraph::open_in_memory().expect("Failed to create graph");
+    graph
+        .store_handoff_in_project(
+            "claude1",
+            "claude2",
+            Some("atheneum"),
+            json!({
+                "task": "fix auth bug",
+                "files_analyzed": ["src/auth.rs"]
+            }),
+        )
+        .expect("seed handoff");
+
+    let before = graph
+        .entities_by_kind(EntityType::Handoff.as_str())
+        .expect("handoff count before")
+        .len();
+
+    let preview = graph
+        .preview_handoff(
+            "claude1",
+            "claude2",
+            Some("atheneum"),
+            json!({"task": "new followup", "token_budget_remaining": 1000}),
+            5,
+            0.9,
+        )
+        .expect("preview handoff");
+
+    let after = graph
+        .entities_by_kind(EntityType::Handoff.as_str())
+        .expect("handoff count after")
+        .len();
+
+    assert_eq!(before, after, "preview must not store a handoff");
+    assert_eq!(preview.proposed_name, "claude1 -> claude2");
+    assert_eq!(preview.exact_matches.len(), 1);
+    assert!(
+        preview
+            .candidate_matches
+            .iter()
+            .any(|candidate| candidate.name == "claude1 -> claude2"),
+        "preview should surface the existing handoff candidate"
+    );
 }
 
 #[test]

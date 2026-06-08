@@ -180,6 +180,50 @@ fn test_navigate_finds_entry_points_and_walks() {
     );
 }
 
+#[test]
+fn test_preview_navigate_query_repairs_plural_lowercase_kind() {
+    let g = AtheneumGraph::open_in_memory().expect("open");
+
+    let plan = g
+        .preview_navigate_query("timezone", 5, 2, None, Some("memories"))
+        .expect("preview_navigate_query");
+
+    assert!(plan.executable, "repairable kind should stay executable");
+    assert_eq!(plan.requested_kind.as_deref(), Some("memories"));
+    assert_eq!(plan.resolved_kind.as_deref(), Some("Memory"));
+    assert!(plan.kind_repaired, "kind should be marked repaired");
+}
+
+#[test]
+fn test_navigate_repairs_lowercase_kind_filter() {
+    let g = AtheneumGraph::open_in_memory().expect("open");
+    g.store_memory("timezone", "UTC+0", "user", 1.0, None)
+        .expect("store memory");
+
+    let views = g
+        .navigate("timezone", 5, 1, None, Some("memory"))
+        .expect("navigate");
+
+    assert!(!views.is_empty(), "navigate should repair lowercase kinds");
+    assert_eq!(views[0].entry.kind, "Memory");
+}
+
+#[test]
+fn test_preview_navigate_query_rejects_unknown_kind() {
+    let g = AtheneumGraph::open_in_memory().expect("open");
+
+    let plan = g
+        .preview_navigate_query("timezone", 5, 2, None, Some("memz"))
+        .expect("preview_navigate_query");
+
+    assert!(!plan.executable, "unknown kind should be rejected");
+    assert_eq!(plan.resolved_kind, None);
+    assert!(
+        !plan.errors.is_empty(),
+        "rejected plans should explain why they are invalid"
+    );
+}
+
 // ============================================================================
 // Stats (new)
 // ============================================================================

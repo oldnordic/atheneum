@@ -7,9 +7,10 @@ pub(crate) mod db;
 pub mod graph;
 
 pub use graph::{
-    AtheneumGraph, ClaudeTranscriptImportParams, ClaudeTranscriptImportSummary, DreamConfig,
-    DreamFinding, DreamMode, DreamPhase, DreamReport, EdgeType, EntityType, JournalSection,
-    KanbanStatus, KanbanUpdate, SearchResult, WikiPage,
+    AtheneumGraph, ClaudeTranscriptImportParams, ClaudeTranscriptImportSummary, DiscoveryPreview,
+    DreamConfig, DreamFinding, DreamMode, DreamPhase, DreamReport, EdgeType, EntityType,
+    HandoffPreview, JournalSection, KanbanStatus, KanbanUpdate, MemoryPreview, NavigateQueryPlan,
+    RuntimeStats, SearchResult, WikiPage,
 };
 
 // Re-export the sqlitegraph types so consumers can name them as

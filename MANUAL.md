@@ -43,6 +43,26 @@ The database schema is auto-migrated on `open()`. No separate migration step req
 
 ---
 
+## Maintainer Checklist
+
+When changing Atheneum itself, keep the local docs and gates in sync:
+
+```bash
+# Repo-local wrappers around the shared project standards
+.claude/scripts/quality-gate.sh
+printf '{}\n' | env CLAUDE_PROJECT_DIR="$PWD" fish .claude/hooks/verify-rust.fish
+bash .claude/hooks/pre-commit-rust-standards
+```
+
+Rules:
+
+- Update `CHANGELOG.md` for every user-visible fix, behavior change, or workflow change.
+- Update `MANUAL.md` when you add or change a public function, CLI command, flag, or operator workflow.
+- Prefer adding the manual/changelog update in the same patch as the code change so the docs cannot drift.
+- If a repo-local `.claude/` wrapper exists, run it from the repo root instead of reaching for a shared path manually.
+
+---
+
 ## Agent Sessions
 
 Sessions track every coding session — who, when, what branch, how many tool calls, cost.
@@ -97,6 +117,32 @@ for s in sessions {
         s.tool_call_count, s.file_write_count, s.last_tool);
 }
 ```
+
+### Runtime Cache Stats
+
+Atheneum now keeps a process-local concurrent query cache for the hottest repeated read paths. You can inspect that runtime state directly:
+
+```rust
+let stats = graph.runtime_stats();
+println!(
+    "hits={} misses={} memory_q={} session_q={} wiki_q={}",
+    stats.cache_hits,
+    stats.cache_misses,
+    stats.memory_queries,
+    stats.session_queries,
+    stats.wiki_queries,
+);
+```
+
+Current cached reads:
+
+- `query_memory()` / `list_memory()`
+- `query_sessions()`
+- `query_events()`
+- `query_knowledge()` / `query_knowledge_in_project()`
+- `list_wiki_pages()`
+
+Writes invalidate the relevant cache domain automatically after successful mutation.
 
 ### Tool Call Evidence
 
@@ -161,6 +207,100 @@ let discoveries = graph.query_discoveries("query_sessions")?;
 // By project (no target required — for session bootstrap context injection)
 let recent = graph.recent_project_context("atheneum", 8)?;
 ```
+
+### Preview Candidate Matches
+
+For fuzzy identifiers, Atheneum can return ranked existing candidates without mutating the graph:
+
+```rust
+let candidates = graph.preview_entity_candidates(
+    "HTTP Router",
+    5,
+    Some("atheneum"),
+    Some("WikiPage"),
+    0.2,
+)?;
+
+for candidate in candidates {
+    println!("{} {} {:.3}", candidate.kind, candidate.name, candidate.score);
+}
+```
+
+This is intended for preview/disambiguation flows where you want to inspect likely matches before storing new memory, discovery, or wiki links.
+
+### Query Validation And Repair
+
+Atheneum can preview a navigation query plan before execution:
+
+```rust
+let plan = graph.preview_navigate_query(
+    "timezone",
+    5,
+    2,
+    None,
+    Some("memories"),
+)?;
+
+assert!(plan.executable);
+assert_eq!(plan.resolved_kind.as_deref(), Some("Memory"));
+assert!(plan.kind_repaired);
+```
+
+This plan stage:
+
+- trims accidental whitespace from the query
+- resolves common entity-kind aliases such as `memory`, `memories`, `wiki`, and `discoveries`
+- rejects unknown kinds before traversal instead of silently returning empty results
+- records warnings/errors so repaired execution is explicit to callers
+
+### Preview Before Commit
+
+Atheneum can also preview normalized discovery, memory, and handoff payloads before writing:
+
+```rust
+let discovery = graph.preview_discovery(
+    "codex",
+    "pattern",
+    "query_cache",
+    serde_json::json!({"summary": "cache repeated reads", "project_id": "atheneum"}),
+    5,
+    0.2,
+)?;
+
+let memory = graph.preview_memory(
+    "timezone",
+    "UTC+1",
+    "user",
+    0.9,
+    None,
+    5,
+    0.2,
+)?;
+
+let handoff = graph.preview_handoff(
+    "claude1",
+    "claude2",
+    Some("atheneum"),
+    serde_json::json!({"task": "finish review", "files_analyzed": ["src/lib.rs"]}),
+    5,
+    0.2,
+)?;
+```
+
+These preview APIs:
+
+- do not insert entities or edges
+- return deterministic `content_hash` values
+- include exact existing matches plus fuzzy candidate matches, even when the fuzzy score alone would have filtered them out
+
+### CLI Navigate Kind Filters
+
+The CLI `navigate` command now accepts `--kind` and reports the repaired/validated plan in its JSON output:
+
+```bash
+atheneum navigate ./atheneum.db timezone --kind memories
+```
+- are intended for operator review or agent-side "propose first, commit later" flows
 
 ---
 

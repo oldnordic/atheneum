@@ -8,7 +8,7 @@ use std::collections::{HashSet, VecDeque};
 use anyhow::Result;
 use sqlitegraph::{GraphEdge, GraphEntity};
 
-use super::{AtheneumGraph, EdgeType, GraphStats, SubgraphView};
+use super::{AtheneumGraph, EdgeType, EntityType, GraphStats, NavigateQueryPlan, SubgraphView};
 
 const CHARS_PER_TOKEN: usize = 4;
 
@@ -93,6 +93,65 @@ pub(crate) fn entity_in_project_scope(entity: &sqlitegraph::GraphEntity, scope: 
 }
 
 impl AtheneumGraph {
+    pub fn preview_navigate_query(
+        &self,
+        query: &str,
+        k: usize,
+        depth: u32,
+        project_id: Option<&str>,
+        entity_kind: Option<&str>,
+    ) -> Result<NavigateQueryPlan> {
+        let normalized_query = query.trim().to_string();
+        let mut warnings = Vec::new();
+        let mut errors = Vec::new();
+        let requested_kind = entity_kind.map(str::to_string);
+        let mut resolved_kind = None;
+        let mut kind_repaired = false;
+
+        if normalized_query.is_empty() {
+            errors.push("query must not be empty after trimming".to_string());
+        } else if normalized_query != query {
+            warnings.push("query was trimmed before execution".to_string());
+        }
+
+        if let Some(kind) = entity_kind {
+            match EntityType::from_query_label(kind) {
+                Some(resolved) => {
+                    let canonical = resolved.as_str().to_string();
+                    kind_repaired = kind != canonical;
+                    if kind_repaired {
+                        warnings.push(format!(
+                            "entity kind repaired from '{}' to '{}'",
+                            kind, canonical
+                        ));
+                    }
+                    resolved_kind = Some(canonical);
+                }
+                None => {
+                    errors.push(format!(
+                        "unknown entity kind '{}'; expected one of: {}",
+                        kind,
+                        EntityType::query_labels().join(", ")
+                    ));
+                }
+            }
+        }
+
+        Ok(NavigateQueryPlan {
+            original_query: query.to_string(),
+            normalized_query,
+            k,
+            depth,
+            project_id: project_id.map(str::to_string),
+            requested_kind,
+            resolved_kind,
+            kind_repaired,
+            executable: errors.is_empty(),
+            warnings,
+            errors,
+        })
+    }
+
     /// Return (outgoing_edges, incoming_edges) for a single entity.
     pub fn get_neighbors(&self, entity_id: i64) -> Result<(Vec<GraphEdge>, Vec<GraphEdge>)> {
         Ok((
@@ -315,7 +374,17 @@ impl AtheneumGraph {
         project_id: Option<&str>,
         entity_kind: Option<&str>,
     ) -> Result<Vec<SubgraphView>> {
-        let hits = self.lexical_search(query, k, project_id, entity_kind)?;
+        let plan = self.preview_navigate_query(query, k, depth, project_id, entity_kind)?;
+        if !plan.executable {
+            anyhow::bail!(plan.errors.join("; "));
+        }
+
+        let hits = self.lexical_search(
+            &plan.normalized_query,
+            plan.k,
+            project_id,
+            plan.resolved_kind.as_deref(),
+        )?;
         if hits.is_empty() {
             return Ok(Vec::new());
         }

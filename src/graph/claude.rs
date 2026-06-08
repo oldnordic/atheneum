@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use chrono::DateTime;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 
+use super::hashing::sha256_hex;
 use super::{
     AtheneumGraph, ClaudeTranscriptImportParams, ClaudeTranscriptImportSummary, FileAccessParams,
     PromptParams, RecordEventParams, SessionParams, SessionProgressParams, ToolCallParams,
@@ -833,12 +833,6 @@ fn decode_project_dir_name(encoded: &str) -> String {
         .and_then(|name| name.to_str())
         .unwrap_or(encoded)
         .to_string()
-}
-
-fn sha256_hex(input: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(input.as_bytes());
-    format!("{:x}", hasher.finalize())
 }
 
 #[cfg(unix)]

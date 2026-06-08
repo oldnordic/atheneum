@@ -65,6 +65,40 @@ fn search_config(dim: usize) -> Result<sqlitegraph::hnsw::HnswConfig> {
 }
 
 impl AtheneumGraph {
+    pub(super) fn merge_exact_match_candidates(
+        &self,
+        mut candidate_matches: Vec<SearchResult>,
+        exact_matches: &[GraphEntity],
+        k: usize,
+    ) -> Vec<SearchResult> {
+        for entity in exact_matches {
+            if candidate_matches
+                .iter()
+                .any(|candidate| candidate.id == entity.id)
+            {
+                continue;
+            }
+            candidate_matches.push(SearchResult {
+                id: entity.id,
+                name: entity.name.clone(),
+                kind: entity.kind.clone(),
+                score: 1.0,
+                data: entity.data.clone(),
+            });
+        }
+        candidate_matches.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        if candidate_matches.len() > k {
+            candidate_matches.truncate(k);
+        }
+        candidate_matches
+    }
+
     /// Ensure the HNSW index exists. Creates it lazily on first use.
     fn ensure_search_index(&self) -> Result<()> {
         let existing = self
@@ -116,20 +150,13 @@ impl AtheneumGraph {
         Ok(())
     }
 
-    /// Search discoveries using a hash-projected bag-of-tokens index (HNSW).
-    ///
-    /// Finds entities that share tokens with `query`. This is **lexical similarity**,
-    /// not semantic/neural similarity — synonyms with no token overlap will not match.
-    /// For true semantic search, embeddings from a language model would be needed.
-    pub fn lexical_search(
+    fn try_hnsw_search(
         &self,
-        query: &str,
+        query_vec: &[f32],
         k: usize,
         project_id: Option<&str>,
         entity_kind: Option<&str>,
     ) -> Result<Vec<SearchResult>> {
-        self.ensure_search_index()?;
-        let query_vec = self.embedder.embed(query)?;
         let fetch_k = if project_id.is_some() || entity_kind.is_some() {
             k * 4
         } else {
@@ -138,7 +165,7 @@ impl AtheneumGraph {
 
         let hits = self
             .inner
-            .get_hnsw_index_ref(SEARCH_INDEX_NAME, |idx| idx.search(&query_vec, fetch_k))
+            .get_hnsw_index_ref(SEARCH_INDEX_NAME, |idx| idx.search(query_vec, fetch_k))
             .map_err(|e| anyhow::anyhow!("search index lookup failed: {}", e))?
             .map_err(|e| anyhow::anyhow!("hnsw search failed: {}", e))?;
 
@@ -196,55 +223,139 @@ impl AtheneumGraph {
             }
         }
 
-        if results.len() < k {
-            let tokens = query_tokens(query);
-            let mut fallback = Vec::new();
-            for entity in self.all_entities()? {
-                if seen_entities.contains(&entity.id) {
+        Ok(results)
+    }
+
+    fn fallback_lexical_search(
+        &self,
+        query: &str,
+        k: usize,
+        project_id: Option<&str>,
+        entity_kind: Option<&str>,
+        mut results: Vec<SearchResult>,
+    ) -> Result<Vec<SearchResult>> {
+        let tokens = query_tokens(query);
+        let mut seen_entities: HashSet<i64> = results.iter().map(|r| r.id).collect();
+        let mut fallback = Vec::new();
+        for entity in self.all_entities()? {
+            if seen_entities.contains(&entity.id) {
+                continue;
+            }
+            if let Some(pid) = project_id {
+                let entity_project = entity
+                    .data
+                    .get("project_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if entity_project != pid {
                     continue;
-                }
-                if let Some(pid) = project_id {
-                    let entity_project = entity
-                        .data
-                        .get("project_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    if entity_project != pid {
-                        continue;
-                    }
-                }
-                if let Some(kind) = entity_kind {
-                    if entity.kind != kind {
-                        continue;
-                    }
-                }
-                let score = lexical_token_score(&entity, &tokens);
-                if score > 0.0 {
-                    fallback.push((entity, score));
                 }
             }
-            fallback.sort_by(|(left, left_score), (right, right_score)| {
-                right_score
-                    .partial_cmp(left_score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| left.name.cmp(&right.name))
-            });
-            for (entity, score) in fallback {
-                if !seen_entities.insert(entity.id) {
+            if let Some(kind) = entity_kind {
+                if entity.kind != kind {
                     continue;
                 }
-                results.push(SearchResult {
-                    id: entity.id,
-                    name: entity.name,
-                    kind: entity.kind,
-                    score,
-                    data: entity.data,
-                });
-                if results.len() >= k {
-                    break;
-                }
+            }
+            let score = lexical_token_score(&entity, &tokens);
+            if score > 0.0 {
+                fallback.push((entity, score));
             }
         }
+        fallback.sort_by(|(left, left_score), (right, right_score)| {
+            right_score
+                .partial_cmp(left_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        for (entity, score) in fallback {
+            if !seen_entities.insert(entity.id) {
+                continue;
+            }
+            results.push(SearchResult {
+                id: entity.id,
+                name: entity.name,
+                kind: entity.kind,
+                score,
+                data: entity.data,
+            });
+            if results.len() >= k {
+                break;
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Search discoveries using a hash-projected bag-of-tokens index (HNSW).
+    ///
+    /// Finds entities that share tokens with `query`. This is **lexical similarity**,
+    /// not semantic/neural similarity — synonyms with no token overlap will not match.
+    /// For true semantic search, embeddings from a language model would be needed.
+    pub fn lexical_search(
+        &self,
+        query: &str,
+        k: usize,
+        project_id: Option<&str>,
+        entity_kind: Option<&str>,
+    ) -> Result<Vec<SearchResult>> {
+        let query_vec = self.embedder.embed(query)?;
+        let hnsw_results = match self.ensure_search_index() {
+            Ok(()) => match self.try_hnsw_search(&query_vec, k, project_id, entity_kind) {
+                Ok(results) => Some(results),
+                Err(first_err) => {
+                    eprintln!("[atheneum] search index warning: {}", first_err);
+                    match self.build_search_index() {
+                        Ok(()) => {
+                            match self.try_hnsw_search(&query_vec, k, project_id, entity_kind) {
+                                Ok(results) => Some(results),
+                                Err(second_err) => {
+                                    eprintln!(
+                                        "[atheneum] search index rebuild warning: {}",
+                                        second_err
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                        Err(rebuild_err) => {
+                            eprintln!("[atheneum] search index rebuild failed: {}", rebuild_err);
+                            None
+                        }
+                    }
+                }
+            },
+            Err(err) => {
+                eprintln!("[atheneum] search index unavailable: {}", err);
+                None
+            }
+        };
+
+        let results = hnsw_results.unwrap_or_default();
+        if results.len() >= k {
+            return Ok(results);
+        }
+
+        self.fallback_lexical_search(query, k, project_id, entity_kind, results)
+    }
+
+    /// Return ranked existing entities for a fuzzy identifier without mutating the graph.
+    pub fn preview_entity_candidates(
+        &self,
+        query: &str,
+        k: usize,
+        project_id: Option<&str>,
+        entity_kind: Option<&str>,
+        min_score: f32,
+    ) -> Result<Vec<SearchResult>> {
+        let mut results = self.lexical_search(query, k, project_id, entity_kind)?;
+        results.retain(|result| result.score >= min_score);
+        results.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.name.cmp(&right.name))
+        });
         Ok(results)
     }
 }

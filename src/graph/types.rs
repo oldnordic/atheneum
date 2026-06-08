@@ -37,6 +37,49 @@ impl EntityType {
             EntityType::WikiPage => "WikiPage",
         }
     }
+
+    pub fn from_query_label(label: &str) -> Option<Self> {
+        let normalized: String = label
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .flat_map(|ch| ch.to_lowercase())
+            .collect();
+
+        Some(match normalized.as_str() {
+            "agent" | "agents" => EntityType::Agent,
+            "task" | "tasks" => EntityType::Task,
+            "event" | "events" => EntityType::Event,
+            "toolcall" | "toolcalls" | "tool" | "tools" => EntityType::ToolCall,
+            "knowledge" | "knowledges" => EntityType::Knowledge,
+            "discovery" | "discoveries" => EntityType::Discovery,
+            "handoff" | "handoffs" => EntityType::Handoff,
+            "session" | "sessions" => EntityType::Session,
+            "commit" | "commits" => EntityType::Commit,
+            "testrun" | "testruns" | "test" | "tests" => EntityType::TestRun,
+            "eventlog" | "eventlogs" | "log" | "logs" => EntityType::EventLog,
+            "memory" | "memories" => EntityType::Memory,
+            "wikipage" | "wikipages" | "wiki" | "page" | "pages" => EntityType::WikiPage,
+            _ => return None,
+        })
+    }
+
+    pub fn query_labels() -> &'static [&'static str] {
+        &[
+            "Agent",
+            "Task",
+            "Event",
+            "ToolCall",
+            "Knowledge",
+            "Discovery",
+            "Handoff",
+            "Session",
+            "Commit",
+            "TestRun",
+            "EventLog",
+            "Memory",
+            "WikiPage",
+        ]
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -210,6 +253,48 @@ pub struct SearchResult {
     pub kind: String,
     pub score: f32,
     pub data: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscoveryPreview {
+    pub proposed_name: String,
+    pub proposed_data: Value,
+    pub content_hash: String,
+    pub exact_matches: Vec<GraphEntity>,
+    pub candidate_matches: Vec<SearchResult>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MemoryPreview {
+    pub proposed_key: String,
+    pub proposed_data: Value,
+    pub content_hash: String,
+    pub exact_matches: Vec<GraphEntity>,
+    pub candidate_matches: Vec<SearchResult>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HandoffPreview {
+    pub proposed_name: String,
+    pub proposed_data: Value,
+    pub content_hash: String,
+    pub exact_matches: Vec<GraphEntity>,
+    pub candidate_matches: Vec<SearchResult>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct NavigateQueryPlan {
+    pub original_query: String,
+    pub normalized_query: String,
+    pub k: usize,
+    pub depth: u32,
+    pub project_id: Option<String>,
+    pub requested_kind: Option<String>,
+    pub resolved_kind: Option<String>,
+    pub kind_repaired: bool,
+    pub executable: bool,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

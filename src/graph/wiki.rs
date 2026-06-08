@@ -2,13 +2,17 @@ use anyhow::Result;
 use chrono::Utc;
 use regex::Regex;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use sqlitegraph::GraphEntity;
 use std::sync::OnceLock;
 
+use super::cache::{CacheDomain, QueryCacheKey, QueryCacheValue};
+use super::hashing::sha256_hex;
 use super::planning::{KanbanStatus, KanbanUpdate};
 use super::types::EdgeType;
 use super::AtheneumGraph;
+
+const WIKILINK_AUTOLINK_MIN_SCORE: f32 = 0.95;
+const WIKILINK_AUTOLINK_MARGIN: f32 = 0.20;
 
 fn wikilink_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -30,6 +34,7 @@ fn kanban_update_re() -> &'static Regex {
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WikiPage {
     pub id: i64,
     pub path: String,
@@ -59,9 +64,7 @@ pub fn extract_wikilinks(content: &str) -> Vec<String> {
 }
 
 pub fn content_hash(content: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
-    format!("{:x}", hasher.finalize())
+    sha256_hex(content)
 }
 
 pub fn parse_journal_sections(content: &str) -> Vec<JournalSection> {
@@ -218,7 +221,7 @@ impl AtheneumGraph {
         // Create wikilink graph edges — create stub targets if they don't exist
         let wikilinks = extract_wikilinks(body);
         for target in &wikilinks {
-            let target_id = match self.find_entity_id_by_kind_and_wikilink("WikiPage", target)? {
+            let target_id = match self.resolve_wikilink_target_id(target, page_id, project_id)? {
                 Some(id) => id,
                 None => {
                     // Create a stub WikiPage entity for the missing target
@@ -242,6 +245,8 @@ impl AtheneumGraph {
             );
         }
 
+        self.runtime.record_wiki_write();
+        self.runtime.bump_generation(CacheDomain::Wiki);
         Ok(page_id)
     }
 
@@ -461,7 +466,17 @@ impl AtheneumGraph {
     }
 
     pub fn list_wiki_pages(&self, project_id: Option<&str>) -> Result<Vec<WikiPage>> {
-        self.with_raw_connection(|conn| {
+        self.runtime.record_wiki_query();
+        let cache_key = QueryCacheKey::ListWikiPages {
+            project_id: project_id.map(str::to_string),
+        };
+        if let Some(QueryCacheValue::WikiPages(pages)) =
+            self.runtime.cache_get(&cache_key, CacheDomain::Wiki)
+        {
+            return Ok(pages);
+        }
+
+        let pages = self.with_raw_connection(|conn| {
             let sql = if project_id.is_some() {
                 "SELECT id, path, title, content_hash, body, wikilinks, project_id, metadata, created_at, updated_at
                  FROM wiki_pages WHERE project_id = ?1 ORDER BY path"
@@ -480,7 +495,13 @@ impl AtheneumGraph {
                 pages.push(row?);
             }
             Ok(pages)
-        })
+        })?;
+        self.runtime.cache_store(
+            cache_key,
+            CacheDomain::Wiki,
+            QueryCacheValue::WikiPages(pages.clone()),
+        );
+        Ok(pages)
     }
 
     pub fn find_pages_by_wikilink(
@@ -541,14 +562,55 @@ impl AtheneumGraph {
             let result: Option<i64> = conn
                 .query_row(
                     "SELECT id FROM graph_entities WHERE kind = ?1 AND (
-                        LOWER(name) LIKE ?2 OR LOWER(json_extract(data, '$.path')) LIKE ?3
+                        LOWER(name) LIKE ?2 OR
+                        LOWER(json_extract(data, '$.path')) LIKE ?3 OR
+                        LOWER(json_extract(data, '$.title')) = ?4
                     ) LIMIT 1",
-                    rusqlite::params![kind, suffix, suffix2],
+                    rusqlite::params![kind, suffix, suffix2, suffix2],
                     |r| r.get(0),
                 )
                 .ok();
             Ok(result)
         })
+    }
+
+    fn resolve_wikilink_target_id(
+        &self,
+        target: &str,
+        source_page_id: i64,
+        project_id: Option<&str>,
+    ) -> Result<Option<i64>> {
+        if let Some(id) = self.find_entity_id_by_kind_and_wikilink("WikiPage", target)? {
+            if id != source_page_id {
+                return Ok(Some(id));
+            }
+        }
+
+        let candidates = self.preview_entity_candidates(
+            target,
+            2,
+            project_id,
+            Some("WikiPage"),
+            WIKILINK_AUTOLINK_MIN_SCORE,
+        )?;
+
+        let mut candidates = candidates
+            .into_iter()
+            .filter(|candidate| candidate.id != source_page_id)
+            .filter(|candidate| candidate.data.get("stub").and_then(|v| v.as_bool()) != Some(true))
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+
+        let best = candidates.remove(0);
+        if let Some(next) = candidates.first() {
+            if best.score - next.score < WIKILINK_AUTOLINK_MARGIN {
+                return Ok(None);
+            }
+        }
+
+        Ok(Some(best.id))
     }
 
     pub fn outgoing_wikilinks(&self, page_id: i64) -> Result<Vec<GraphEntity>> {

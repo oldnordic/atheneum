@@ -4,6 +4,7 @@ use rusqlite::params;
 use serde_json::{json, Value};
 use sqlitegraph::GraphEntity;
 
+use super::cache::{CacheDomain, QueryCacheKey, QueryCacheValue};
 use super::{AtheneumGraph, EdgeType, EntityType};
 
 impl AtheneumGraph {
@@ -139,6 +140,17 @@ impl AtheneumGraph {
     }
 
     pub fn query_knowledge(&self, target: &str) -> Result<Value> {
+        self.runtime.record_knowledge_query();
+        let cache_key = QueryCacheKey::QueryKnowledge {
+            target: target.to_string(),
+            project_id: None,
+        };
+        if let Some(QueryCacheValue::Json(value)) =
+            self.runtime.cache_get(&cache_key, CacheDomain::Knowledge)
+        {
+            return Ok(value);
+        }
+
         let discoveries = self.query_discoveries(target).unwrap_or_default();
 
         let target_pattern = format!("%{}%", target);
@@ -203,7 +215,7 @@ impl AtheneumGraph {
             0.0
         };
 
-        Ok(json!({
+        let value = json!({
             "target": target,
             "queried_at": Utc::now().to_rfc3339(),
             "total_entities": total_entities,
@@ -219,7 +231,13 @@ impl AtheneumGraph {
                 "saved": saved,
                 "percentage_reduction": percentage_reduction
             }
-        }))
+        });
+        self.runtime.cache_store(
+            cache_key,
+            CacheDomain::Knowledge,
+            QueryCacheValue::Json(value.clone()),
+        );
+        Ok(value)
     }
 
     pub fn query_knowledge_in_project(
@@ -230,6 +248,17 @@ impl AtheneumGraph {
         let Some(pid) = project_id else {
             return self.query_knowledge(target);
         };
+
+        self.runtime.record_knowledge_query();
+        let cache_key = QueryCacheKey::QueryKnowledge {
+            target: target.to_string(),
+            project_id: Some(pid.to_string()),
+        };
+        if let Some(QueryCacheValue::Json(value)) =
+            self.runtime.cache_get(&cache_key, CacheDomain::Knowledge)
+        {
+            return Ok(value);
+        }
 
         let discoveries = self
             .query_discoveries_in_project(target, project_id)
@@ -297,7 +326,7 @@ impl AtheneumGraph {
             0.0
         };
 
-        Ok(json!({
+        let value = json!({
             "target": target,
             "project_id": project_id,
             "queried_at": Utc::now().to_rfc3339(),
@@ -314,6 +343,12 @@ impl AtheneumGraph {
                 "saved": saved,
                 "percentage_reduction": percentage_reduction
             }
-        }))
+        });
+        self.runtime.cache_store(
+            cache_key,
+            CacheDomain::Knowledge,
+            QueryCacheValue::Json(value.clone()),
+        );
+        Ok(value)
     }
 }

@@ -4,9 +4,61 @@ use rusqlite::params;
 use serde_json::{json, Value};
 use sqlitegraph::GraphEntity;
 
-use super::{AtheneumGraph, EdgeType, EntityType};
+use super::cache::CacheDomain;
+use super::hashing::json_sha256_hex;
+use super::{AtheneumGraph, DiscoveryPreview, EdgeType, EntityType};
 
 impl AtheneumGraph {
+    pub fn preview_discovery(
+        &self,
+        agent: &str,
+        discovery_type: &str,
+        target: &str,
+        mut metadata: Value,
+        k: usize,
+        min_score: f32,
+    ) -> Result<DiscoveryPreview> {
+        if let Some(obj) = metadata.as_object_mut() {
+            obj.insert("agent".to_string(), Value::String(agent.to_string()));
+            obj.insert(
+                "discovery_type".to_string(),
+                Value::String(discovery_type.to_string()),
+            );
+            obj.insert("target".to_string(), Value::String(target.to_string()));
+        }
+
+        let content_hash = discovery_content_hash(&metadata)?;
+        if let Some(obj) = metadata.as_object_mut() {
+            obj.insert(
+                "content_hash".to_string(),
+                Value::String(content_hash.clone()),
+            );
+        }
+
+        let project_id = metadata
+            .get("project_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let exact_matches = self.query_discoveries_in_project(target, project_id.as_deref())?;
+        let candidate_matches = self.preview_entity_candidates(
+            target,
+            k,
+            project_id.as_deref(),
+            Some(EntityType::Discovery.as_str()),
+            min_score,
+        )?;
+        let candidate_matches =
+            self.merge_exact_match_candidates(candidate_matches, &exact_matches, k);
+
+        Ok(DiscoveryPreview {
+            proposed_name: format!("{}: {}", agent, target),
+            proposed_data: metadata,
+            content_hash,
+            exact_matches,
+            candidate_matches,
+        })
+    }
+
     pub fn store_discovery(
         &self,
         agent: &str,
@@ -28,6 +80,8 @@ impl AtheneumGraph {
                 Value::String(Utc::now().to_rfc3339()),
             );
         }
+
+        let content_hash = discovery_content_hash(&metadata)?;
 
         let agent_s = agent.to_string();
         let discovery_type_s = discovery_type.to_string();
@@ -57,6 +111,7 @@ impl AtheneumGraph {
 
         if let Some(obj) = metadata.as_object_mut() {
             obj.insert("sql_id".to_string(), Value::Number(sql_id.into()));
+            obj.insert("content_hash".to_string(), Value::String(content_hash));
         }
 
         let entity = GraphEntity {
@@ -103,6 +158,8 @@ impl AtheneumGraph {
             json!({"provenance": {"actor": "atheneum", "method": "store_discovery"}}),
         )?;
 
+        self.runtime.record_knowledge_write();
+        self.runtime.bump_generation(CacheDomain::Knowledge);
         Ok(discovery_id)
     }
 
@@ -216,4 +273,14 @@ impl AtheneumGraph {
             Ok(discoveries)
         })
     }
+}
+
+fn discovery_content_hash(metadata: &Value) -> Result<String> {
+    let mut normalized = metadata.clone();
+    if let Some(obj) = normalized.as_object_mut() {
+        obj.remove("timestamp");
+        obj.remove("sql_id");
+        obj.remove("content_hash");
+    }
+    json_sha256_hex(&normalized)
 }

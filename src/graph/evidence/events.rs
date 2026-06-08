@@ -1,8 +1,9 @@
 use anyhow::Result;
 use chrono::Utc;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 
+use super::super::cache::{CacheDomain, QueryCacheKey, QueryCacheValue};
+use super::super::hashing::sha256_hex;
 use super::super::json_to_string;
 use super::super::{AtheneumGraph, RecordEventParams, SessionSummary};
 
@@ -25,11 +26,23 @@ impl AtheneumGraph {
         event_type: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Value>> {
+        self.runtime.record_event_query();
+        let cache_key = QueryCacheKey::QueryEvents {
+            session_id: session_id.map(str::to_string),
+            event_type: event_type.map(str::to_string),
+            limit,
+        };
+        if let Some(QueryCacheValue::Events(events)) =
+            self.runtime.cache_get(&cache_key, CacheDomain::Events)
+        {
+            return Ok(events);
+        }
+
         let sid = session_id.map(|s| s.to_string());
         let et = event_type.map(|s| s.to_string());
         let lim = limit as i64;
 
-        self.with_raw_connection(move |conn| {
+        let events = self.with_raw_connection(move |conn| {
             let mut sql = String::from(
                 "SELECT event_id, event_type, entity_id, session_id, payload, timestamp
                  FROM event_log
@@ -62,7 +75,13 @@ impl AtheneumGraph {
                 events.push(row?);
             }
             Ok(events)
-        })
+        })?;
+        self.runtime.cache_store(
+            cache_key,
+            CacheDomain::Events,
+            QueryCacheValue::Events(events.clone()),
+        );
+        Ok(events)
     }
 
     /// Query recent sessions. If `project` is Some, filter to that project.
@@ -72,10 +91,22 @@ impl AtheneumGraph {
         last_n: i64,
         parent_id: Option<&str>,
     ) -> Result<Vec<SessionSummary>> {
+        self.runtime.record_session_query();
+        let cache_key = QueryCacheKey::QuerySessions {
+            project: project.map(str::to_string),
+            last_n,
+            parent_id: parent_id.map(str::to_string),
+        };
+        if let Some(QueryCacheValue::Sessions(sessions)) =
+            self.runtime.cache_get(&cache_key, CacheDomain::Sessions)
+        {
+            return Ok(sessions);
+        }
+
         let pid = parent_id.map(|s| s.to_string());
         let project = project.map(|s| s.to_string());
 
-        self.with_raw_connection(move |conn| {
+        let sessions = self.with_raw_connection(move |conn| {
             let mut sql = String::from(
                 "SELECT s.session_id, s.project, s.git_branch, s.trigger,
                         s.started_at, s.ended_at, s.exit_status,
@@ -144,7 +175,13 @@ impl AtheneumGraph {
                 out.push(row?);
             }
             Ok(out)
-        })
+        })?;
+        self.runtime.cache_store(
+            cache_key,
+            CacheDomain::Sessions,
+            QueryCacheValue::Sessions(sessions.clone()),
+        );
+        Ok(sessions)
     }
 
     /// Record a generic event into the event_log.
@@ -184,11 +221,7 @@ impl AtheneumGraph {
         payload: &Value,
     ) -> Result<()> {
         let payload_str = json_to_string(payload)?;
-        let payload_hash = {
-            let mut hasher = Sha256::new();
-            hasher.update(payload_str.as_bytes());
-            format!("{:x}", hasher.finalize())
-        };
+        let payload_hash = sha256_hex(&payload_str);
         let now = Utc::now().to_rfc3339();
         let event_type = event_type.to_string();
         let entity_id = entity_id.to_string();
@@ -202,6 +235,13 @@ impl AtheneumGraph {
             )?;
             Ok::<(), anyhow::Error>(())
         })?;
+
+        self.runtime.record_event_write();
+        self.runtime.bump_generation(CacheDomain::Events);
+        if event_type == "tool_call" {
+            self.runtime.record_session_write();
+            self.runtime.bump_generation(CacheDomain::Sessions);
+        }
         Ok(())
     }
 }

@@ -281,7 +281,7 @@ fn run() -> anyhow::Result<()> {
         "navigate" => {
             if args.len() < 4 {
                 eprintln!(
-                    "Usage: atheneum navigate <db-path> <query> [--k N] [--depth N] [--project P]"
+                    "Usage: atheneum navigate <db-path> <query> [--k N] [--depth N] [--project P] [--kind K]"
                 );
                 std::process::exit(1);
             }
@@ -291,12 +291,30 @@ fn run() -> anyhow::Result<()> {
             let k = parse_usize_option(opts.k.as_deref(), "k")?.unwrap_or(5);
             let depth = parse_u32_option(opts.depth.as_deref(), "depth")?.unwrap_or(2);
             let graph = AtheneumGraph::open(&db_path)?;
-            let views = graph.navigate(query, k, depth, opts.project.as_deref(), None)?;
+            let plan = graph.preview_navigate_query(
+                query,
+                k,
+                depth,
+                opts.project.as_deref(),
+                opts.kind.as_deref(),
+            )?;
+            if !plan.executable {
+                anyhow::bail!(plan.errors.join("; "));
+            }
+            let views = graph.navigate(
+                query,
+                k,
+                depth,
+                opts.project.as_deref(),
+                opts.kind.as_deref(),
+            )?;
             print_json(json!({
                 "query": query,
                 "k": k,
                 "depth": depth,
+                "kind": opts.kind,
                 "project": opts.project,
+                "plan": plan,
                 "subgraphs": views.iter().map(subgraph_to_json).collect::<Vec<_>>(),
             }))?;
         }
@@ -772,7 +790,7 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     )?;
     writeln!(
         writer,
-        "  navigate <db-path> <query> [opts]       Search then walk graph subgraphs"
+        "  navigate <db-path> <query> [--k N] [--depth N] [--project P] [--kind K]  Search then walk graph subgraphs"
     )?;
     writeln!(
         writer,
@@ -891,6 +909,7 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
 struct CliOptions {
     k: Option<String>,
     depth: Option<String>,
+    kind: Option<String>,
     project: Option<String>,
     limit: Option<String>,
     session: Option<String>,
@@ -921,6 +940,7 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
             match key {
                 "--k" => opts.k = Some(value),
                 "--depth" => opts.depth = Some(value),
+                "--kind" => opts.kind = Some(value),
                 "--project" => opts.project = Some(value),
                 "--limit" => opts.limit = Some(value),
                 "--session" => opts.session = Some(value),

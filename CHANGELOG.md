@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] — 2026-06-07
+
+### Added
+
+- Repo-local Claude wrapper scripts for Atheneum quality checks:
+  - `.claude/scripts/quality-gate.sh`
+  - `.claude/hooks/verify-rust.fish`
+  - `.claude/hooks/pre-commit-rust-standards`
+- `MANUAL.md` maintainer checklist covering local gates plus the rule that public API / CLI changes must update the manual and changelog in the same change.
+- `AtheneumGraph::runtime_stats()` — exposes process-local cache/query/write counters so callers can inspect hot read paths and invalidation activity.
+- Shared graph hashing helper for deterministic SHA-256 and canonical JSON hashing across Atheneum graph modules.
+- `AtheneumGraph::preview_entity_candidates()` — a no-mutation candidate-preview API for fuzzy entity lookup over the existing search index.
+- `AtheneumGraph::preview_discovery()`, `AtheneumGraph::preview_memory()`, and `AtheneumGraph::preview_handoff()` — read-only proposal APIs that return normalized payloads, deterministic content hashes, and likely existing matches before commit.
+- `AtheneumGraph::preview_navigate_query()` — staged validation/repair for navigation queries, including normalized query text, canonical entity-kind resolution, and explicit warnings/errors before execution.
+
+### Changed
+
+- Repeated read APIs now use a concurrent in-process query cache with generation-based invalidation and adaptive TTL refresh for hot entries.
+  - Cached reads: `query_memory()`, `list_memory()`, `query_sessions()`, `query_events()`, `query_knowledge[_in_project]()`, and `list_wiki_pages()`.
+  - Relevant writes now invalidate those domains coarse-grain after successful mutation (`store_memory`, session/event writes, discovery/handoff writes, wiki ingestion).
+  - The cache is runtime-only and safe for concurrent callers; no persisted schema changes were required.
+- `store_discovery()` and `store_handoff()` now stamp deterministic `content_hash` values derived from canonical JSON, so equivalent payloads keep the same hash regardless of key order.
+- Wiki ingestion now resolves high-confidence wikilinks against existing `WikiPage` titles and uses candidate preview as a conservative fuzzy fallback before creating a stub page.
+- Discovery, memory, and handoff preview flows now guarantee exact existing matches are surfaced without mutating the graph, which closes the gap between exact lookup and fuzzy candidate preview.
+- `navigate` CLI now accepts `--kind` and includes validated query-plan metadata in its JSON output, so repaired kinds and rejected inputs are explicit instead of silent.
+
+### Fixed
+
+- Navigation kind filters no longer fail silently on lowercase or plural inputs such as `memory`, `memories`, `wiki`, or `discoveries`.
+  - `preview_navigate_query()` repairs those aliases to canonical `EntityType` labels before traversal.
+  - Invalid kinds are rejected before search with a clear error listing the accepted entity kinds.
+
+### Fixed
+
+- **Search degrades cleanly when the persisted `discoveries` HNSW index is inconsistent.**
+  - `graph/search.rs` — `lexical_search()` now tries the persistent HNSW path, attempts one rebuild, and falls back to direct lexical scanning over graph entities instead of aborting the command.
+  - This restores CLI search usability against partially damaged databases where HNSW restore or lookup fails.
+  - Regression test: `test_semantic_search_falls_back_when_hnsw_index_is_inconsistent`.
+
+- **Memory upsert recreates missing SQL rows for existing `Memory` entities.**
+  - `graph/memory.rs` — `store_memory()` now inserts a replacement row into `memory_entries` when the graph entity exists but the SQL read-model row is missing, then re-stamps `sql_id` into entity data.
+  - This keeps graph state and the SQL memory domain consistent after partial data loss or manual table repair.
+  - Regression test: `test_store_memory_recreates_missing_sql_row_for_existing_entity`.
+
 ## [0.3.0] — 2026-06-05
 
 ### Added

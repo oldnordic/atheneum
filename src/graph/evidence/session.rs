@@ -3,6 +3,7 @@ use chrono::Utc;
 use serde_json::{json, Value};
 use sqlitegraph::GraphEntity;
 
+use super::super::cache::CacheDomain;
 use super::super::{
     AtheneumGraph, EdgeType, EndSessionParams, EntityType, SessionParams, SessionProgressParams,
 };
@@ -100,7 +101,10 @@ impl AtheneumGraph {
             )?;
             Ok::<(), anyhow::Error>(())
         })?;
-        self.update_session_entity_progress(&params)
+        self.update_session_entity_progress(&params)?;
+        self.runtime.record_session_write();
+        self.runtime.bump_generation(CacheDomain::Sessions);
+        Ok(())
     }
 
     pub fn record_session(&self, params: SessionParams) -> Result<()> {
@@ -188,6 +192,8 @@ impl AtheneumGraph {
             &params.session_id,
             &json!({"project": params.project, "tool": params.tool}),
         )?;
+        self.runtime.record_session_write();
+        self.runtime.bump_generation(CacheDomain::Sessions);
         Ok(())
     }
 
@@ -223,6 +229,8 @@ impl AtheneumGraph {
             &params.session_id,
             &json!({"exit_status": params.exit_status}),
         )?;
+        self.runtime.record_session_write();
+        self.runtime.bump_generation(CacheDomain::Sessions);
         Ok(())
     }
 }

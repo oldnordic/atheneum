@@ -48,6 +48,29 @@ fn test_list_wiki_pages() {
 }
 
 #[test]
+fn test_preview_entity_candidates_returns_ranked_wiki_matches() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    graph
+        .ingest_wiki_page(
+            "wiki/router.md",
+            "---\ntitle: HTTP Router\n---\nRoutes requests through the handler graph.\n",
+            Some("proj"),
+        )
+        .expect("ingest");
+
+    let candidates = graph
+        .preview_entity_candidates("HTTP Router", 3, Some("proj"), Some("WikiPage"), 0.1)
+        .expect("preview");
+
+    assert!(
+        !candidates.is_empty(),
+        "preview should return at least one candidate"
+    );
+    assert_eq!(candidates[0].kind, "WikiPage");
+    assert_eq!(candidates[0].name, "wiki/router.md");
+}
+
+#[test]
 fn test_find_pages_by_wikilink() {
     let graph = AtheneumGraph::open_in_memory().expect("open");
     graph
@@ -87,6 +110,34 @@ fn test_wikilink_graph_edges_created() {
     let target_names: Vec<_> = outgoing.iter().map(|e| e.name.clone()).collect();
     assert!(target_names.contains(&"Dest1".to_string()));
     assert!(target_names.contains(&"Dest2".to_string()));
+}
+
+#[test]
+fn test_ingest_wiki_page_auto_links_high_confidence_title_match() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    let target_id = graph
+        .ingest_wiki_page(
+            "wiki/router.md",
+            "---\ntitle: HTTP Router\n---\nRouting notes.\n",
+            Some("proj"),
+        )
+        .expect("target");
+
+    let source_id = graph
+        .ingest_wiki_page(
+            "wiki/source.md",
+            "---\ntitle: Source\n---\nLinks to [[HTTP Router]].\n",
+            Some("proj"),
+        )
+        .expect("source");
+
+    let outgoing = graph.outgoing_wikilinks(source_id).expect("outgoing");
+    assert_eq!(outgoing.len(), 1);
+    assert_eq!(
+        outgoing[0].id, target_id,
+        "should link to the existing page"
+    );
+    assert_eq!(outgoing[0].name, "wiki/router.md");
 }
 
 #[test]

@@ -3,6 +3,7 @@
 //! Covers store/query/list + scope/project filtering + HNSW auto-index.
 
 use atheneum::graph::{AtheneumGraph, EntityType};
+use rusqlite::{params, Connection};
 
 #[test]
 fn test_store_memory_creates_entity() {
@@ -232,5 +233,111 @@ fn test_store_memory_upsert_with_project_scope() {
     assert_eq!(
         p1_updated[0].data.get("content").and_then(|v| v.as_str()),
         Some("use eyre")
+    );
+}
+
+#[test]
+fn test_store_memory_recreates_missing_sql_row_for_existing_entity() {
+    let db_file = tempfile::NamedTempFile::new().expect("tempfile");
+    let db_path = db_file.path().to_path_buf();
+    let graph = AtheneumGraph::open(&db_path).expect("open");
+
+    let id = graph
+        .store_memory("timezone", "UTC+0", "user", 1.0, None)
+        .expect("store initial");
+
+    let conn = Connection::open(&db_path).expect("open sqlite");
+    conn.execute(
+        "DELETE FROM memory_entries WHERE key = ?1",
+        params!["timezone"],
+    )
+    .expect("delete memory row");
+
+    graph
+        .store_memory("timezone", "UTC+1", "user", 0.9, None)
+        .expect("store update");
+
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_entries WHERE key = ?1 AND scope = ?2",
+            params!["timezone", "user"],
+            |row| row.get(0),
+        )
+        .expect("count memory rows");
+    assert_eq!(count, 1, "store_memory should recreate missing SQL row");
+
+    let entity = graph.get_entity(id).expect("entity");
+    assert_eq!(
+        entity.data.get("content").and_then(|v| v.as_str()),
+        Some("UTC+1")
+    );
+}
+
+#[test]
+fn test_preview_memory_is_read_only_and_returns_existing_matches() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    graph
+        .store_memory("timezone", "UTC+0", "user", 1.0, None)
+        .expect("seed memory");
+
+    let before = graph
+        .entities_by_kind(EntityType::Memory.as_str())
+        .expect("memory count before")
+        .len();
+
+    let preview = graph
+        .preview_memory("timezone", "UTC+1", "user", 0.9, None, 5, 0.1)
+        .expect("preview memory");
+
+    let after = graph
+        .entities_by_kind(EntityType::Memory.as_str())
+        .expect("memory count after")
+        .len();
+
+    assert_eq!(before, after, "preview must not write memory");
+    assert_eq!(preview.proposed_key, "timezone");
+    assert_eq!(preview.exact_matches.len(), 1);
+    assert!(
+        preview
+            .candidate_matches
+            .iter()
+            .any(|candidate| candidate.name == "timezone"),
+        "preview should surface the existing memory candidate"
+    );
+    assert_eq!(
+        preview
+            .proposed_data
+            .get("content_hash")
+            .and_then(|value| value.as_str()),
+        Some(preview.content_hash.as_str())
+    );
+}
+
+#[test]
+fn test_preview_memory_includes_exact_match_even_when_fuzzy_score_is_low() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    graph
+        .store_memory("timezone", "UTC+0", "user", 1.0, None)
+        .expect("seed memory");
+
+    let preview = graph
+        .preview_memory(
+            "timezone",
+            "completely unrelated text",
+            "user",
+            0.9,
+            None,
+            5,
+            0.95,
+        )
+        .expect("preview memory");
+
+    assert_eq!(preview.exact_matches.len(), 1);
+    assert!(
+        preview
+            .candidate_matches
+            .iter()
+            .any(|candidate| candidate.name == "timezone"),
+        "exact matches should be merged into candidate results"
     );
 }

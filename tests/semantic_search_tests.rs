@@ -6,6 +6,7 @@
 //! name lookups.
 
 use atheneum::graph::AtheneumGraph;
+use rusqlite::Connection;
 use serde_json::json;
 
 #[test]
@@ -120,4 +121,46 @@ fn test_semantic_search_filtered_by_project() {
     assert!(mag_only
         .iter()
         .all(|r| r.data.get("project_id").and_then(|v| v.as_str()) == Some("magellan")));
+}
+
+#[test]
+fn test_semantic_search_falls_back_when_hnsw_index_is_inconsistent() {
+    let db_file = tempfile::NamedTempFile::new().expect("tempfile");
+    let db_path = db_file.path().to_path_buf();
+
+    {
+        let graph = AtheneumGraph::open(&db_path).expect("open");
+        graph
+            .store_discovery(
+                "agent",
+                "Symbol",
+                "build_router",
+                json!({"summary": "constructs the axum router"}),
+            )
+            .expect("store");
+    }
+
+    {
+        let conn = Connection::open(&db_path).expect("open sqlite");
+        conn.execute(
+            "DELETE FROM hnsw_vectors
+             WHERE index_id = (SELECT id FROM hnsw_indexes WHERE name = 'discoveries')
+               AND id = (
+                   SELECT MIN(id) FROM hnsw_vectors
+                   WHERE index_id = (SELECT id FROM hnsw_indexes WHERE name = 'discoveries')
+               )",
+            [],
+        )
+        .expect("corrupt search index");
+    }
+
+    let graph = AtheneumGraph::open(&db_path).expect("reopen");
+    let results = graph
+        .lexical_search("build router", 5, None, None)
+        .expect("search should fall back instead of failing");
+
+    assert!(
+        results.iter().any(|r| r.name == "agent: build_router"),
+        "fallback search should still find the discovery"
+    );
 }

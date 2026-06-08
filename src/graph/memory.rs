@@ -9,9 +9,63 @@ use rusqlite::params;
 use serde_json::{json, Value};
 use sqlitegraph::GraphEntity;
 
-use super::{AtheneumGraph, EntityType};
+use super::cache::{CacheDomain, QueryCacheKey, QueryCacheValue};
+use super::hashing::json_sha256_hex;
+use super::{AtheneumGraph, EntityType, MemoryPreview};
 
 impl AtheneumGraph {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Public preview API intentionally mirrors store_memory inputs plus ranking controls"
+    )]
+    pub fn preview_memory(
+        &self,
+        key: &str,
+        content: &str,
+        scope: &str,
+        confidence: f64,
+        project_id: Option<&str>,
+        k: usize,
+        min_score: f32,
+    ) -> Result<MemoryPreview> {
+        let mut proposed_data = json!({
+            "key": key,
+            "scope": scope,
+            "content": content,
+            "confidence": confidence,
+        });
+        if let (Some(pid), Some(obj)) = (project_id, proposed_data.as_object_mut()) {
+            obj.insert("project_id".to_string(), Value::String(pid.to_string()));
+        }
+
+        let content_hash = memory_content_hash(&proposed_data)?;
+        if let Some(obj) = proposed_data.as_object_mut() {
+            obj.insert(
+                "content_hash".to_string(),
+                Value::String(content_hash.clone()),
+            );
+        }
+
+        let exact_matches = self.query_memory(key, Some(scope), project_id)?;
+        let candidate_matches = self.preview_entity_candidates(
+            &format!("{key} {content}"),
+            k,
+            project_id,
+            Some(EntityType::Memory.as_str()),
+            min_score,
+        )?;
+        let candidate_matches =
+            self.merge_exact_match_candidates(candidate_matches, &exact_matches, k);
+
+        Ok(MemoryPreview {
+            proposed_key: key.to_string(),
+            proposed_data,
+            content_hash,
+            exact_matches,
+            candidate_matches,
+        })
+    }
+
     /// Store a memory entry.
     ///
     /// Scope: `"user"` | `"project"` | `"agent"`
@@ -68,15 +122,33 @@ impl AtheneumGraph {
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
 
-            self.with_raw_connection(|conn| {
-                conn.execute(
+            let sql_id = self.with_raw_connection(|conn| {
+                let updated = conn.execute(
                     "UPDATE memory_entries
                      SET content = ?1, confidence = ?2, updated_at = ?3
                      WHERE key = ?4 AND scope = ?5
                        AND COALESCE(project_id, '') = COALESCE(?6, '')",
                     params![content, confidence, &now, key, scope, project_id],
                 )?;
-                Ok(())
+                if updated > 0 {
+                    return Ok(sql_id);
+                }
+
+                conn.execute(
+                    "INSERT INTO memory_entries
+                        (key, scope, content, confidence, project_id, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        key,
+                        scope,
+                        content,
+                        confidence,
+                        project_id,
+                        &created_at,
+                        &now
+                    ],
+                )?;
+                Ok(conn.last_insert_rowid())
             })?;
 
             let mut data = json!({
@@ -103,6 +175,8 @@ impl AtheneumGraph {
             if let Err(e) = self.add_entity_to_search_index(&indexed) {
                 eprintln!("[atheneum] memory auto-index warning: {}", e);
             }
+            self.runtime.record_memory_write();
+            self.runtime.bump_generation(CacheDomain::Memory);
             return Ok(memory_id);
         }
 
@@ -149,6 +223,8 @@ impl AtheneumGraph {
             eprintln!("[atheneum] memory auto-index warning: {}", e);
         }
 
+        self.runtime.record_memory_write();
+        self.runtime.bump_generation(CacheDomain::Memory);
         Ok(memory_id)
     }
 
@@ -159,7 +235,19 @@ impl AtheneumGraph {
         scope: Option<&str>,
         project_id: Option<&str>,
     ) -> Result<Vec<GraphEntity>> {
-        super::with_graph_conn(&self.inner, |conn| {
+        self.runtime.record_memory_query();
+        let cache_key = QueryCacheKey::QueryMemory {
+            key: key.to_string(),
+            scope: scope.map(str::to_string),
+            project_id: project_id.map(str::to_string),
+        };
+        if let Some(QueryCacheValue::Entities(entries)) =
+            self.runtime.cache_get(&cache_key, CacheDomain::Memory)
+        {
+            return Ok(entries);
+        }
+
+        let out = super::with_graph_conn(&self.inner, |conn| {
             let mut out = Vec::new();
             match (scope, project_id) {
                 (Some(s), Some(pid)) => {
@@ -216,7 +304,13 @@ impl AtheneumGraph {
                 }
             }
             Ok(out)
-        })
+        })?;
+        self.runtime.cache_store(
+            cache_key,
+            CacheDomain::Memory,
+            QueryCacheValue::Entities(out.clone()),
+        );
+        Ok(out)
     }
 
     /// List all memory entries for a scope.
@@ -225,7 +319,18 @@ impl AtheneumGraph {
         scope: Option<&str>,
         project_id: Option<&str>,
     ) -> Result<Vec<GraphEntity>> {
-        super::with_graph_conn(&self.inner, |conn| {
+        self.runtime.record_memory_query();
+        let cache_key = QueryCacheKey::ListMemory {
+            scope: scope.map(str::to_string),
+            project_id: project_id.map(str::to_string),
+        };
+        if let Some(QueryCacheValue::Entities(entries)) =
+            self.runtime.cache_get(&cache_key, CacheDomain::Memory)
+        {
+            return Ok(entries);
+        }
+
+        let out = super::with_graph_conn(&self.inner, |conn| {
             let mut out = Vec::new();
             match (scope, project_id) {
                 (Some(s), Some(pid)) => {
@@ -278,8 +383,25 @@ impl AtheneumGraph {
                 }
             }
             Ok(out)
-        })
+        })?;
+        self.runtime.cache_store(
+            cache_key,
+            CacheDomain::Memory,
+            QueryCacheValue::Entities(out.clone()),
+        );
+        Ok(out)
     }
+}
+
+fn memory_content_hash(data: &Value) -> Result<String> {
+    let mut normalized = data.clone();
+    if let Some(obj) = normalized.as_object_mut() {
+        obj.remove("created_at");
+        obj.remove("updated_at");
+        obj.remove("sql_id");
+        obj.remove("content_hash");
+    }
+    json_sha256_hex(&normalized)
 }
 
 fn row_to_entity(r: &rusqlite::Row) -> rusqlite::Result<GraphEntity> {
