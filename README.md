@@ -82,6 +82,8 @@ graph.ingest_wiki_page("my-note.md", content, None)?;
 | Planning | tasks, requirements, blockers, kanban state |
 | Handoffs | inter-agent state transfers with manifests |
 | Ontology | class/property schemas for typed entity reasoning |
+| Memory | keyed memories with scope, confidence, project scoping |
+| Dream | reflective consolidation pass over memories (merge, deduplicate, promote) |
 | Search index | FTS5 full-text + HNSW lexical index (hash-projected tokens, not neural) |
 
 ## HTTP Access
@@ -178,18 +180,48 @@ graph.link_wiki_to_symbols(
 
 ## CLI
 
-```bash
-atheneum sync-wiki    <db> <dir> [project]
-atheneum sync-journal <db> <dir> [project]
-atheneum sync-logseq  <db> <wiki-root> [project]
-atheneum sync-claude-transcript <db> <transcript.jsonl> [project] [agent]
-atheneum query-wiki   <db> <path>
-atheneum query-journal <db> <path>
-atheneum graph-stats  <db>
-atheneum entity       <db> <entity-id>
-atheneum edge         <db> <edge-id>
-atheneum neighbors    <db> <entity-id> [--depth N]
-atheneum navigate     <db> "<query>" [--k N] [--depth N] [--project P]
+```
+INGEST:
+  init <db>                               Initialize a new graph database
+  sync-wiki <db> <dir> [project]          Ingest .md files as wiki pages
+  sync-journal <db> <dir> [project]       Ingest .md files as journal sections
+  sync-logseq <db> <root> [project]       Recursively ingest Logseq pages/ and journals/
+  sync-claude-transcript <db> <jsonl> [project] [agent]  Import Claude transcript
+  store-discovery <db> <agent> <type> <target> [meta.json]  Store a discovery
+  add-edge <db> <from> <to> <edge-type> [data.json]        Create a relation
+
+TASKS:
+  task-create <db> <title> [desc] [--project P]    Create a new task
+  task-list <db> [--project P] [--status S]        List tasks (default: non-archived)
+  task-update <db> <task-id> <status>              Update task status
+  task-done <db> <task-id>                         Mark task as DONE
+  task-archive <db> <task-id>                      Archive a task
+
+MEMORY:
+  memory-store <db> <key> <content> [--scope S] [--confidence N] [--project P]  Store a memory
+  memory-get <db> <key> [--scope S] [--project P]      Retrieve memory by key
+  memory-list <db> [--scope S] [--project P]           List all memories
+
+DREAM:
+  dream <db> [--scope S] [--project P] [--dry-run|--auto-merge]  Reflective memory consolidation
+
+QUERY & NAVIGATION:
+  search <db> <query> [--k N] [--project P]         HNSW/lexical search
+  navigate <db> <query> [--k N] [--depth N] [--project P] [--kind K]  Search then walk subgraphs
+  query-wiki <db> <path>                            Query a wiki page by path
+  query-journal <db> <path>                         Query journal sections by path
+  query-knowledge <db> <target> [--project P]       Aggregated knowledge
+  query-sessions <db> [--project P] [--limit N]     Session history
+  query-events <db> [--session <id>] [--type <t>] [--limit N]  Event log
+  list-pages <db> [--project P]                     List wiki pages
+  entity <db> <id>                                  Print entity as JSON
+  edge <db> <id>                                    Print edge as JSON
+  neighbors <db> <id> [--depth N]                   One-hop edges or BFS subgraph
+  graph-stats <db>                                  Graph topology counts
+
+MAINTENANCE:
+  reindex <db>                                      Rebuild HNSW search index
+  consolidate <db> [target] [--project P]           Merge discoveries into Knowledge
 ```
 
 `sync-logseq` recursively ingests `<wiki-root>/pages/**/*.md` as wiki pages and

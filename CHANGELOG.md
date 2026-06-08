@@ -37,7 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `preview_navigate_query()` repairs those aliases to canonical `EntityType` labels before traversal.
   - Invalid kinds are rejected before search with a clear error listing the accepted entity kinds.
 
-### Fixed
+### Documentation
+
+- **CLI reference brought up to date with actual command surface.** 21 of 30 CLI commands were undocumented in MANUAL.md and README.md. All now listed with usage, flags, and examples.
+- **API.md updated with full public surface.** Previously documented ~20 of ~50 public methods. Now covers sessions, evidence, discoveries, memory, dream, handoffs, tasks, wiki, search, HopGraph, navigation, ontology, and all public types.
+- Fixed duplicate `### Fixed` section header from an earlier merge.
+
+### Fixed (continued)
 
 - **Search degrades cleanly when the persisted `discoveries` HNSW index is inconsistent.**
   - `graph/search.rs` — `lexical_search()` now tries the persistent HNSW path, attempts one rebuild, and falls back to direct lexical scanning over graph entities instead of aborting the command.
@@ -63,6 +69,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `DreamConfig` with tunable knobs for all thresholds.
   - `DreamReport` / `DreamFinding` / `DreamPhase` serializable output types.
   - CLI command: `atheneum dream <db> [--scope S] [--project P] [--dry-run|--auto-merge]`.
+- **Wiki dream pass** — `wiki_dream_pass()` applies the same consolidation pipeline to wiki page entities.
+  - CLI command: `atheneum wiki-dream <db> [--project P] [--dry-run|--auto-merge]`.
   - 9 unit tests covering Jaccard similarity, dry-run, auto-merge edge creation, contradiction detection, and edge cases.
 - `EdgeType::SupersededBy` — marks superseded memories pointing to their replacement.
 - `EdgeType::ConsolidatedFrom` — marks entries absorbed by consolidation (reserved for future merge use).

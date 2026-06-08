@@ -224,6 +224,15 @@ pub enum AtheneumError {
 
     #[error("Invalid entity data: {0}")]
     InvalidData(String),
+
+    #[error("Edge validation failed: {edge_type} from {from_kind} to {to_kind} violates ontology (domain={domain}, range={range})")]
+    EdgeValidation {
+        edge_type: String,
+        from_kind: String,
+        to_kind: String,
+        domain: String,
+        range: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
