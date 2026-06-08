@@ -477,11 +477,90 @@ let results = graph.lexical_search("SQL parameter ordering bug", 5, Some("athene
 
 ---
 
+## Memory
+
+Memory entries are stable facts stored distinct from Knowledge (merged discoveries) and WikiPage (documents). Each memory has a key, scope, confidence score, and optional project.
+
+Scopes: `user` (preferences), `project` (project facts), `agent` (agent behavior), `memory` (general notes).
+
+Memories are upserted -- storing with the same key, scope, and project_id updates the existing entry instead of creating a duplicate.
+
+```rust
+use atheneum::AtheneumGraph;
+use std::path::Path;
+
+let graph = AtheneumGraph::open(Path::new("atheneum.db"))?;
+
+// Store a memory
+let id = graph.store_memory(
+    "timezone",           // key
+    "UTC+1",              // content
+    "user",               // scope
+    0.9,                  // confidence (0.0-1.0)
+    None,                 // project_id
+)?;
+
+// Retrieve by key
+let items = graph.query_memory("timezone", Some("user"), None)?;
+
+// List all memories in a scope
+let all = graph.list_memory(Some("user"), None)?;
+```
+
+---
+
+## Dream
+
+Dream is atheneum's reflective consolidation pass. It scans memories for problems -- duplicates, stale entries, contradictions, and verbosity -- and either reports them (dry run) or merges them (auto-merge).
+
+What dream does:
+1. **SCAN** -- reads all memories in scope
+2. **DEDUPLICATE** -- finds near-duplicates using trigram Jaccard similarity (entries that say the same thing differently)
+3. **STALE** -- flags entries not updated in N days with low confidence
+4. **CONTRADICTION** -- detects same key across different scopes with low content similarity
+5. **VERBOSE** -- scores content length vs unique-word ratio
+6. **CONSOLIDATED** -- merges findings, creates `SupersededBy` edges pointing old entries to replacements
+
+There are two dream commands:
+- `dream` -- runs consolidation over memory entries
+- `wiki-dream` -- runs the same pipeline over wiki page entities
+
+```rust
+use atheneum::{AtheneumGraph, DreamConfig, DreamMode};
+use std::path::Path;
+
+let graph = AtheneumGraph::open(Path::new("atheneum.db"))?;
+
+// Dry run -- report only, no mutations
+let report = graph.dream_pass(
+    DreamMode::DryRun,
+    None,                   // scope filter (None = all)
+    Some("my-project"),     // project filter
+    &DreamConfig::default(),
+)?;
+for finding in &report.findings {
+    println!("{:?}: {}", finding.phase, finding.description);
+}
+
+// Auto-merge -- actually create SupersededBy edges
+let report = graph.dream_pass(DreamMode::AutoMerge, None, None, &DreamConfig::default())?;
+
+// Wiki dream -- same pipeline for wiki pages
+let wiki_report = graph.wiki_dream_pass(DreamMode::AutoMerge, Some("my-project"), &DreamConfig::default())?;
+```
+
+---
+
 ## CLI Commands
 
+### Ingest
+
 ```bash
+# Initialize a new graph database
+atheneum init <db-path>
+
 # Sync a wiki directory into the graph
-atheneum sync-wiki   <db-path> <wiki-dir> [project-id]
+atheneum sync-wiki <db-path> <wiki-dir> [project-id]
 
 # Sync journal files
 atheneum sync-journal <db-path> <journal-dir> [project-id]
@@ -492,33 +571,134 @@ atheneum sync-logseq <db-path> <wiki-root> [project-id]
 # Import a Claude Code transcript JSONL
 atheneum sync-claude-transcript <db-path> <transcript.jsonl> [project-id] [agent-name]
 
-# Query a wiki page
-atheneum query-wiki   <db-path> <page-path>
+# Store a discovery
+atheneum store-discovery <db-path> <agent> <type> <target> [metadata.json]
 
-# Query a journal
-atheneum query-journal <db-path> <journal-path>
-
-# Query graph topology
-atheneum graph-stats <db-path>
-atheneum entity <db-path> <entity-id>
-atheneum edge <db-path> <edge-id>
-atheneum neighbors <db-path> <entity-id> [--depth N]
-
-# Search indexed knowledge, then BFS-walk each hit
-atheneum navigate <db-path> "<query>" [--k N] [--depth N] [--project P]
+# Create a relation between two entities
+atheneum add-edge <db-path> <from-id> <to-id> <edge-type> [data.json|--data 'json']
 ```
 
-`sync-logseq` expects a Logseq-style root with `pages/` and/or `journals/`.
-It recursively ingests markdown files under those directories. Wiki page
-`[[links]]` are stored as first-class `wikilink` edges, enabling graph traversal through
-article and note relationships.
+`sync-logseq` expects a Logseq-style root with `pages/` and/or `journals/`. It recursively ingests markdown files under those directories. Wiki page `[[links]]` are stored as first-class `wikilink` edges, enabling graph traversal through article and note relationships.
 
-`sync-claude-transcript` expects a Claude Code transcript JSONL, typically under
-`~/.claude/projects/<encoded-project>/<session-id>.jsonl`. It imports prompt
-summaries, assistant replies, observed tool calls, `accessed` file relations for
-`Read`/`Edit`/`Write`, and session token/cache totals. Re-running the command on the
-same append-only transcript imports only new lines because Atheneum stores a
-transcript cursor in SQL.
+`sync-claude-transcript` expects a Claude Code transcript JSONL, typically under `~/.claude/projects/<encoded-project>/<session-id>.jsonl`. It imports prompt summaries, assistant replies, observed tool calls, `accessed` file relations for `Read`/`Edit`/`Write`, and session token/cache totals. Re-running on the same append-only transcript imports only new lines because Atheneum stores a transcript cursor in SQL.
+
+`store-discovery` takes an optional JSON file for metadata. The metadata JSON can contain fields like `project_id`, `why`, `file`, `line`.
+
+`add-edge` creates a typed edge between two entities. Valid edge types include: `performed_by`, `assigned_to`, `called`, `accessed`, `modified`, `verified_by`, `caused_by`, `created`, `related_to`, `mentions`, `wikilink`, `implements`, `depends_on`, `tested_by`, `fixed_by`, `regressed_by`, `observed_in`, `belongs_to_project`, `similar_failure`, `requires_skill`, `handled_by_tool`, `explains`, `derived_from`, `superseded_by`, `consolidated_from`.
+
+### Tasks
+
+```bash
+# Create a new task
+atheneum task-create <db-path> <title> [description] [--project P]
+
+# List tasks (default: non-archived)
+atheneum task-list <db-path> [--project P] [--status S]
+
+# Update task status
+atheneum task-update <db-path> <task-id> <status>
+
+# Mark task as DONE
+atheneum task-done <db-path> <task-id>
+
+# Archive a task
+atheneum task-archive <db-path> <task-id>
+```
+
+Valid statuses: `TODO`, `IN_PROGRESS`, `DONE`, `BLOCKED`, `ARCHIVED`.
+
+### Memory
+
+```bash
+# Store a memory
+atheneum memory-store <db-path> <key> <content> [--scope S] [--confidence N] [--project P]
+
+# Retrieve memory by key
+atheneum memory-get <db-path> <key> [--scope S] [--project P]
+
+# List all memories
+atheneum memory-list <db-path> [--scope S] [--project P]
+```
+
+Memories are upserted -- storing with the same key + scope + project updates the existing entry. Default scope is `user`, default confidence is `1.0`.
+
+### Dream
+
+```bash
+# Run reflective memory consolidation pass
+atheneum dream <db-path> [--scope S] [--project P] [--dry-run|--auto-merge]
+
+# Run consolidation over wiki pages
+atheneum wiki-dream <db-path> [--project P] [--dry-run|--auto-merge]
+```
+
+`--dry-run` (default) reports findings without modifying the graph. `--auto-merge` creates `SupersededBy` edges pointing old entries to their replacements.
+
+Output is a JSON `DreamReport` with findings organized by phase (DEDUPLICATE, STALE, CONTRADICTION, VERBOSE, CONSOLIDATED).
+
+### Query and Navigation
+
+```bash
+# HNSW/lexical search over all entities
+atheneum search <db-path> <query> [--k N] [--project P]
+
+# Search then BFS-walk graph subgraphs
+atheneum navigate <db-path> <query> [--k N] [--depth N] [--project P] [--kind K]
+
+# Query a wiki page by path
+atheneum query-wiki <db-path> <path>
+
+# Query journal sections by path
+atheneum query-journal <db-path> <path>
+
+# Aggregated knowledge for a target
+atheneum query-knowledge <db-path> <target> [--project P]
+
+# Session history
+atheneum query-sessions <db-path> [--project P] [--limit N]
+
+# Event log
+atheneum query-events <db-path> [--session <id>] [--type <type>] [--limit N]
+
+# List wiki pages
+atheneum list-pages <db-path> [--project P]
+
+# Print a graph entity as JSON
+atheneum entity <db-path> <entity-id>
+
+# Print a graph edge as JSON
+atheneum edge <db-path> <edge-id>
+
+# One-hop edges or BFS subgraph
+atheneum neighbors <db-path> <entity-id> [--depth N]
+
+# Graph topology counts
+atheneum graph-stats <db-path>
+```
+
+`search` uses the HNSW lexical index. It matches on shared tokens -- not semantic similarity. "car" will not match "automobile". Good for symbol and identifier search.
+
+`navigate` performs a search, then expands each hit into a subgraph using BFS. The `--kind` flag filters by entity type (accepts aliases like `memory`, `memories`, `wiki`, `discoveries`). The output includes the validated query plan plus subgraph views.
+
+### Maintenance
+
+```bash
+# Rebuild HNSW search index
+atheneum reindex <db-path>
+
+# Merge discoveries into Knowledge entities
+atheneum consolidate <db-path> [target] [--project P]
+
+# Print version
+atheneum --version
+
+# Print help
+atheneum help
+```
+
+`reindex` rebuilds the HNSW index over all entities. Useful after bulk imports or if search results seem incomplete.
+
+`consolidate` merges all Discovery entities for a target (or all targets) into deduplicated Knowledge entities with `DerivedFrom` edges. Idempotent -- re-running returns the existing Knowledge entity.
 
 ---
 
@@ -526,11 +706,11 @@ transcript cursor in SQL.
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `default` | ✓ | Core graph, wiki, sessions, planning |
-| `neural-embed` | — | Ollama neural embeddings (requires `ureq`) |
-| `web` | — | Web dashboard (axum + askama) |
-| `cli` | — | CLI binary |
-| `async` | — | Async runtime support |
+| `default` | yes | Core graph, wiki, sessions, planning, search |
+| `neural-embed` | no | Ollama neural embeddings (requires `ureq`, ollama + nomic-embed-text) |
+| `web` | no | Web dashboard (axum + askama templates) |
+| `cli` | no | `atheneum` CLI binary |
+| `async` | no | Async runtime support |
 
 ---
 
@@ -549,7 +729,7 @@ match graph.record_session(params) {
 
 ## Thread Safety
 
-`AtheneumGraph` is not `Send + Sync`. For concurrent access wrap in `Arc<Mutex<AtheneumGraph>>` or use connection pooling per thread.
+`AtheneumGraph` uses internal `Mutex` locking. The `pub` methods take `&self` (shared reference) and handle synchronization internally. For concurrent access from multiple threads, wrap in `Arc<AtheneumGraph>` or use connection pooling per thread.
 
 ---
 
@@ -560,4 +740,4 @@ match graph.record_session(params) {
 
 ## License
 
-GPL-3.0-only — see [LICENSE](LICENSE).
+GPL-3.0-only -- see [LICENSE](LICENSE).
