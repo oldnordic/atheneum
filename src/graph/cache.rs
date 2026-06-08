@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use parking_lot::RwLock;
 use std::time::{Duration, Instant};
 
+use parking_lot::RwLock;
 use serde_json::Value;
 use sqlitegraph::GraphEntity;
 
