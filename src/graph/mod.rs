@@ -332,11 +332,37 @@ impl AtheneumGraph {
         edge_type: EdgeType,
         data: Value,
     ) -> Result<i64> {
+        let edge_type_str = edge_type.as_str();
+
+        // Validate domain/range against ontology
+        let from_entity = self.get_entity(from_id)?;
+        let to_entity = self.get_entity(to_id)?;
+
+        let valid = self.validate_edge(&from_entity.kind, &to_entity.kind, edge_type_str)?;
+        if !valid {
+            // Find the property definition for the error message
+            let prop = self
+                .list_properties()?
+                .into_iter()
+                .find(|p| p.name == edge_type_str);
+
+            if let Some(p) = prop {
+                return Err(AtheneumError::EdgeValidation {
+                    edge_type: edge_type_str.to_string(),
+                    from_kind: from_entity.kind,
+                    to_kind: to_entity.kind,
+                    domain: p.domain_class,
+                    range: p.range_class,
+                }
+                .into());
+            }
+        }
+
         let edge = GraphEdge {
             id: 0,
             from_id,
             to_id,
-            edge_type: edge_type.as_str().to_string(),
+            edge_type: edge_type_str.to_string(),
             data,
         };
         self.inner.insert_edge(&edge).map_err(Into::into)
@@ -570,4 +596,97 @@ fn get_outgoing_edges(graph: &SqliteGraph, entity_id: i64) -> Result<Vec<GraphEd
         }
         Ok(edges)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::graph::{AtheneumGraph, EdgeType, EntityType};
+
+    #[test]
+    fn insert_edge_rejects_invalid_domain() {
+        let graph = AtheneumGraph::open_in_memory().expect("in-memory graph");
+        graph.seed_standard_ontology().expect("seed ontology");
+
+        // AssignedTo requires domain=Task, range=Agent
+        // Creating a Knowledge entity as 'from' should fail validation
+        let agent_id = graph
+            .insert_agent("test-agent", serde_json::json!({}))
+            .expect("insert agent");
+
+        // Insert a raw entity with kind Knowledge (not Task)
+        let knowledge = sqlitegraph::GraphEntity {
+            id: 0,
+            kind: EntityType::Knowledge.as_str().to_string(),
+            name: "some-knowledge".to_string(),
+            file_path: None,
+            data: serde_json::json!({}),
+        };
+        let knowledge_id = graph
+            .inner
+            .insert_entity(&knowledge)
+            .expect("insert knowledge");
+
+        let result = graph.insert_edge(
+            knowledge_id,
+            agent_id,
+            EdgeType::AssignedTo,
+            serde_json::json!({}),
+        );
+
+        assert!(
+            result.is_err(),
+            "insert_edge should reject AssignedTo from Knowledge to Agent -- domain must be Task"
+        );
+    }
+
+    #[test]
+    fn insert_edge_accepts_valid_domain_range() {
+        let graph = AtheneumGraph::open_in_memory().expect("in-memory graph");
+        graph.seed_standard_ontology().expect("seed ontology");
+
+        let task_id = graph
+            .insert_task("test-task", serde_json::json!({}))
+            .expect("insert task");
+        let agent_id = graph
+            .insert_agent("test-agent", serde_json::json!({}))
+            .expect("insert agent");
+
+        let result = graph.insert_edge(
+            task_id,
+            agent_id,
+            EdgeType::AssignedTo,
+            serde_json::json!({}),
+        );
+
+        assert!(
+            result.is_ok(),
+            "insert_edge should accept AssignedTo from Task to Agent"
+        );
+    }
+
+    #[test]
+    fn insert_edge_accepts_any_domain() {
+        let graph = AtheneumGraph::open_in_memory().expect("in-memory graph");
+        graph.seed_standard_ontology().expect("seed ontology");
+
+        // CausedBy has domain=ANY, range=ANY
+        let knowledge_id = graph
+            .store_memory("test-key", "test content", "memory", 1.0, None)
+            .expect("insert memory");
+        let agent_id = graph
+            .insert_agent("test-agent", serde_json::json!({}))
+            .expect("insert agent");
+
+        let result = graph.insert_edge(
+            knowledge_id,
+            agent_id,
+            EdgeType::CausedBy,
+            serde_json::json!({}),
+        );
+
+        assert!(
+            result.is_ok(),
+            "insert_edge should accept CausedBy from any entity kind to any entity kind"
+        );
+    }
 }
