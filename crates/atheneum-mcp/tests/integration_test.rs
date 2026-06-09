@@ -222,3 +222,198 @@ async fn mcp_tool_call_with_args() {
     drop(client_writer);
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server_handle).await;
 }
+
+// ---------------------------------------------------------------------------
+// End-to-end test with real AtheneumGraph (requires --features direct)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "direct")]
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_direct_backend_round_trip() {
+    use atheneum::AtheneumGraph;
+    use atheneum_mcp::backend::direct::DirectBackend;
+    use std::sync::Arc;
+
+    let (server_stream, client_stream) = tokio::io::duplex(4096);
+    let (client_read, client_write) = tokio::io::split(client_stream);
+    let mut client_reader = BufReader::new(client_read);
+    let mut client_writer = client_write;
+
+    let graph = Arc::new(tokio::sync::Mutex::new(
+        AtheneumGraph::open_in_memory().unwrap(),
+    ));
+    let server = AtheneumMcpServer::new(Arc::new(DirectBackend::new(graph)));
+    let server_handle = tokio::spawn(async move {
+        let running = server.serve(server_stream).await.unwrap();
+        running.waiting().await.unwrap();
+    });
+
+    // Initialize
+    send_json(
+        &mut client_writer,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": { "name": "test-client", "version": "0.0.1" }
+            }
+        }),
+    )
+    .await;
+    let _ = recv_json(&mut client_reader).await;
+
+    send_json(
+        &mut client_writer,
+        json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+    )
+    .await;
+
+    // 1. graph_stats on empty graph
+    send_json(
+        &mut client_writer,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": { "name": "graph_stats", "arguments": {} }
+        }),
+    )
+    .await;
+    let stats_resp = recv_json(&mut client_reader).await;
+    let stats_text = stats_resp["result"]["content"][0]["text"].as_str().unwrap();
+    let stats: serde_json::Value = serde_json::from_str(stats_text).unwrap();
+    assert_eq!(
+        stats["entity_count"].as_i64(),
+        Some(0),
+        "graph should start empty"
+    );
+
+    // 2. store_memory
+    send_json(
+        &mut client_writer,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "store_memory",
+                "arguments": {
+                    "content": "User prefers dark mode",
+                    "tags": ["preference", "ui"],
+                    "importance": 8
+                }
+            }
+        }),
+    )
+    .await;
+    let mem_resp = recv_json(&mut client_reader).await;
+    let mem_text = mem_resp["result"]["content"][0]["text"].as_str().unwrap();
+    let mem: serde_json::Value = serde_json::from_str(mem_text).unwrap();
+    assert!(
+        mem["memory_id"].as_i64().unwrap() > 0,
+        "memory_id should be positive"
+    );
+    assert_eq!(
+        mem["tags"].as_array().unwrap().len(),
+        2,
+        "tags should be preserved"
+    );
+
+    // 3. query_memory (exact key lookup)
+    send_json(
+        &mut client_writer,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "query_memory",
+                "arguments": { "query": "User prefers dark mode", "k": 5 }
+            }
+        }),
+    )
+    .await;
+    let qmem_resp = recv_json(&mut client_reader).await;
+    let qmem_text = qmem_resp["result"]["content"][0]["text"].as_str().unwrap();
+    let qmem: serde_json::Value = serde_json::from_str(qmem_text).unwrap();
+    let results = qmem.as_array().unwrap();
+    assert!(
+        !results.is_empty(),
+        "query_memory should find stored memory by key"
+    );
+
+    // 4. store_discovery
+    send_json(
+        &mut client_writer,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": {
+                "name": "store_discovery",
+                "arguments": {
+                    "target": "memory-leak",
+                    "observation": "Connection pool not released",
+                    "confidence": 0.95,
+                    "tags": ["bug", "performance"]
+                }
+            }
+        }),
+    )
+    .await;
+    let disc_resp = recv_json(&mut client_reader).await;
+    let disc_text = disc_resp["result"]["content"][0]["text"].as_str().unwrap();
+    let disc: serde_json::Value = serde_json::from_str(disc_text).unwrap();
+    assert!(
+        disc["discovery_id"].as_i64().unwrap() > 0,
+        "discovery_id should be positive"
+    );
+
+    // 5. query_knowledge
+    send_json(
+        &mut client_writer,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": {
+                "name": "query_knowledge",
+                "arguments": { "target": "memory-leak" }
+            }
+        }),
+    )
+    .await;
+    let know_resp = recv_json(&mut client_reader).await;
+    let know_text = know_resp["result"]["content"][0]["text"].as_str().unwrap();
+    let know: serde_json::Value = serde_json::from_str(know_text).unwrap();
+    let discovery_count = know["discovery_count"].as_i64().unwrap_or(0);
+    assert!(discovery_count > 0, "query_knowledge should find discovery");
+
+    // 6. graph_stats after mutations
+    send_json(
+        &mut client_writer,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": { "name": "graph_stats", "arguments": {} }
+        }),
+    )
+    .await;
+    let stats2_resp = recv_json(&mut client_reader).await;
+    let stats2_text = stats2_resp["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    let stats2: serde_json::Value = serde_json::from_str(stats2_text).unwrap();
+    assert!(
+        stats2["entity_count"].as_i64().unwrap() > 0,
+        "graph should have entities after store_memory + store_discovery"
+    );
+
+    // Clean shutdown
+    drop(client_writer);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server_handle).await;
+}

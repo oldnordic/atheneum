@@ -33,8 +33,8 @@ Format: Keep a Changelog. Versions: `major.minor.patch`.
 | `store_discovery` | Calls envoy `/atheneum/discoveries` | **UNTESTED** — payload structure inferred from envoy source, not verified live |
 | `query_knowledge` | Calls envoy `/atheneum/knowledge` | **UNTESTED** — no live envoy in test suite |
 | `search` | Calls envoy `/atheneum/search` | **UNTESTED** — no live envoy in test suite |
-| `store_memory` | Returns hard error | Intentional — envoy has no memory endpoint |
-| `query_memory` | Returns hard error | Intentional — envoy has no memory endpoint |
+| `store_memory` | Returns hard error | **By design** — memory does not go through envoy; use direct backend |
+| `query_memory` | Returns hard error | **By design** — memory does not go through envoy; use direct backend |
 | `list_sessions` | Calls envoy `/atheneum/sessions` | **UNTESTED** — no live envoy in test suite |
 | `list_events` | Calls envoy `/atheneum/events` | **UNTESTED** — no live envoy in test suite |
 | `navigate` | Calls envoy `/atheneum/graph/navigate` | **UNTESTED** — no live envoy in test suite |
@@ -47,7 +47,7 @@ Format: Keep a Changelog. Versions: `major.minor.patch`.
 | `store_discovery` | Calls `graph.store_discovery_in_project()` | **UNTESTED** — implemented but never run against real graph via MCP protocol |
 | `query_knowledge` | Calls `graph.query_knowledge()` | **UNTESTED** |
 | `search` | Calls `graph.lexical_search()` | **UNTESTED** |
-| `store_memory` | Calls `graph.store_memory()` | **UNTESTED** — tags are silently dropped (see Known Issues) |
+| `store_memory` | Calls `graph.store_memory()` | **UNTESTED** |
 | `query_memory` | Calls `graph.query_memory()` | **UNTESTED** |
 | `list_sessions` | Calls `graph.query_sessions()` | **UNTESTED** |
 | `list_events` | Calls `graph.query_events()` | **UNTESTED** |
@@ -59,8 +59,8 @@ Format: Keep a Changelog. Versions: `major.minor.patch`.
 1. **No end-to-end test with real graph**  
    The integration tests use a `MockBackend` that returns hardcoded JSON. There is no test that spins up `AtheneumGraph::open_in_memory()`, connects an MCP client over a duplex stream, calls a tool, and verifies the graph mutated.
 
-2. **`store_memory` tags are dropped**  
-   The MCP tool schema exposes `tags: string[]`, but the atheneum `store_memory()` API does not accept tags. The direct backend stores the memory without tags and returns a note. The proper fix is to add `tags: Option<&[String]>` to `atheneum::AtheneumGraph::store_memory()` and `preview_memory()`.
+2. ~~`store_memory` tags are dropped~~ **FIXED in atheneum v0.3.3**  
+   The atheneum `store_memory()` API now accepts `tags: Option<&[String]>`. The MCP direct backend passes tags through. Call sites updated across tests and production code.
 
 3. **No error propagation contract**  
    Backend errors are converted to `CallToolResult::error()` with the message as text. There is no structured error format, and clients cannot distinguish "graph not found" from "invalid params".

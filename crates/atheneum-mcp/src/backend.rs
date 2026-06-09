@@ -308,8 +308,16 @@ pub mod direct {
         async fn graph_stats(&self) -> Result<Value> {
             let graph = self.graph.lock().await;
             tokio::task::block_in_place(|| {
-                let stats = graph.runtime_stats();
-                Ok(serde_json::to_value(stats)?)
+                let entity_counts = graph.count_entities_by_kind()?;
+                let edge_counts = graph.count_edges_by_type()?;
+                let total_entities: i64 = entity_counts.iter().map(|(_, c)| c).sum();
+                let total_edges: i64 = edge_counts.iter().map(|(_, c)| c).sum();
+                Ok(json!({
+                    "entity_count": total_entities,
+                    "edge_count": total_edges,
+                    "entity_counts": entity_counts,
+                    "edge_counts": edge_counts,
+                }))
             })
         }
     }
