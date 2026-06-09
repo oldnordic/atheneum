@@ -465,6 +465,36 @@ impl AtheneumGraph {
         })
     }
 
+    pub fn list_wiki_pages_page(
+        &self,
+        project_id: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<WikiPage>> {
+        let lim = limit as i64;
+        let off = offset as i64;
+        self.with_raw_connection(move |conn| {
+            let sql = if project_id.is_some() {
+                "SELECT id, path, title, content_hash, body, wikilinks, project_id, metadata, created_at, updated_at
+                 FROM wiki_pages WHERE project_id = ?1 ORDER BY path LIMIT ?2 OFFSET ?3"
+            } else {
+                "SELECT id, path, title, content_hash, body, wikilinks, project_id, metadata, created_at, updated_at
+                 FROM wiki_pages ORDER BY path LIMIT ?1 OFFSET ?2"
+            };
+            let mut stmt = conn.prepare_cached(sql)?;
+            let rows = if let Some(pid) = project_id {
+                stmt.query_map(rusqlite::params![pid, lim, off], wiki_page_from_row)?
+            } else {
+                stmt.query_map(rusqlite::params![lim, off], wiki_page_from_row)?
+            };
+            let mut pages = Vec::new();
+            for row in rows {
+                pages.push(row?);
+            }
+            Ok(pages)
+        })
+    }
+
     pub fn list_wiki_pages(&self, project_id: Option<&str>) -> Result<Vec<WikiPage>> {
         self.runtime.record_wiki_query();
         let cache_key = QueryCacheKey::ListWikiPages {
@@ -476,26 +506,7 @@ impl AtheneumGraph {
             return Ok(pages);
         }
 
-        let pages = self.with_raw_connection(|conn| {
-            let sql = if project_id.is_some() {
-                "SELECT id, path, title, content_hash, body, wikilinks, project_id, metadata, created_at, updated_at
-                 FROM wiki_pages WHERE project_id = ?1 ORDER BY path"
-            } else {
-                "SELECT id, path, title, content_hash, body, wikilinks, project_id, metadata, created_at, updated_at
-                 FROM wiki_pages ORDER BY path"
-            };
-            let mut stmt = conn.prepare_cached(sql)?;
-            let rows = if let Some(pid) = project_id {
-                stmt.query_map(rusqlite::params![pid], wiki_page_from_row)?
-            } else {
-                stmt.query_map([], wiki_page_from_row)?
-            };
-            let mut pages = Vec::new();
-            for row in rows {
-                pages.push(row?);
-            }
-            Ok(pages)
-        })?;
+        let pages = self.list_wiki_pages_page(project_id, 0, usize::MAX)?;
         self.runtime.cache_store(
             cache_key,
             CacheDomain::Wiki,

@@ -110,7 +110,11 @@ Update a running session with incremental progress (tool calls, file writes, etc
 
 ### `query_sessions(project: &str, last_n: i64, parent_id: Option<&str>) -> Result<Vec<SessionSummary>>`
 
-Returns up to `last_n` sessions, newest first. Filter by parent_id for child sessions.
+Returns up to `last_n` sessions, newest first. Filter by parent_id for child sessions. This is a cached compatibility wrapper over `query_sessions_page`.
+
+### `query_sessions_page(project: Option<&str>, parent_id: Option<&str>, offset: usize, limit: i64) -> Result<Vec<SessionSummary>>`
+
+Primary paginated session query. Uses SQL `LIMIT ? OFFSET ?` and is not cached.
 
 ```rust
 pub struct SessionSummary {
@@ -225,7 +229,11 @@ Record a benchmark execution result.
 
 ### `query_events(session_id: Option<&str>, event_type: Option<&str>, limit: usize) -> Result<Vec<Value>>`
 
-Query the event log. Both filters are optional. Returns JSON values.
+Query the event log. Both filters are optional. Returns JSON values. This is a cached compatibility wrapper over `query_events_page`.
+
+### `query_events_page(session_id: Option<&str>, event_type: Option<&str>, offset: usize, limit: usize) -> Result<Vec<Value>>`
+
+Primary paginated event log query. Uses SQL `LIMIT ? OFFSET ?` and is not cached.
 
 ---
 
@@ -298,7 +306,11 @@ Retrieve memories by key. Scope and project filters are optional.
 
 ### `list_memory(scope, project_id) -> Result<Vec<GraphEntity>>`
 
-List all memories. Filters are optional.
+List all memories. Filters are optional. This is a cached compatibility wrapper over `list_memory_page`.
+
+### `list_memory_page(scope: Option<&str>, project_id: Option<&str>, offset: usize, limit: usize) -> Result<Vec<GraphEntity>>`
+
+Primary paginated memory list. Uses SQL `LIMIT ? OFFSET ?` and is not cached.
 
 ### `preview_memory(key, content, scope, confidence, project_id, candidate_limit, score_threshold) -> Result<MemoryPreview>`
 
@@ -442,7 +454,11 @@ pub struct WikiPage {
 
 ### `list_wiki_pages(project_id) -> Result<Vec<WikiPage>>`
 
-List all wiki pages, optionally filtered by project.
+List all wiki pages, optionally filtered by project. This is a cached compatibility wrapper over `list_wiki_pages_page`.
+
+### `list_wiki_pages_page(project_id: Option<&str>, offset: usize, limit: usize) -> Result<Vec<WikiPage>>`
+
+Primary paginated wiki page list. Uses SQL `LIMIT ? OFFSET ?` and is not cached.
 
 ### `find_pages_by_wikilink(target) -> Result<Vec<WikiPage>>`
 

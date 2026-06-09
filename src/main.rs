@@ -554,46 +554,63 @@ fn run() -> anyhow::Result<()> {
         }
         "list-pages" => {
             if args.len() < 3 {
-                eprintln!("Usage: atheneum list-pages <db-path> [--project P]");
+                eprintln!(
+                    "Usage: atheneum list-pages <db-path> [--project P] [--offset N] [--limit N]"
+                );
                 std::process::exit(1);
             }
             let db_path = PathBuf::from(&args[2]);
             let opts = parse_options(&args[3..])?;
+            let offset = parse_usize_option(opts.offset.as_deref(), "offset")?.unwrap_or(0);
+            let limit = parse_usize_option(opts.limit.as_deref(), "limit")?.unwrap_or(usize::MAX);
             let graph = AtheneumGraph::open(&db_path)?;
-            let pages = graph.list_wiki_pages(opts.project.as_deref())?;
+            let pages = graph.list_wiki_pages_page(opts.project.as_deref(), offset, limit)?;
             print_json(json!({
                 "count": pages.len(),
+                "offset": offset,
+                "limit": limit,
                 "pages": pages.iter().map(wiki_page_summary_to_json).collect::<Vec<_>>(),
             }))?;
         }
         "query-sessions" => {
             if args.len() < 3 {
-                eprintln!("Usage: atheneum query-sessions <db-path> [--project P] [--limit N]");
+                eprintln!("Usage: atheneum query-sessions <db-path> [--project P] [--offset N] [--limit N]");
                 std::process::exit(1);
             }
             let db_path = PathBuf::from(&args[2]);
             let opts = parse_options(&args[3..])?;
+            let offset = parse_usize_option(opts.offset.as_deref(), "offset")?.unwrap_or(0);
             let limit = parse_i64_option(opts.limit.as_deref(), "limit")?.unwrap_or(20);
             let graph = AtheneumGraph::open(&db_path)?;
-            let sessions = graph.query_sessions(opts.project.as_deref(), limit, None)?;
+            let sessions =
+                graph.query_sessions_page(opts.project.as_deref(), None, offset, limit)?;
             print_json(json!({
                 "count": sessions.len(),
+                "offset": offset,
+                "limit": limit,
                 "sessions": sessions,
             }))?;
         }
         "query-events" => {
             if args.len() < 3 {
-                eprintln!("Usage: atheneum query-events <db-path> [--session <id>] [--type <event-type>] [--limit N]");
+                eprintln!("Usage: atheneum query-events <db-path> [--session <id>] [--type <event-type>] [--offset N] [--limit N]");
                 std::process::exit(1);
             }
             let db_path = PathBuf::from(&args[2]);
             let opts = parse_options(&args[3..])?;
+            let offset = parse_usize_option(opts.offset.as_deref(), "offset")?.unwrap_or(0);
             let limit = parse_usize_option(opts.limit.as_deref(), "limit")?.unwrap_or(50);
             let graph = AtheneumGraph::open(&db_path)?;
-            let events =
-                graph.query_events(opts.session.as_deref(), opts.event_type.as_deref(), limit)?;
+            let events = graph.query_events_page(
+                opts.session.as_deref(),
+                opts.event_type.as_deref(),
+                offset,
+                limit,
+            )?;
             print_json(json!({
                 "count": events.len(),
+                "offset": offset,
+                "limit": limit,
                 "events": events,
             }))?;
         }
@@ -632,15 +649,24 @@ fn run() -> anyhow::Result<()> {
         }
         "memory-list" => {
             if args.len() < 3 {
-                eprintln!("Usage: atheneum memory-list <db-path> [--scope S] [--project P]");
+                eprintln!("Usage: atheneum memory-list <db-path> [--scope S] [--project P] [--offset N] [--limit N]");
                 std::process::exit(1);
             }
             let db_path = PathBuf::from(&args[2]);
             let opts = parse_options(&args[3..])?;
+            let offset = parse_usize_option(opts.offset.as_deref(), "offset")?.unwrap_or(0);
+            let limit = parse_usize_option(opts.limit.as_deref(), "limit")?.unwrap_or(usize::MAX);
             let graph = AtheneumGraph::open(&db_path)?;
-            let items = graph.list_memory(opts.scope.as_deref(), opts.project.as_deref())?;
+            let items = graph.list_memory_page(
+                opts.scope.as_deref(),
+                opts.project.as_deref(),
+                offset,
+                limit,
+            )?;
             print_json(json!({
                 "count": items.len(),
+                "offset": offset,
+                "limit": limit,
                 "items": items.iter().map(entity_to_json).collect::<Vec<_>>(),
             }))?;
         }
@@ -776,7 +802,7 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     )?;
     writeln!(
         writer,
-        "  memory-list <db> [--scope S] [--project P]             List all memories"
+        "  memory-list <db> [--scope S] [--project P] [--offset N] [--limit N]  List memories (paginated)"
     )?;
     writeln!(writer)?;
     writeln!(writer, "DREAM:")?;
@@ -808,15 +834,15 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     )?;
     writeln!(
         writer,
-        "  query-sessions <db-path> [--project P] [--limit N]  Session history"
+        "  query-sessions <db-path> [--project P] [--offset N] [--limit N]  Session history"
     )?;
     writeln!(
         writer,
-        "  query-events <db-path> [--session <id>] [--type <t>] [--limit N]  Event log"
+        "  query-events <db-path> [--session <id>] [--type <t>] [--offset N] [--limit N]  Event log"
     )?;
     writeln!(
         writer,
-        "  list-pages <db-path> [--project P]      List wiki pages"
+        "  list-pages <db-path> [--project P] [--offset N] [--limit N]  List wiki pages"
     )?;
     writeln!(
         writer,
@@ -890,10 +916,13 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
         writer,
         "  atheneum list-pages ./atheneum.db --project forge"
     )?;
-    writeln!(writer, "  atheneum query-sessions ./atheneum.db --limit 5")?;
     writeln!(
         writer,
-        "  atheneum query-events ./atheneum.db --session abc123 --limit 20"
+        "  atheneum query-sessions ./atheneum.db --offset 0 --limit 5"
+    )?;
+    writeln!(
+        writer,
+        "  atheneum query-events ./atheneum.db --session abc123 --offset 0 --limit 20"
     )?;
     writeln!(writer, "  atheneum graph-stats ./atheneum.db")?;
     writeln!(writer, "  atheneum reindex ./atheneum.db")?;
@@ -914,6 +943,7 @@ struct CliOptions {
     kind: Option<String>,
     project: Option<String>,
     limit: Option<String>,
+    offset: Option<String>,
     session: Option<String>,
     event_type: Option<String>,
     status: Option<String>,
@@ -945,6 +975,7 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
                 "--kind" => opts.kind = Some(value),
                 "--project" => opts.project = Some(value),
                 "--limit" => opts.limit = Some(value),
+                "--offset" => opts.offset = Some(value),
                 "--session" => opts.session = Some(value),
                 "--type" => opts.event_type = Some(value),
                 "--status" => opts.status = Some(value),
