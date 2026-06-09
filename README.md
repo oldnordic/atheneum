@@ -200,7 +200,7 @@ TASKS:
 MEMORY:
   memory-store <db> <key> <content> [--scope S] [--confidence N] [--project P]  Store a memory
   memory-get <db> <key> [--scope S] [--project P]      Retrieve memory by key
-  memory-list <db> [--scope S] [--project P] [--offset N] [--limit N]  List memories (paginated)
+  memory-list <db> [--scope S] [--project P] [--offset N] [--limit N]  List memories (paginated, default limit 1000)
 
 DREAM:
   dream <db> [--scope S] [--project P] [--dry-run|--auto-merge]  Reflective memory consolidation
@@ -213,7 +213,7 @@ QUERY & NAVIGATION:
   query-knowledge <db> <target> [--project P]       Aggregated knowledge
   query-sessions <db> [--project P] [--offset N] [--limit N]  Session history
   query-events <db> [--session <id>] [--type <t>] [--offset N] [--limit N]  Event log
-  list-pages <db> [--project P] [--offset N] [--limit N]  List wiki pages
+  list-pages <db> [--project P] [--offset N] [--limit N]  List wiki pages (default limit 1000)
   entity <db> <id>                                  Print entity as JSON
   edge <db> <id>                                    Print edge as JSON
   neighbors <db> <id> [--depth N]                   One-hop edges or BFS subgraph
