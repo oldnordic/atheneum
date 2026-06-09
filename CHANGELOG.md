@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MANUAL.md` maintainer checklist covering local gates plus the rule that public API / CLI changes must update the manual and changelog in the same change.
 - `AtheneumGraph::runtime_stats()` — exposes process-local cache/query/write counters so callers can inspect hot read paths and invalidation activity.
 - Shared graph hashing helper for deterministic SHA-256 and canonical JSON hashing across Atheneum graph modules.
+- `QueryIntent` — classified intent of navigation queries (Search, Navigate, Path, Unknown) with keyword-based classification.
+- `ResolvedEntity` — maps query terms to graph entities via vector disambiguation, carrying entity ID, confidence, and alternatives.
+- `NavigateQueryPlan` enhanced with `intent` and `resolved_entities` fields for staged query validation.
+- `preview_navigate_query` now classifies intent, resolves query terms against the graph, and warns when no entities match.
 - `content_hash_excluding(value, volatile_keys)` — unified content hashing that strips volatile fields before hashing, replacing three module-local `*_content_hash` functions (discovery, memory, handoff).
 - `AtheneumGraph::get_similar(name, top_k, project_id, entity_kind)` — ranked vector-similarity entity lookup via HNSW search index.
 - `AtheneumGraph::resolve(name, min_confidence, project_id, entity_kind)` — single-best entity resolution above a confidence threshold, returning `DisambiguationResult` with resolved entity, candidates, and threshold.
@@ -26,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ProvenanceData` — typed struct for edge provenance metadata (method, actor, created_at, extraction_mode, source_text). Replaces all 20 ad-hoc JSON provenance sites. Backward-compatible deserialization. Builder pattern. Public API export (ATH-19).
 - `EntityType::Concept` — new entity type for knowledge graph concepts extracted from prose.
 - `AtheneumGraph::upsert_concept(name, data)` — name-deduped Concept entity creation; returns existing ID if one matches.
-- `extract_triples(text, config)` — ollama LLM-powered extraction of (subject, predicate, object) triples from prose text (neural-embed feature).
+- `extract_triples(text, config)` — ollama model-powered extraction of (subject, predicate, object) triples from prose text (neural-embed feature).
 - `ingest_triples(graph, result, project_id)` — upserts Concept entities and RelatedTo edges with ai_triple provenance for each extracted triple.
 - `ProvenanceData::with_actor(actor)` — builder method to set the provenance actor field.
 
