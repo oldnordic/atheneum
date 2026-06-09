@@ -39,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Repeated read APIs now use a concurrent in-process query cache with generation-based invalidation and adaptive TTL refresh for hot entries.
   - Cached reads: `query_memory()`, `list_memory()`, `query_sessions()`, `query_events()`, `query_knowledge[_in_project]()`, `list_wiki_pages()`, `lexical_search()`, `navigate()`, and `hopgraph_query()`.
   - New cache domains: `Search` and `Navigation`, invalidated on any entity or edge mutation so graph walks stay consistent with the latest data.
-  - `RuntimeStats` now includes `search_queries` and `navigation_queries` counters.
+  - `RuntimeStats` now includes `search_queries`, `navigation_queries`, `hnsw_hits`, `hnsw_fallback_scans`, `memory_row_repairs`, `dream_runs`, `wiki_dream_runs`, and `consolidate_runs` counters.
   - Relevant writes now invalidate those domains coarse-grain after successful mutation (`store_memory`, session/event writes, discovery/handoff writes, wiki ingestion).
   - The cache is runtime-only and safe for concurrent callers; no persisted schema changes were required.
 - `store_discovery()` and `store_handoff()` now stamp deterministic `content_hash` values derived from canonical JSON, so equivalent payloads keep the same hash regardless of key order.

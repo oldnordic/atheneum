@@ -147,6 +147,7 @@ impl AtheneumGraph {
                     return Ok(sql_id);
                 }
 
+                self.runtime.record_memory_row_repair();
                 conn.execute(
                     "INSERT INTO memory_entries
                         (key, scope, content, confidence, project_id, created_at, updated_at)
