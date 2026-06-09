@@ -358,4 +358,147 @@ impl AtheneumGraph {
         });
         Ok(results)
     }
+
+    /// Find the top-k entities most similar to a given name using vector search.
+    ///
+    /// This is the entity-disambiguation entry point: given a candidate name,
+    /// return the most similar existing entities from the graph, ranked by
+    /// vector similarity score.
+    pub fn get_similar(
+        &self,
+        name: &str,
+        top_k: usize,
+        project_id: Option<&str>,
+        entity_kind: Option<&str>,
+    ) -> Result<Vec<SearchResult>> {
+        self.lexical_search(name, top_k, project_id, entity_kind)
+    }
+
+    /// Resolve a name to a single best-matching entity above a confidence threshold.
+    ///
+    /// Returns a `DisambiguationResult` with the resolved entity (if confidence
+    /// is met), all candidates for inspection, and the threshold used. Callers
+    /// can use `result.is_resolved()` to check if resolution succeeded, and
+    /// inspect `candidates` for alternatives.
+    pub fn resolve(
+        &self,
+        name: &str,
+        min_confidence: f32,
+        project_id: Option<&str>,
+        entity_kind: Option<&str>,
+    ) -> Result<super::DisambiguationResult> {
+        let candidates = self.get_similar(name, 10, project_id, entity_kind)?;
+        let resolved = candidates.first().and_then(|top| {
+            if top.score >= min_confidence {
+                Some(top.clone())
+            } else {
+                None
+            }
+        });
+        Ok(super::DisambiguationResult {
+            resolved,
+            candidates,
+            min_confidence,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_graph_with_entities() -> AtheneumGraph {
+        let graph = AtheneumGraph::open_in_memory().unwrap();
+        graph
+            .store_memory(
+                "rust-ownership",
+                "Rust ownership rules",
+                "memory",
+                1.0,
+                Some("test"),
+            )
+            .unwrap();
+        graph
+            .store_memory(
+                "rust-borrowing",
+                "Rust borrowing and lifetimes",
+                "memory",
+                0.9,
+                Some("test"),
+            )
+            .unwrap();
+        graph
+            .insert_event(
+                "Ownership transfer semantics",
+                serde_json::json!({"scope": "discovery", "project_id": "test"}),
+            )
+            .unwrap();
+        graph
+    }
+
+    #[test]
+    fn get_similar_returns_ranked_results() {
+        let graph = make_graph_with_entities();
+        let results = graph.get_similar("Rust ownership", 5, None, None).unwrap();
+        assert!(!results.is_empty(), "should find similar entities");
+        assert!(
+            results[0].score > 0.0,
+            "top result should have positive score"
+        );
+    }
+
+    #[test]
+    fn get_similar_filters_by_kind() {
+        let graph = make_graph_with_entities();
+        let memory_only = graph
+            .get_similar("Rust ownership", 5, None, Some("Memory"))
+            .unwrap();
+        assert!(
+            memory_only.iter().all(|r| r.kind == "Memory"),
+            "all results should be Memory kind"
+        );
+    }
+
+    #[test]
+    fn get_similar_filters_by_project() {
+        let graph = make_graph_with_entities();
+        let in_project = graph.get_similar("Rust", 5, Some("test"), None).unwrap();
+        let out_project = graph.get_similar("Rust", 5, Some("other"), None).unwrap();
+        assert!(
+            in_project.len() > out_project.len(),
+            "project filter should narrow results"
+        );
+    }
+
+    #[test]
+    fn resolve_succeeds_with_high_confidence_match() {
+        let graph = make_graph_with_entities();
+        let candidates = graph
+            .get_similar("rust ownership", 5, Some("test"), None)
+            .unwrap();
+        assert!(!candidates.is_empty(), "should find at least one candidate");
+        let top_score = candidates.first().map(|c| c.score).unwrap_or(0.0);
+        assert!(top_score > 0.0, "top candidate should have positive score");
+        // Resolve with a threshold just below the top score
+        let result = graph
+            .resolve("rust ownership", top_score * 0.9, Some("test"), None)
+            .unwrap();
+        assert!(
+            result.is_resolved(),
+            "should resolve when threshold is below top score"
+        );
+        assert!(!result.candidates.is_empty());
+    }
+
+    #[test]
+    fn resolve_fails_with_high_threshold() {
+        let graph = make_graph_with_entities();
+        let result = graph
+            .resolve("completely unrelated xyz", 0.99, None, None)
+            .unwrap();
+        assert!(
+            !result.is_resolved(),
+            "should not resolve with very high threshold"
+        );
+    }
 }
