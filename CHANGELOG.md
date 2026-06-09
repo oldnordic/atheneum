@@ -126,8 +126,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `lexical_search()` and `navigate()` — `entity_kind` parameter changed from `Option<&str>` to accept `Option<EntityType>` filter (post-filter on `SearchResult.kind`). CLI `--kind` flag works for all entity kinds including `Memory`.
 
-## [0.2.3] — 2026-06-04
-
 ### Fixed
 
 - **SQLite busy_timeout** — set 5000ms on connection open to reduce lock contention under concurrent access (wiki-watcher + CLI + agent sessions).
