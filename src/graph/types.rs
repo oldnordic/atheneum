@@ -17,6 +17,7 @@ pub enum EntityType {
     EventLog,
     Memory,
     WikiPage,
+    Concept,
 }
 
 impl EntityType {
@@ -35,6 +36,7 @@ impl EntityType {
             EntityType::EventLog => "EventLog",
             EntityType::Memory => "Memory",
             EntityType::WikiPage => "WikiPage",
+            EntityType::Concept => "Concept",
         }
     }
 
@@ -59,6 +61,7 @@ impl EntityType {
             "eventlog" | "eventlogs" | "log" | "logs" => EntityType::EventLog,
             "memory" | "memories" => EntityType::Memory,
             "wikipage" | "wikipages" | "wiki" | "page" | "pages" => EntityType::WikiPage,
+            "concept" | "concepts" => EntityType::Concept,
             _ => return None,
         })
     }
@@ -701,6 +704,11 @@ impl ProvenanceData {
 
     pub fn with_source_text(mut self, text: &str) -> Self {
         self.source_text = Some(text.to_string());
+        self
+    }
+
+    pub fn with_actor(mut self, actor: &str) -> Self {
+        self.actor = actor.to_string();
         self
     }
 

@@ -13,6 +13,7 @@ pub mod discovery;
 pub mod dream;
 pub mod embed;
 pub mod evidence;
+pub mod extraction;
 pub mod handoff;
 mod hashing;
 pub mod knowledge;
@@ -322,6 +323,27 @@ impl AtheneumGraph {
             name: name.to_string(),
             file_path: None,
             data,
+        };
+        self.inner.insert_entity(&entity).map_err(Into::into)
+    }
+
+    /// Upsert a Concept entity by name. If an entity of kind "Concept" with
+    /// the same name already exists, returns its ID. Otherwise creates a new one.
+    pub fn upsert_concept(&self, name: &str, data: &Value) -> Result<i64> {
+        let existing = with_graph_conn(&self.inner, |conn| {
+            let mut stmt = conn
+                .prepare("SELECT id FROM graph_entities WHERE kind = ?1 AND name = ?2 LIMIT 1")?;
+            Ok(stmt.query_row(params![EntityType::Concept.as_str(), name], |r| r.get(0))?)
+        });
+        if let Ok(id) = existing {
+            return Ok(id);
+        }
+        let entity = GraphEntity {
+            id: 0,
+            kind: EntityType::Concept.as_str().to_string(),
+            name: name.to_string(),
+            file_path: None,
+            data: data.clone(),
         };
         self.inner.insert_entity(&entity).map_err(Into::into)
     }
