@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use sqlitegraph::GraphEntity;
 
 use super::cache::CacheDomain;
-use super::hashing::json_sha256_hex;
+use super::hashing::content_hash_excluding;
 use super::{AtheneumGraph, EntityType, HandoffPreview};
 
 impl AtheneumGraph {
@@ -29,7 +29,10 @@ impl AtheneumGraph {
             obj.insert("project_id".to_string(), Value::String(pid.to_string()));
         }
 
-        let content_hash = handoff_content_hash(&proposed_data)?;
+        let content_hash = content_hash_excluding(
+            &proposed_data,
+            &["created_at", "claimed", "claimed_at", "content_hash"],
+        )?;
         if let Some(obj) = proposed_data.as_object_mut() {
             obj.insert(
                 "content_hash".to_string(),
@@ -67,7 +70,10 @@ impl AtheneumGraph {
             "created_at": Utc::now().to_rfc3339(),
             "claimed": false,
         });
-        let content_hash = handoff_content_hash(&data)?;
+        let content_hash = content_hash_excluding(
+            &data,
+            &["created_at", "claimed", "claimed_at", "content_hash"],
+        )?;
         if let Some(obj) = data.as_object_mut() {
             obj.insert("content_hash".to_string(), Value::String(content_hash));
         }
@@ -172,7 +178,10 @@ impl AtheneumGraph {
         if let (Some(pid), Some(obj)) = (project_id, data.as_object_mut()) {
             obj.insert("project_id".to_string(), Value::String(pid.to_string()));
         }
-        let content_hash = handoff_content_hash(&data)?;
+        let content_hash = content_hash_excluding(
+            &data,
+            &["created_at", "claimed", "claimed_at", "content_hash"],
+        )?;
         if let Some(obj) = data.as_object_mut() {
             obj.insert("content_hash".to_string(), Value::String(content_hash));
         }
@@ -312,15 +321,4 @@ impl AtheneumGraph {
             Ok(out)
         })
     }
-}
-
-fn handoff_content_hash(data: &Value) -> Result<String> {
-    let mut normalized = data.clone();
-    if let Some(obj) = normalized.as_object_mut() {
-        obj.remove("created_at");
-        obj.remove("claimed");
-        obj.remove("claimed_at");
-        obj.remove("content_hash");
-    }
-    json_sha256_hex(&normalized)
 }

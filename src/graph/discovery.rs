@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use sqlitegraph::GraphEntity;
 
 use super::cache::CacheDomain;
-use super::hashing::json_sha256_hex;
+use super::hashing::content_hash_excluding;
 use super::{AtheneumGraph, DiscoveryPreview, EdgeType, EntityType, ProvenanceData};
 
 impl AtheneumGraph {
@@ -27,7 +27,8 @@ impl AtheneumGraph {
             obj.insert("target".to_string(), Value::String(target.to_string()));
         }
 
-        let content_hash = discovery_content_hash(&metadata)?;
+        let content_hash =
+            content_hash_excluding(&metadata, &["timestamp", "sql_id", "content_hash"])?;
         if let Some(obj) = metadata.as_object_mut() {
             obj.insert(
                 "content_hash".to_string(),
@@ -81,7 +82,8 @@ impl AtheneumGraph {
             );
         }
 
-        let content_hash = discovery_content_hash(&metadata)?;
+        let content_hash =
+            content_hash_excluding(&metadata, &["timestamp", "sql_id", "content_hash"])?;
 
         let agent_s = agent.to_string();
         let discovery_type_s = discovery_type.to_string();
@@ -273,14 +275,4 @@ impl AtheneumGraph {
             Ok(discoveries)
         })
     }
-}
-
-fn discovery_content_hash(metadata: &Value) -> Result<String> {
-    let mut normalized = metadata.clone();
-    if let Some(obj) = normalized.as_object_mut() {
-        obj.remove("timestamp");
-        obj.remove("sql_id");
-        obj.remove("content_hash");
-    }
-    json_sha256_hex(&normalized)
 }
