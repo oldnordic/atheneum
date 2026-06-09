@@ -19,6 +19,14 @@ Cargo.lock
 
 # Environment
 .env
+.env.*
 
-# Magellan
-.magellan/
+# Claude and internal development files
+.claude/
+.hermes/
+docs/superpowers/
+
+# Agent instructions — local only
+AGENTS.md
+CLAUDE.md
+GEMINI.md

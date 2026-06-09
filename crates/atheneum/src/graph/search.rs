@@ -441,6 +441,7 @@ mod tests {
                 "memory",
                 1.0,
                 Some("test"),
+                None,
             )
             .unwrap();
         graph
@@ -450,6 +451,7 @@ mod tests {
                 "memory",
                 0.9,
                 Some("test"),
+                None,
             )
             .unwrap();
         graph

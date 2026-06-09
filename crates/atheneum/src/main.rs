@@ -627,8 +627,14 @@ fn run() -> anyhow::Result<()> {
             let confidence: f64 =
                 parse_f64_option(opts.confidence.as_deref(), "confidence")?.unwrap_or(1.0);
             let graph = AtheneumGraph::open(&db_path)?;
-            let id =
-                graph.store_memory(key, content, scope, confidence, opts.project.as_deref())?;
+            let id = graph.store_memory(
+                key,
+                content,
+                scope,
+                confidence,
+                opts.project.as_deref(),
+                None,
+            )?;
             print_json(json!({"memory_id": id, "key": key, "scope": scope}))?;
         }
         "memory-get" => {

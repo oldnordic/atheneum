@@ -286,7 +286,7 @@ Returns `{ discoveries: [...], handoffs: [...] }` for a target in a project.
 
 ## Memory
 
-### `store_memory(key, content, scope, confidence, project_id) -> Result<i64>`
+### `store_memory(key, content, scope, confidence, project_id, tags) -> Result<i64>`
 
 Store or update a memory entry. Upsert by composite key (key, scope, project_id). Auto-indexed in HNSW.
 
@@ -297,6 +297,7 @@ let id = graph.store_memory(
     "user",           // scope: "user" | "project" | "agent" | "memory"
     0.9,              // confidence: 0.0-1.0
     None,             // project_id
+    None,             // tags: Option<&[String]>
 )?;
 ```
 
@@ -312,7 +313,7 @@ List all memories. Filters are optional. This is a cached compatibility wrapper 
 
 Primary paginated memory list. Uses SQL `LIMIT ? OFFSET ?` and is not cached.
 
-### `preview_memory(key, content, scope, confidence, project_id, candidate_limit, score_threshold) -> Result<MemoryPreview>`
+### `preview_memory(key, content, scope, confidence, project_id, tags, candidate_limit, score_threshold) -> Result<MemoryPreview>`
 
 Read-only preview of a memory payload before commit. Returns normalized payload, content hash, and existing matches.
 

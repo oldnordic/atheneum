@@ -1,0 +1,49 @@
+[package]
+name = "atheneum"
+version = "0.3.3"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Agent coordination graph database - episodic and semantic memory for multi-agent workflows"
+repository = "https://github.com/oldnordic/atheneum"
+homepage = "https://github.com/oldnordic/atheneum"
+documentation = "https://github.com/oldnordic/atheneum/blob/master/MANUAL.md"
+keywords = ["graph", "sqlite", "agent", "knowledge-base", "coordination"]
+categories = ["database-implementations", "data-structures", "text-processing"]
+authors = ["oldnordic"]
+readme = "README.md"
+rust-version = "1.82"
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1.11"
+rusqlite = "0.31"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v7"] }
+thiserror = "2.0"
+tracing = "0.1"
+parking_lot = "0.12"
+sqlitegraph = "3.2.5"
+
+ureq = { version = "2", default-features = false, features = ["json"], optional = true }
+
+# Async runtime (optional for future use)
+tokio = { version = "1.44", features = ["full"], optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+
+# Web dashboard (optional feature)
+axum = { version = "0.8", optional = true }
+tower-http = { version = "0.6", features = ["fs", "cors"], optional = true }
+askama = { version = "0.13", optional = true }
+
+[dev-dependencies]
+tempfile = "3.19"
+walkdir = "2.5"
+
+[features]
+default = []
+web-ui = ["dep:axum", "dep:tower-http", "dep:askama"]
+async = ["tokio", "tracing-subscriber"]
+neural-embed = ["dep:ureq"]

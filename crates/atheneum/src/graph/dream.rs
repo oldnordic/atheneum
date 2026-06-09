@@ -605,6 +605,7 @@ mod tests {
                 "user",
                 1.0,
                 None,
+                None,
             )
             .unwrap();
         let _id2 = graph
@@ -613,6 +614,7 @@ mod tests {
                 "User prefers concise response in English",
                 "memory",
                 0.9,
+                None,
                 None,
             )
             .unwrap();
@@ -651,6 +653,7 @@ mod tests {
                 "user",
                 1.0,
                 None,
+                None,
             )
             .unwrap();
         let id2 = graph
@@ -659,6 +662,7 @@ mod tests {
                 "User prefers concise response in English",
                 "memory",
                 0.8,
+                None,
                 None,
             )
             .unwrap();
@@ -873,6 +877,7 @@ mod tests {
                 "memory",
                 1.0,
                 None,
+                None,
             )
             .unwrap();
         let _id2 = graph
@@ -881,6 +886,7 @@ mod tests {
                 "Unsafe kernels bypass safety checks entirely",
                 "project",
                 1.0,
+                None,
                 None,
             )
             .unwrap();

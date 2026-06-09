@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec /home/feanor/Projects/.claude/hooks/pre-commit-rust-standards "$@"

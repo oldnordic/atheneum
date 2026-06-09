@@ -25,6 +25,7 @@ impl AtheneumGraph {
         scope: &str,
         confidence: f64,
         project_id: Option<&str>,
+        tags: Option<&[String]>,
         k: usize,
         min_score: f32,
     ) -> Result<MemoryPreview> {
@@ -36,6 +37,9 @@ impl AtheneumGraph {
         });
         if let (Some(pid), Some(obj)) = (project_id, proposed_data.as_object_mut()) {
             obj.insert("project_id".to_string(), Value::String(pid.to_string()));
+        }
+        if let (Some(tags), Some(obj)) = (tags, proposed_data.as_object_mut()) {
+            obj.insert("tags".to_string(), json!(tags));
         }
 
         let content_hash = content_hash_excluding(
@@ -89,6 +93,7 @@ impl AtheneumGraph {
         scope: &str,
         confidence: f64,
         project_id: Option<&str>,
+        tags: Option<&[String]>,
     ) -> Result<i64> {
         let now = Utc::now().to_rfc3339();
 
@@ -177,6 +182,9 @@ impl AtheneumGraph {
             if let (Some(pid), Some(obj)) = (project_id, data.as_object_mut()) {
                 obj.insert("project_id".to_string(), Value::String(pid.to_string()));
             }
+            if let (Some(tags), Some(obj)) = (tags, data.as_object_mut()) {
+                obj.insert("tags".to_string(), json!(tags));
+            }
 
             self.update_entity_data(memory_id, &data)?;
             let indexed = GraphEntity {
@@ -216,6 +224,9 @@ impl AtheneumGraph {
         });
         if let (Some(pid), Some(obj)) = (project_id, data.as_object_mut()) {
             obj.insert("project_id".to_string(), Value::String(pid.to_string()));
+        }
+        if let (Some(tags), Some(obj)) = (tags, data.as_object_mut()) {
+            obj.insert("tags".to_string(), json!(tags));
         }
         let entity = GraphEntity {
             id: 0,

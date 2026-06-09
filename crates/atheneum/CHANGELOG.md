@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Pending
+
+### Added
+
+- `AtheneumGraph::store_memory()` and `AtheneumGraph::preview_memory()` now accept an optional `tags: Option<&[String]>` parameter. Tags are stored in the entity's JSON `data` field alongside `key`, `scope`, `content`, and `confidence`.
+
+### Changed
+
+- **Breaking API change**: `store_memory` signature expanded from 5 to 6 parameters (added `tags` before the closing paren). `preview_memory` expanded from 7 to 8 parameters (added `tags` between `project_id` and `k`). All internal call sites and tests updated.
+
 ## [0.3.2] — 2026-06-09
 
 ### Added

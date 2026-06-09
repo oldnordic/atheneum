@@ -72,7 +72,7 @@ jobs:
 
       - name: Check public docs for AI/LLM terminology
         run: |
-          if grep -riE "\bLLM\b|\bAI assistant\b|production-ready" README.md MANUAL.md CHANGELOG.md Cargo.toml 2>/dev/null; then
+          if grep -riE "\bLLM\b|\bAI assistant\b|production-ready" README.md MANUAL.md CHANGELOG.md Cargo.toml crates/atheneum/README.md crates/atheneum/MANUAL.md crates/atheneum/CHANGELOG.md crates/atheneum/Cargo.toml 2>/dev/null; then
             echo "FAIL: AI/LLM terminology found in public documentation"
             exit 1
           fi

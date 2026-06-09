@@ -5,7 +5,7 @@ use serde_json::json;
 fn query_memory_uses_cache_and_invalidates_on_store() {
     let graph = AtheneumGraph::open_in_memory().expect("open");
     graph
-        .store_memory("timezone", "UTC+0", "user", 1.0, None)
+        .store_memory("timezone", "UTC+0", "user", 1.0, None, None)
         .expect("store memory");
 
     let first = graph
@@ -29,7 +29,7 @@ fn query_memory_uses_cache_and_invalidates_on_store() {
     assert_eq!(stats_after_second.cache_misses, 1);
 
     graph
-        .store_memory("timezone", "UTC+1", "user", 0.9, None)
+        .store_memory("timezone", "UTC+1", "user", 0.9, None, None)
         .expect("update memory");
 
     let refreshed = graph
@@ -272,7 +272,7 @@ fn navigate_uses_cache_and_invalidates_on_edge_insert() {
         .pop()
         .expect("discovery exists");
     let memory_id = graph
-        .store_memory("nav_mem", "related", "user", 1.0, None)
+        .store_memory("nav_mem", "related", "user", 1.0, None, None)
         .expect("store memory");
     graph
         .insert_edge(
@@ -378,7 +378,7 @@ fn memory_row_repair_counter_increments_on_missing_sql_row() {
     let graph = AtheneumGraph::open(&db_path).expect("open");
 
     let _id = graph
-        .store_memory("timezone", "UTC+0", "user", 1.0, None)
+        .store_memory("timezone", "UTC+0", "user", 1.0, None, None)
         .expect("store initial");
 
     let conn = rusqlite::Connection::open(&db_path).expect("open sqlite");
@@ -395,7 +395,7 @@ fn memory_row_repair_counter_increments_on_missing_sql_row() {
     );
 
     graph
-        .store_memory("timezone", "UTC+1", "user", 0.9, None)
+        .store_memory("timezone", "UTC+1", "user", 0.9, None, None)
         .expect("store update triggers repair");
 
     assert_eq!(
@@ -409,10 +409,10 @@ fn memory_row_repair_counter_increments_on_missing_sql_row() {
 fn dream_and_consolidate_counters_increment() {
     let graph = AtheneumGraph::open_in_memory().expect("open");
     graph
-        .store_memory("a", "alpha", "user", 1.0, None)
+        .store_memory("a", "alpha", "user", 1.0, None, None)
         .expect("store a");
     graph
-        .store_memory("b", "beta", "user", 1.0, None)
+        .store_memory("b", "beta", "user", 1.0, None, None)
         .expect("store b");
 
     let _ = graph

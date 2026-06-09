@@ -129,6 +129,7 @@ fn list_memory_page_pagination() {
                 "user",
                 1.0,
                 None,
+                None,
             )
             .expect("store memory");
     }

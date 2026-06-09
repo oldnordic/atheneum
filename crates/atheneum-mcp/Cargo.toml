@@ -1,0 +1,40 @@
+[package]
+name = "atheneum-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "MCP server for Atheneum — agent memory and knowledge graph tools"
+readme = "README.md"
+keywords = ["mcp", "atheneum", "agent", "memory", "tools"]
+categories = ["command-line-utilities", "database-implementations"]
+
+[[bin]]
+name = "atheneum-mcp"
+path = "src/main.rs"
+
+[dependencies]
+rmcp = { version = "1.7", features = ["server", "transport-io"] }
+tokio = { version = "1.44", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait = "0.1"
+
+# HTTP mode deps
+reqwest = { version = "0.12", features = ["json"], optional = true }
+
+# Direct mode deps
+atheneum = { path = "../atheneum", optional = true }
+
+[features]
+default = ["http"]
+http = ["dep:reqwest"]
+direct = ["dep:atheneum"]
+
+[dev-dependencies]
+tokio-test = "0.4"

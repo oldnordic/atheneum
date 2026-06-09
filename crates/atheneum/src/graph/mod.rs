@@ -697,7 +697,7 @@ mod tests {
 
         // CausedBy has domain=ANY, range=ANY
         let knowledge_id = graph
-            .store_memory("test-key", "test content", "memory", 1.0, None)
+            .store_memory("test-key", "test content", "memory", 1.0, None, None)
             .expect("insert memory");
         let agent_id = graph
             .insert_agent("test-agent", serde_json::json!({}))

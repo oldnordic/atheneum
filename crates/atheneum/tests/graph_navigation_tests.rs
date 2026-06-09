@@ -197,7 +197,7 @@ fn test_preview_navigate_query_repairs_plural_lowercase_kind() {
 #[test]
 fn test_navigate_repairs_lowercase_kind_filter() {
     let g = AtheneumGraph::open_in_memory().expect("open");
-    g.store_memory("timezone", "UTC+0", "user", 1.0, None)
+    g.store_memory("timezone", "UTC+0", "user", 1.0, None, None)
         .expect("store memory");
 
     let views = g

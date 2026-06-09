@@ -273,6 +273,7 @@ let memory = graph.preview_memory(
     "user",
     0.9,
     None,
+    None,
     5,
     0.2,
 )?;
@@ -498,6 +499,7 @@ let id = graph.store_memory(
     "user",               // scope
     0.9,                  // confidence (0.0-1.0)
     None,                 // project_id
+    None,                 // tags
 )?;
 
 // Retrieve by key

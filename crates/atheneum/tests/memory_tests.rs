@@ -15,6 +15,7 @@ fn test_store_memory_creates_entity() {
             "user",
             1.0,
             None,
+            None,
         )
         .expect("store_memory");
     assert!(id > 0, "memory_id should be positive");
@@ -28,7 +29,7 @@ fn test_store_memory_creates_entity() {
 fn test_query_memory_by_key() {
     let graph = AtheneumGraph::open_in_memory().expect("open");
     graph
-        .store_memory("timezone", "UTC+0", "user", 1.0, None)
+        .store_memory("timezone", "UTC+0", "user", 1.0, None, None)
         .unwrap();
 
     let found = graph
@@ -42,10 +43,10 @@ fn test_query_memory_by_key() {
 fn test_query_memory_filters_scope() {
     let graph = AtheneumGraph::open_in_memory().expect("open");
     graph
-        .store_memory("api_key", "abc123", "user", 1.0, None)
+        .store_memory("api_key", "abc123", "user", 1.0, None, None)
         .unwrap();
     graph
-        .store_memory("api_key", "xyz789", "project", 1.0, Some("projA"))
+        .store_memory("api_key", "xyz789", "project", 1.0, Some("projA"), None)
         .unwrap();
 
     let user_only = graph.query_memory("api_key", Some("user"), None).unwrap();
@@ -60,10 +61,17 @@ fn test_query_memory_filters_scope() {
 fn test_query_memory_filters_project() {
     let graph = AtheneumGraph::open_in_memory().expect("open");
     graph
-        .store_memory("convention", "use anyhow", "project", 1.0, Some("p1"))
+        .store_memory("convention", "use anyhow", "project", 1.0, Some("p1"), None)
         .unwrap();
     graph
-        .store_memory("convention", "use thiserror", "project", 1.0, Some("p2"))
+        .store_memory(
+            "convention",
+            "use thiserror",
+            "project",
+            1.0,
+            Some("p2"),
+            None,
+        )
         .unwrap();
 
     let p1_only = graph
@@ -80,10 +88,10 @@ fn test_query_memory_filters_project() {
 fn test_list_memory_by_scope() {
     let graph = AtheneumGraph::open_in_memory().expect("open");
     graph
-        .store_memory("a", "content-a", "user", 1.0, None)
+        .store_memory("a", "content-a", "user", 1.0, None, None)
         .unwrap();
     graph
-        .store_memory("b", "content-b", "agent", 1.0, None)
+        .store_memory("b", "content-b", "agent", 1.0, None, None)
         .unwrap();
 
     let user_mems = graph.list_memory(Some("user"), None).unwrap();
@@ -95,10 +103,10 @@ fn test_list_memory_by_scope() {
 fn test_list_memory_all() {
     let graph = AtheneumGraph::open_in_memory().expect("open");
     graph
-        .store_memory("x", "content-x", "user", 1.0, None)
+        .store_memory("x", "content-x", "user", 1.0, None, None)
         .unwrap();
     graph
-        .store_memory("y", "content-y", "project", 1.0, Some("p"))
+        .store_memory("y", "content-y", "project", 1.0, Some("p"), None)
         .unwrap();
 
     let all = graph.list_memory(None, None).unwrap();
@@ -120,6 +128,7 @@ fn test_memory_searchable() {
             "project",
             1.0,
             Some("rocmforge"),
+            None,
         )
         .unwrap();
 
@@ -142,6 +151,7 @@ fn test_store_memory_upsert_updates_content() {
             "user",
             1.0,
             None,
+            None,
         )
         .expect("store_memory first");
 
@@ -151,6 +161,7 @@ fn test_store_memory_upsert_updates_content() {
             "Updated: very concise",
             "user",
             0.95,
+            None,
             None,
         )
         .expect("store_memory second");
@@ -173,7 +184,7 @@ fn test_store_memory_upsert_updates_content() {
 fn test_store_memory_preserves_created_at_on_upsert() {
     let graph = AtheneumGraph::open_in_memory().expect("open");
     let id = graph
-        .store_memory("timezone", "UTC+0", "user", 1.0, None)
+        .store_memory("timezone", "UTC+0", "user", 1.0, None, None)
         .unwrap();
 
     let first = graph.get_entity(id).unwrap();
@@ -186,7 +197,7 @@ fn test_store_memory_preserves_created_at_on_upsert() {
     std::thread::sleep(std::time::Duration::from_millis(50));
 
     graph
-        .store_memory("timezone", "UTC+1", "user", 1.0, None)
+        .store_memory("timezone", "UTC+1", "user", 1.0, None, None)
         .unwrap();
 
     let second = graph.get_entity(id).unwrap();
@@ -205,10 +216,17 @@ fn test_store_memory_preserves_created_at_on_upsert() {
 fn test_store_memory_upsert_with_project_scope() {
     let graph = AtheneumGraph::open_in_memory().expect("open");
     graph
-        .store_memory("convention", "use anyhow", "project", 1.0, Some("p1"))
+        .store_memory("convention", "use anyhow", "project", 1.0, Some("p1"), None)
         .unwrap();
     graph
-        .store_memory("convention", "use thiserror", "project", 1.0, Some("p2"))
+        .store_memory(
+            "convention",
+            "use thiserror",
+            "project",
+            1.0,
+            Some("p2"),
+            None,
+        )
         .unwrap();
 
     // Same key, different project — should be separate entities
@@ -224,7 +242,7 @@ fn test_store_memory_upsert_with_project_scope() {
 
     // Upsert p1
     graph
-        .store_memory("convention", "use eyre", "project", 1.0, Some("p1"))
+        .store_memory("convention", "use eyre", "project", 1.0, Some("p1"), None)
         .unwrap();
     let p1_updated = graph
         .query_memory("convention", Some("project"), Some("p1"))
@@ -243,7 +261,7 @@ fn test_store_memory_recreates_missing_sql_row_for_existing_entity() {
     let graph = AtheneumGraph::open(&db_path).expect("open");
 
     let id = graph
-        .store_memory("timezone", "UTC+0", "user", 1.0, None)
+        .store_memory("timezone", "UTC+0", "user", 1.0, None, None)
         .expect("store initial");
 
     let conn = Connection::open(&db_path).expect("open sqlite");
@@ -254,7 +272,7 @@ fn test_store_memory_recreates_missing_sql_row_for_existing_entity() {
     .expect("delete memory row");
 
     graph
-        .store_memory("timezone", "UTC+1", "user", 0.9, None)
+        .store_memory("timezone", "UTC+1", "user", 0.9, None, None)
         .expect("store update");
 
     let count: i64 = conn
@@ -277,7 +295,7 @@ fn test_store_memory_recreates_missing_sql_row_for_existing_entity() {
 fn test_preview_memory_is_read_only_and_returns_existing_matches() {
     let graph = AtheneumGraph::open_in_memory().expect("open");
     graph
-        .store_memory("timezone", "UTC+0", "user", 1.0, None)
+        .store_memory("timezone", "UTC+0", "user", 1.0, None, None)
         .expect("seed memory");
 
     let before = graph
@@ -286,7 +304,7 @@ fn test_preview_memory_is_read_only_and_returns_existing_matches() {
         .len();
 
     let preview = graph
-        .preview_memory("timezone", "UTC+1", "user", 0.9, None, 5, 0.1)
+        .preview_memory("timezone", "UTC+1", "user", 0.9, None, None, 5, 0.1)
         .expect("preview memory");
 
     let after = graph
@@ -317,7 +335,7 @@ fn test_preview_memory_is_read_only_and_returns_existing_matches() {
 fn test_preview_memory_includes_exact_match_even_when_fuzzy_score_is_low() {
     let graph = AtheneumGraph::open_in_memory().expect("open");
     graph
-        .store_memory("timezone", "UTC+0", "user", 1.0, None)
+        .store_memory("timezone", "UTC+0", "user", 1.0, None, None)
         .expect("seed memory");
 
     let preview = graph
@@ -326,6 +344,7 @@ fn test_preview_memory_includes_exact_match_even_when_fuzzy_score_is_low() {
             "completely unrelated text",
             "user",
             0.9,
+            None,
             None,
             5,
             0.95,
