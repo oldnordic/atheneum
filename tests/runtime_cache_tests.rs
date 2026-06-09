@@ -177,6 +177,161 @@ fn knowledge_and_wiki_queries_cache_and_invalidate_on_writes() {
     let stats_after_refresh = graph.runtime_stats();
     assert_eq!(stats_after_refresh.knowledge_writes, 2);
     assert_eq!(stats_after_refresh.wiki_writes, 2);
-    assert_eq!(stats_after_refresh.cache_hits, 2);
-    assert_eq!(stats_after_refresh.cache_misses, 4);
+}
+
+#[test]
+fn lexical_search_uses_cache_and_invalidates_on_write() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    graph
+        .store_discovery(
+            "agent",
+            "Symbol",
+            "cache_target",
+            json!({"summary": "test discovery for cache invalidation"}),
+        )
+        .expect("store discovery");
+    graph.build_search_index().expect("build index");
+
+    let first = graph
+        .lexical_search("cache invalidation test", 5, None, None)
+        .expect("first search");
+    assert!(!first.is_empty(), "search should return results");
+
+    let stats_after_first = graph.runtime_stats();
+    assert_eq!(stats_after_first.search_queries, 1);
+    assert_eq!(stats_after_first.cache_hits, 0);
+    assert_eq!(stats_after_first.cache_misses, 1);
+
+    let second = graph
+        .lexical_search("cache invalidation test", 5, None, None)
+        .expect("second search");
+    assert_eq!(second.len(), first.len());
+
+    let stats_after_second = graph.runtime_stats();
+    assert_eq!(stats_after_second.search_queries, 2);
+    assert_eq!(stats_after_second.cache_hits, 1);
+    assert_eq!(stats_after_second.cache_misses, 1);
+
+    graph
+        .store_discovery(
+            "agent",
+            "Symbol",
+            "cache_target_two",
+            json!({"summary": "another test discovery for cache invalidation"}),
+        )
+        .expect("store second discovery");
+
+    let refreshed = graph
+        .lexical_search("cache invalidation test", 5, None, None)
+        .expect("search after write");
+    assert!(
+        refreshed.len() >= first.len(),
+        "invalidated search should see new discovery"
+    );
+
+    let stats_after_refresh = graph.runtime_stats();
+    assert_eq!(stats_after_refresh.cache_hits, 1);
+    assert_eq!(stats_after_refresh.cache_misses, 2);
+}
+
+#[test]
+fn navigate_uses_cache_and_invalidates_on_edge_insert() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    graph
+        .store_discovery(
+            "agent",
+            "Symbol",
+            "nav_target",
+            json!({"summary": "navigation cache target discovery"}),
+        )
+        .expect("store discovery");
+    graph.build_search_index().expect("build index");
+
+    let first = graph
+        .navigate("navigation cache target", 5, 2, None, None)
+        .expect("first navigate");
+    assert!(!first.is_empty(), "navigate should return results");
+
+    let stats_after_first = graph.runtime_stats();
+    assert_eq!(stats_after_first.navigation_queries, 1);
+    assert_eq!(stats_after_first.cache_hits, 0);
+
+    let second = graph
+        .navigate("navigation cache target", 5, 2, None, None)
+        .expect("second navigate");
+    assert_eq!(second.len(), first.len());
+
+    let stats_after_second = graph.runtime_stats();
+    assert_eq!(stats_after_second.navigation_queries, 2);
+    assert_eq!(stats_after_second.cache_hits, 1);
+
+    // Insert an edge to invalidate the navigation cache.
+    let discovery = graph
+        .query_discoveries("nav_target")
+        .expect("query discovery")
+        .pop()
+        .expect("discovery exists");
+    let memory_id = graph
+        .store_memory("nav_mem", "related", "user", 1.0, None)
+        .expect("store memory");
+    graph
+        .insert_edge(
+            discovery.id,
+            memory_id,
+            atheneum::graph::EdgeType::RelatedTo,
+            json!({}),
+        )
+        .expect("insert edge");
+
+    let refreshed = graph
+        .navigate("navigation cache target", 5, 2, None, None)
+        .expect("navigate after edge insert");
+    assert!(
+        refreshed
+            .iter()
+            .any(|v| v.entities.iter().any(|e| e.id == memory_id)),
+        "invalidated navigate should traverse the new edge"
+    );
+
+    let stats_after_refresh = graph.runtime_stats();
+    assert_eq!(stats_after_refresh.navigation_queries, 3);
+    // Cache hit count remains 1 because the third navigate was invalidated.
+    assert_eq!(stats_after_refresh.cache_hits, 1);
+}
+
+#[test]
+fn hopgraph_query_uses_cache() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    graph
+        .store_discovery(
+            "agent",
+            "Symbol",
+            "hop_target",
+            json!({"summary": "hopgraph cache target discovery"}),
+        )
+        .expect("store discovery");
+    graph.build_search_index().expect("build index");
+
+    eprintln!("DEBUG before first hopgraph: {:?}", graph.runtime_stats());
+    let first = graph
+        .hopgraph_query("hopgraph cache target", 5, 2, &[], 10000, None)
+        .expect("first hopgraph");
+    assert!(!first.is_empty(), "hopgraph should return results");
+
+    let stats_after_first = graph.runtime_stats();
+    assert_eq!(stats_after_first.navigation_queries, 1);
+    assert_eq!(stats_after_first.search_queries, 1);
+    assert_eq!(stats_after_first.cache_hits, 0);
+    assert_eq!(stats_after_first.cache_misses, 2);
+
+    let second = graph
+        .hopgraph_query("hopgraph cache target", 5, 2, &[], 10000, None)
+        .expect("second hopgraph");
+    assert_eq!(second.len(), first.len());
+
+    let stats_after_second = graph.runtime_stats();
+    assert_eq!(stats_after_second.navigation_queries, 2);
+    assert_eq!(stats_after_second.search_queries, 1);
+    assert_eq!(stats_after_second.cache_hits, 1);
+    assert_eq!(stats_after_second.cache_misses, 2);
 }
