@@ -264,6 +264,28 @@ pub struct SearchResult {
     pub data: Value,
 }
 
+/// Result of entity disambiguation via vector similarity.
+///
+/// When resolving a name to an existing graph entity, this struct captures
+/// the best match (if any), its confidence score, and alternative candidates
+/// that fell below the confidence threshold but might still be relevant.
+#[derive(Debug, Clone)]
+pub struct DisambiguationResult {
+    /// The single best-matching entity above the confidence threshold, if any.
+    pub resolved: Option<SearchResult>,
+    /// All candidates ranked by score, including those below the threshold.
+    pub candidates: Vec<SearchResult>,
+    /// The minimum confidence score that was required for resolution.
+    pub min_confidence: f32,
+}
+
+impl DisambiguationResult {
+    /// Returns true if a single entity was resolved above the confidence threshold.
+    pub fn is_resolved(&self) -> bool {
+        self.resolved.is_some()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DiscoveryPreview {
     pub proposed_name: String,

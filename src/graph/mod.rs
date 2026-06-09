@@ -33,13 +33,13 @@ pub use planning::{KanbanStatus, KanbanUpdate};
 pub use types::ProvenanceData;
 pub use types::{
     ActionRecord, ActionTrace, AppliedKanbanUpdate, AtheneumError, BlockerType,
-    ClaudeTranscriptImportParams, ClaudeTranscriptImportSummary, CommitParams, DiscoveryPreview,
-    EdgeType, EndSessionParams, EntityType, FileAccessParams, FileWriteParams, FixChainParams,
-    GraphStats, HandoffPreview, MemoryPreview, NavigateQueryPlan, Neighbors, OntologyClassInfo,
-    OntologyPropertyInfo, PromptParams, RecordEventParams, RelationEndpoint, RelationHint,
-    RequirementStatus, SearchResult, SessionParams, SessionProgressParams, SessionSummary,
-    SubgraphView, TaskDetail, TestRunParams, ToolCallParams, ToolCallRecord, ToolCallTrace,
-    ONTOLOGY_CLASS_KIND, ONTOLOGY_PROPERTY_KIND,
+    ClaudeTranscriptImportParams, ClaudeTranscriptImportSummary, CommitParams,
+    DisambiguationResult, DiscoveryPreview, EdgeType, EndSessionParams, EntityType,
+    FileAccessParams, FileWriteParams, FixChainParams, GraphStats, HandoffPreview, MemoryPreview,
+    NavigateQueryPlan, Neighbors, OntologyClassInfo, OntologyPropertyInfo, PromptParams,
+    RecordEventParams, RelationEndpoint, RelationHint, RequirementStatus, SearchResult,
+    SessionParams, SessionProgressParams, SessionSummary, SubgraphView, TaskDetail, TestRunParams,
+    ToolCallParams, ToolCallRecord, ToolCallTrace, ONTOLOGY_CLASS_KIND, ONTOLOGY_PROPERTY_KIND,
 };
 pub use wiki::{
     content_hash, extract_kanban_updates, extract_wikilinks, parse_journal_sections,
