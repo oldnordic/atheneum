@@ -51,12 +51,22 @@ impl AtheneumGraph {
         let candidate_matches =
             self.merge_exact_match_candidates(candidate_matches, &exact_matches, k);
 
+        let disambiguation = self
+            .resolve(
+                target,
+                0.3,
+                project_id.as_deref(),
+                Some(EntityType::Discovery.as_str()),
+            )
+            .ok();
+
         Ok(DiscoveryPreview {
             proposed_name: format!("{}: {}", agent, target),
             proposed_data: metadata,
             content_hash,
             exact_matches,
             candidate_matches,
+            disambiguation,
         })
     }
 
@@ -274,5 +284,75 @@ impl AtheneumGraph {
             }
             Ok(discoveries)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_graph() -> AtheneumGraph {
+        AtheneumGraph::open_in_memory().unwrap()
+    }
+
+    fn make_graph_with_discovery() -> AtheneumGraph {
+        let graph = AtheneumGraph::open_in_memory().unwrap();
+        graph
+            .store_discovery_in_project(
+                "test-agent",
+                "bug_found",
+                "http_handler",
+                Some("test"),
+                serde_json::json!({"detail": "connection pool leak"}),
+            )
+            .unwrap();
+        graph
+    }
+
+    #[test]
+    fn preview_discovery_includes_disambiguation() {
+        let graph = make_graph_with_discovery();
+        let preview = graph
+            .preview_discovery(
+                "test-agent",
+                "bug_found",
+                "http_handler",
+                serde_json::json!({"detail": "connection pool leak"}),
+                5,
+                0.0,
+            )
+            .unwrap();
+        // Disambiguation should be populated since we have a matching entity
+        assert!(
+            preview.disambiguation.is_some(),
+            "preview should include disambiguation analysis"
+        );
+        let disamb = preview.disambiguation.unwrap();
+        assert!(
+            !disamb.candidates.is_empty(),
+            "disambiguation should have candidates"
+        );
+    }
+
+    #[test]
+    fn preview_discovery_no_match_still_has_disambiguation() {
+        let graph = make_graph();
+        let preview = graph
+            .preview_discovery(
+                "test-agent",
+                "bug_found",
+                "http_handler",
+                serde_json::json!({"detail": "something new"}),
+                5,
+                0.0,
+            )
+            .unwrap();
+        // Even with no entities, resolve() returns an empty DisambiguationResult
+        assert!(
+            preview.disambiguation.is_some(),
+            "preview should always include disambiguation (even if empty)"
+        );
+        let disamb = preview.disambiguation.unwrap();
+        assert!(!disamb.is_resolved(), "empty graph should not resolve");
     }
 }

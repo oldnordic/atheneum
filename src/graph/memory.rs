@@ -60,12 +60,22 @@ impl AtheneumGraph {
         let candidate_matches =
             self.merge_exact_match_candidates(candidate_matches, &exact_matches, k);
 
+        let disambiguation = self
+            .resolve(
+                &format!("{key} {content}"),
+                0.3,
+                project_id,
+                Some(EntityType::Memory.as_str()),
+            )
+            .ok();
+
         Ok(MemoryPreview {
             proposed_key: key.to_string(),
             proposed_data,
             content_hash,
             exact_matches,
             candidate_matches,
+            disambiguation,
         })
     }
 

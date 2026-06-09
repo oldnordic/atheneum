@@ -293,6 +293,9 @@ pub struct DiscoveryPreview {
     pub content_hash: String,
     pub exact_matches: Vec<GraphEntity>,
     pub candidate_matches: Vec<SearchResult>,
+    /// Vector-based disambiguation analysis using ATH-15 resolve.
+    /// Present when the preview can compute similarity against existing entities.
+    pub disambiguation: Option<DisambiguationResult>,
 }
 
 #[derive(Debug, Clone)]
@@ -302,6 +305,8 @@ pub struct MemoryPreview {
     pub content_hash: String,
     pub exact_matches: Vec<GraphEntity>,
     pub candidate_matches: Vec<SearchResult>,
+    /// Vector-based disambiguation analysis using ATH-15 resolve.
+    pub disambiguation: Option<DisambiguationResult>,
 }
 
 #[derive(Debug, Clone)]
@@ -311,6 +316,8 @@ pub struct HandoffPreview {
     pub content_hash: String,
     pub exact_matches: Vec<GraphEntity>,
     pub candidate_matches: Vec<SearchResult>,
+    /// Vector-based disambiguation analysis using ATH-15 resolve.
+    pub disambiguation: Option<DisambiguationResult>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
