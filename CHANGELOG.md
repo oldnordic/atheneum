@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] — 2026-06-08
+
+### Added
+
+- Paged query APIs for large read surfaces, keeping existing `Vec`-returning methods as backward-compatible caching wrappers:
+  - `AtheneumGraph::query_events_page(session_id, event_type, offset, limit)`
+  - `AtheneumGraph::query_sessions_page(project, parent_id, offset, limit)`
+  - `AtheneumGraph::list_memory_page(scope, project_id, offset, limit)`
+  - `AtheneumGraph::list_wiki_pages_page(project_id, offset, limit)`
+- CLI pagination flags `--offset N` and `--limit N` for `query-sessions`, `query-events`, `memory-list`, and `list-pages`.
+- `PartialEq` derive on `SessionSummary` so paginated results can be asserted in tests.
+
+### Changed
+
+- Paged variants issue SQL `LIMIT ? OFFSET ?` directly and are intentionally uncached to avoid cache-key explosion; the original `Vec`-returning APIs remain cached and delegate to the paged implementations with `offset=0`.
+
 ## [0.3.1] — 2026-06-07
 
 ### Added

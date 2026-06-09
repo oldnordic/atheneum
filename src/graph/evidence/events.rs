@@ -20,6 +20,60 @@ fn event_row_from_rusqlite(row: &rusqlite::Row<'_>) -> Result<serde_json::Value,
 }
 
 impl AtheneumGraph {
+    /// Query events with pagination.
+    ///
+    /// This is the primary implementation; `query_events` is a compatibility
+    /// wrapper that caches the first page.
+    pub fn query_events_page(
+        &self,
+        session_id: Option<&str>,
+        event_type: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<Value>> {
+        let sid = session_id.map(|s| s.to_string());
+        let et = event_type.map(|s| s.to_string());
+        let lim = limit as i64;
+        let off = offset as i64;
+
+        self.with_raw_connection(move |conn| {
+            let mut sql = String::from(
+                "SELECT event_id, event_type, entity_id, session_id, payload, timestamp
+                 FROM event_log
+                 WHERE 1=1",
+            );
+            if sid.is_some() {
+                sql.push_str(" AND session_id = ?");
+            }
+            if et.is_some() {
+                sql.push_str(" AND event_type = ?");
+            }
+            sql.push_str(" ORDER BY event_id DESC LIMIT ? OFFSET ?");
+
+            let mut stmt = conn.prepare_cached(&sql)?;
+            let rows = match (sid, et) {
+                (Some(s), Some(e)) => {
+                    stmt.query_map(rusqlite::params![s, e, lim, off], event_row_from_rusqlite)?
+                }
+                (Some(s), None) => {
+                    stmt.query_map(rusqlite::params![s, lim, off], event_row_from_rusqlite)?
+                }
+                (None, Some(e)) => {
+                    stmt.query_map(rusqlite::params![e, lim, off], event_row_from_rusqlite)?
+                }
+                (None, None) => {
+                    stmt.query_map(rusqlite::params![lim, off], event_row_from_rusqlite)?
+                }
+            };
+
+            let mut events = Vec::new();
+            for row in rows {
+                events.push(row?);
+            }
+            Ok(events)
+        })
+    }
+
     pub fn query_events(
         &self,
         session_id: Option<&str>,
@@ -38,44 +92,7 @@ impl AtheneumGraph {
             return Ok(events);
         }
 
-        let sid = session_id.map(|s| s.to_string());
-        let et = event_type.map(|s| s.to_string());
-        let lim = limit as i64;
-
-        let events = self.with_raw_connection(move |conn| {
-            let mut sql = String::from(
-                "SELECT event_id, event_type, entity_id, session_id, payload, timestamp
-                 FROM event_log
-                 WHERE 1=1",
-            );
-            if sid.is_some() {
-                sql.push_str(" AND session_id = ?");
-            }
-            if et.is_some() {
-                sql.push_str(" AND event_type = ?");
-            }
-            sql.push_str(" ORDER BY event_id DESC LIMIT ?");
-
-            let mut stmt = conn.prepare_cached(&sql)?;
-            let rows = match (sid, et) {
-                (Some(s), Some(e)) => {
-                    stmt.query_map(rusqlite::params![s, e, lim], event_row_from_rusqlite)?
-                }
-                (Some(s), None) => {
-                    stmt.query_map(rusqlite::params![s, lim], event_row_from_rusqlite)?
-                }
-                (None, Some(e)) => {
-                    stmt.query_map(rusqlite::params![e, lim], event_row_from_rusqlite)?
-                }
-                (None, None) => stmt.query_map(rusqlite::params![lim], event_row_from_rusqlite)?,
-            };
-
-            let mut events = Vec::new();
-            for row in rows {
-                events.push(row?);
-            }
-            Ok(events)
-        })?;
+        let events = self.query_events_page(session_id, event_type, 0, limit)?;
         self.runtime.cache_store(
             cache_key,
             CacheDomain::Events,
@@ -84,29 +101,22 @@ impl AtheneumGraph {
         Ok(events)
     }
 
-    /// Query recent sessions. If `project` is Some, filter to that project.
-    pub fn query_sessions(
+    /// Query recent sessions with pagination.
+    ///
+    /// This is the primary implementation; `query_sessions` is a compatibility
+    /// wrapper that caches the first page.
+    pub fn query_sessions_page(
         &self,
         project: Option<&str>,
-        last_n: i64,
         parent_id: Option<&str>,
+        offset: usize,
+        limit: i64,
     ) -> Result<Vec<SessionSummary>> {
-        self.runtime.record_session_query();
-        let cache_key = QueryCacheKey::QuerySessions {
-            project: project.map(str::to_string),
-            last_n,
-            parent_id: parent_id.map(str::to_string),
-        };
-        if let Some(QueryCacheValue::Sessions(sessions)) =
-            self.runtime.cache_get(&cache_key, CacheDomain::Sessions)
-        {
-            return Ok(sessions);
-        }
-
         let pid = parent_id.map(|s| s.to_string());
         let project = project.map(|s| s.to_string());
+        let off = offset as i64;
 
-        let sessions = self.with_raw_connection(move |conn| {
+        self.with_raw_connection(move |conn| {
             let mut sql = String::from(
                 "SELECT s.session_id, s.project, s.git_branch, s.trigger,
                         s.started_at, s.ended_at, s.exit_status,
@@ -134,7 +144,7 @@ impl AtheneumGraph {
             if pid.is_some() {
                 sql.push_str(" AND s.parent_session_id = ?");
             }
-            sql.push_str(" ORDER BY s.started_at DESC LIMIT ?");
+            sql.push_str(" ORDER BY s.started_at DESC LIMIT ? OFFSET ?");
 
             let mut stmt = conn.prepare_cached(&sql)?;
             let row_fn = |row: &rusqlite::Row<'_>| {
@@ -162,20 +172,42 @@ impl AtheneumGraph {
 
             let rows = match (&project, &pid) {
                 (Some(p), Some(parent)) => {
-                    stmt.query_map(rusqlite::params![p, parent, last_n], row_fn)?
+                    stmt.query_map(rusqlite::params![p, parent, limit, off], row_fn)?
                 }
-                (Some(p), None) => stmt.query_map(rusqlite::params![p, last_n], row_fn)?,
+                (Some(p), None) => stmt.query_map(rusqlite::params![p, limit, off], row_fn)?,
                 (None, Some(parent)) => {
-                    stmt.query_map(rusqlite::params![parent, last_n], row_fn)?
+                    stmt.query_map(rusqlite::params![parent, limit, off], row_fn)?
                 }
-                (None, None) => stmt.query_map(rusqlite::params![last_n], row_fn)?,
+                (None, None) => stmt.query_map(rusqlite::params![limit, off], row_fn)?,
             };
             let mut out = Vec::new();
             for row in rows {
                 out.push(row?);
             }
             Ok(out)
-        })?;
+        })
+    }
+
+    /// Query recent sessions. If `project` is Some, filter to that project.
+    pub fn query_sessions(
+        &self,
+        project: Option<&str>,
+        last_n: i64,
+        parent_id: Option<&str>,
+    ) -> Result<Vec<SessionSummary>> {
+        self.runtime.record_session_query();
+        let cache_key = QueryCacheKey::QuerySessions {
+            project: project.map(str::to_string),
+            last_n,
+            parent_id: parent_id.map(str::to_string),
+        };
+        if let Some(QueryCacheValue::Sessions(sessions)) =
+            self.runtime.cache_get(&cache_key, CacheDomain::Sessions)
+        {
+            return Ok(sessions);
+        }
+
+        let sessions = self.query_sessions_page(project, parent_id, 0, last_n)?;
         self.runtime.cache_store(
             cache_key,
             CacheDomain::Sessions,

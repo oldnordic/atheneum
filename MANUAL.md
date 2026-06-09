@@ -616,8 +616,8 @@ atheneum memory-store <db-path> <key> <content> [--scope S] [--confidence N] [--
 # Retrieve memory by key
 atheneum memory-get <db-path> <key> [--scope S] [--project P]
 
-# List all memories
-atheneum memory-list <db-path> [--scope S] [--project P]
+# List memories (paginated)
+atheneum memory-list <db-path> [--scope S] [--project P] [--offset N] [--limit N]
 ```
 
 Memories are upserted -- storing with the same key + scope + project updates the existing entry. Default scope is `user`, default confidence is `1.0`.
@@ -655,13 +655,13 @@ atheneum query-journal <db-path> <path>
 atheneum query-knowledge <db-path> <target> [--project P]
 
 # Session history
-atheneum query-sessions <db-path> [--project P] [--limit N]
+atheneum query-sessions <db-path> [--project P] [--offset N] [--limit N]
 
 # Event log
-atheneum query-events <db-path> [--session <id>] [--type <type>] [--limit N]
+atheneum query-events <db-path> [--session <id>] [--type <type>] [--offset N] [--limit N]
 
 # List wiki pages
-atheneum list-pages <db-path> [--project P]
+atheneum list-pages <db-path> [--project P] [--offset N] [--limit N]
 
 # Print a graph entity as JSON
 atheneum entity <db-path> <entity-id>

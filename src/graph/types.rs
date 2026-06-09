@@ -494,7 +494,7 @@ pub struct SessionParams {
 }
 
 /// Compact session summary for history display and handover queries.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
 pub struct SessionSummary {
     pub session_id: String,
     pub project: String,

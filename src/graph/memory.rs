@@ -327,6 +327,87 @@ impl AtheneumGraph {
         Ok(out)
     }
 
+    /// List memory entries for a scope with pagination.
+    ///
+    /// This is the primary implementation; `list_memory` is a compatibility
+    /// wrapper that caches the full result set.
+    pub fn list_memory_page(
+        &self,
+        scope: Option<&str>,
+        project_id: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<GraphEntity>> {
+        let lim = limit as i64;
+        let off = offset as i64;
+        super::with_graph_conn(&self.inner, |conn| {
+            let mut out = Vec::new();
+            match (scope, project_id) {
+                (Some(s), Some(pid)) => {
+                    let mut stmt = conn.prepare(
+                        "SELECT id, kind, name, file_path, data FROM graph_entities
+                         WHERE kind = ?1
+                           AND json_extract(data, '$.scope') = ?2
+                           AND json_extract(data, '$.project_id') = ?3
+                         LIMIT ?4 OFFSET ?5",
+                    )?;
+                    let rows = stmt.query_map(
+                        params![EntityType::Memory.as_str(), s, pid, lim, off],
+                        row_to_entity,
+                    )?;
+                    for row in rows {
+                        out.push(row?);
+                    }
+                }
+                (Some(s), None) => {
+                    let mut stmt = conn.prepare(
+                        "SELECT id, kind, name, file_path, data FROM graph_entities
+                         WHERE kind = ?1
+                           AND json_extract(data, '$.scope') = ?2
+                         LIMIT ?3 OFFSET ?4",
+                    )?;
+                    let rows = stmt.query_map(
+                        params![EntityType::Memory.as_str(), s, lim, off],
+                        row_to_entity,
+                    )?;
+                    for row in rows {
+                        out.push(row?);
+                    }
+                }
+                (None, Some(pid)) => {
+                    let mut stmt = conn.prepare(
+                        "SELECT id, kind, name, file_path, data FROM graph_entities
+                         WHERE kind = ?1
+                           AND json_extract(data, '$.project_id') = ?2
+                         LIMIT ?3 OFFSET ?4",
+                    )?;
+                    let rows = stmt.query_map(
+                        params![EntityType::Memory.as_str(), pid, lim, off],
+                        row_to_entity,
+                    )?;
+                    for row in rows {
+                        out.push(row?);
+                    }
+                }
+                (None, None) => {
+                    let mut stmt = conn.prepare(
+                        "SELECT id, kind, name, file_path, data FROM graph_entities
+                         WHERE kind = ?1
+                         LIMIT ?2 OFFSET ?3",
+                    )?;
+                    let rows = stmt.query_map(
+                        params![EntityType::Memory.as_str(), lim, off],
+                        row_to_entity,
+                    )?;
+                    for row in rows {
+                        out.push(row?);
+                    }
+                }
+            }
+            Ok(out)
+        })
+    }
+
     /// List all memory entries for a scope.
     pub fn list_memory(
         &self,
@@ -344,60 +425,7 @@ impl AtheneumGraph {
             return Ok(entries);
         }
 
-        let out = super::with_graph_conn(&self.inner, |conn| {
-            let mut out = Vec::new();
-            match (scope, project_id) {
-                (Some(s), Some(pid)) => {
-                    let mut stmt = conn.prepare(
-                        "SELECT id, kind, name, file_path, data FROM graph_entities
-                         WHERE kind = ?1
-                           AND json_extract(data, '$.scope') = ?2
-                           AND json_extract(data, '$.project_id') = ?3",
-                    )?;
-                    let rows = stmt
-                        .query_map(params![EntityType::Memory.as_str(), s, pid], row_to_entity)?;
-                    for row in rows {
-                        out.push(row?);
-                    }
-                }
-                (Some(s), None) => {
-                    let mut stmt = conn.prepare(
-                        "SELECT id, kind, name, file_path, data FROM graph_entities
-                         WHERE kind = ?1
-                           AND json_extract(data, '$.scope') = ?2",
-                    )?;
-                    let rows =
-                        stmt.query_map(params![EntityType::Memory.as_str(), s], row_to_entity)?;
-                    for row in rows {
-                        out.push(row?);
-                    }
-                }
-                (None, Some(pid)) => {
-                    let mut stmt = conn.prepare(
-                        "SELECT id, kind, name, file_path, data FROM graph_entities
-                         WHERE kind = ?1
-                           AND json_extract(data, '$.project_id') = ?2",
-                    )?;
-                    let rows =
-                        stmt.query_map(params![EntityType::Memory.as_str(), pid], row_to_entity)?;
-                    for row in rows {
-                        out.push(row?);
-                    }
-                }
-                (None, None) => {
-                    let mut stmt = conn.prepare(
-                        "SELECT id, kind, name, file_path, data FROM graph_entities
-                         WHERE kind = ?1",
-                    )?;
-                    let rows =
-                        stmt.query_map(params![EntityType::Memory.as_str()], row_to_entity)?;
-                    for row in rows {
-                        out.push(row?);
-                    }
-                }
-            }
-            Ok(out)
-        })?;
+        let out = self.list_memory_page(scope, project_id, 0, usize::MAX)?;
         self.runtime.cache_store(
             cache_key,
             CacheDomain::Memory,
