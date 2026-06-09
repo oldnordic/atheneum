@@ -51,12 +51,22 @@ impl AtheneumGraph {
         let candidate_matches =
             self.merge_exact_match_candidates(candidate_matches, &exact_matches, k);
 
+        let disambiguation = self
+            .resolve(
+                &format!("{from_agent} {to_agent}"),
+                0.3,
+                project_id,
+                Some(EntityType::Handoff.as_str()),
+            )
+            .ok();
+
         Ok(HandoffPreview {
             proposed_name,
             proposed_data,
             content_hash,
             exact_matches,
             candidate_matches,
+            disambiguation,
         })
     }
 
