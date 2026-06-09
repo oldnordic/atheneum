@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MANUAL.md` maintainer checklist covering local gates plus the rule that public API / CLI changes must update the manual and changelog in the same change.
 - `AtheneumGraph::runtime_stats()` — exposes process-local cache/query/write counters so callers can inspect hot read paths and invalidation activity.
 - Shared graph hashing helper for deterministic SHA-256 and canonical JSON hashing across Atheneum graph modules.
+- `content_hash_excluding(value, volatile_keys)` — unified content hashing that strips volatile fields before hashing, replacing three module-local `*_content_hash` functions (discovery, memory, handoff).
 - `AtheneumGraph::preview_entity_candidates()` — a no-mutation candidate-preview API for fuzzy entity lookup over the existing search index.
 - `AtheneumGraph::preview_discovery()`, `AtheneumGraph::preview_memory()`, and `AtheneumGraph::preview_handoff()` — read-only proposal APIs that return normalized payloads, deterministic content hashes, and likely existing matches before commit.
 - `AtheneumGraph::preview_navigate_query()` — staged validation/repair for navigation queries, including normalized query text, canonical entity-kind resolution, and explicit warnings/errors before execution.
