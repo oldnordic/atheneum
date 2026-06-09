@@ -108,6 +108,12 @@ pub struct RuntimeStats {
     pub wiki_writes: u64,
     pub search_queries: u64,
     pub navigation_queries: u64,
+    pub hnsw_hits: u64,
+    pub hnsw_fallback_scans: u64,
+    pub memory_row_repairs: u64,
+    pub dream_runs: u64,
+    pub wiki_dream_runs: u64,
+    pub consolidate_runs: u64,
 }
 
 pub(crate) struct GraphRuntime {
@@ -133,6 +139,12 @@ pub(crate) struct GraphRuntime {
     wiki_writes: AtomicU64,
     search_queries: AtomicU64,
     navigation_queries: AtomicU64,
+    hnsw_hits: AtomicU64,
+    hnsw_fallback_scans: AtomicU64,
+    memory_row_repairs: AtomicU64,
+    dream_runs: AtomicU64,
+    wiki_dream_runs: AtomicU64,
+    consolidate_runs: AtomicU64,
 }
 
 impl Default for GraphRuntime {
@@ -160,6 +172,12 @@ impl Default for GraphRuntime {
             wiki_writes: AtomicU64::new(0),
             search_queries: AtomicU64::new(0),
             navigation_queries: AtomicU64::new(0),
+            hnsw_hits: AtomicU64::new(0),
+            hnsw_fallback_scans: AtomicU64::new(0),
+            memory_row_repairs: AtomicU64::new(0),
+            dream_runs: AtomicU64::new(0),
+            wiki_dream_runs: AtomicU64::new(0),
+            consolidate_runs: AtomicU64::new(0),
         }
     }
 }
@@ -274,6 +292,30 @@ impl GraphRuntime {
         self.navigation_queries.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn record_hnsw_hit(&self) {
+        self.hnsw_hits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_hnsw_fallback_scan(&self) {
+        self.hnsw_fallback_scans.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_memory_row_repair(&self) {
+        self.memory_row_repairs.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_dream_run(&self) {
+        self.dream_runs.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_wiki_dream_run(&self) {
+        self.wiki_dream_runs.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_consolidate_run(&self) {
+        self.consolidate_runs.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub(crate) fn snapshot(&self) -> RuntimeStats {
         RuntimeStats {
             cache_hits: self.cache_hits.load(Ordering::Relaxed),
@@ -290,6 +332,12 @@ impl GraphRuntime {
             wiki_writes: self.wiki_writes.load(Ordering::Relaxed),
             search_queries: self.search_queries.load(Ordering::Relaxed),
             navigation_queries: self.navigation_queries.load(Ordering::Relaxed),
+            hnsw_hits: self.hnsw_hits.load(Ordering::Relaxed),
+            hnsw_fallback_scans: self.hnsw_fallback_scans.load(Ordering::Relaxed),
+            memory_row_repairs: self.memory_row_repairs.load(Ordering::Relaxed),
+            dream_runs: self.dream_runs.load(Ordering::Relaxed),
+            wiki_dream_runs: self.wiki_dream_runs.load(Ordering::Relaxed),
+            consolidate_runs: self.consolidate_runs.load(Ordering::Relaxed),
         }
     }
 

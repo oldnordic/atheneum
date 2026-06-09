@@ -346,8 +346,13 @@ impl AtheneumGraph {
 
         let results = hnsw_results.unwrap_or_default();
         let results = if results.len() >= k {
+            self.runtime.record_hnsw_hit();
             results
         } else {
+            if !results.is_empty() {
+                self.runtime.record_hnsw_hit();
+            }
+            self.runtime.record_hnsw_fallback_scan();
             self.fallback_lexical_search(query, k, project_id, entity_kind, results)?
         };
         self.runtime.cache_store(

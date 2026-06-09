@@ -326,11 +326,13 @@ fn run() -> anyhow::Result<()> {
             let db_path = PathBuf::from(&args[2]);
             let graph = AtheneumGraph::open(&db_path)?;
             let stats = graph.graph_stats()?;
+            let runtime = graph.runtime_stats();
             print_json(json!({
                 "total_entities": stats.total_entities,
                 "total_edges": stats.total_edges,
                 "entity_counts": stats.entity_counts,
                 "edge_counts": stats.edge_counts,
+                "runtime": runtime,
             }))?;
         }
         "reindex" => {
@@ -830,7 +832,7 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     )?;
     writeln!(
         writer,
-        "  graph-stats <db-path>                   Graph topology counts"
+        "  graph-stats <db-path>                   Graph topology and runtime counters"
     )?;
     writeln!(writer)?;
     writeln!(writer, "MAINTENANCE:")?;

@@ -178,6 +178,7 @@ impl AtheneumGraph {
         project_id: Option<&str>,
         config: &DreamConfig,
     ) -> Result<DreamReport> {
+        self.runtime.record_dream_run();
         let started_at = Utc::now().to_rfc3339();
         let mut findings: Vec<DreamFinding> = Vec::new();
 
@@ -380,6 +381,7 @@ impl AtheneumGraph {
         project_id: Option<&str>,
         config: &DreamConfig,
     ) -> Result<DreamReport> {
+        self.runtime.record_wiki_dream_run();
         let started_at = Utc::now().to_rfc3339();
         let mut findings: Vec<DreamFinding> = Vec::new();
 

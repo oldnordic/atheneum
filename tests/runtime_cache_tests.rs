@@ -335,3 +335,106 @@ fn hopgraph_query_uses_cache() {
     assert_eq!(stats_after_second.cache_hits, 1);
     assert_eq!(stats_after_second.cache_misses, 2);
 }
+
+#[test]
+fn hnsw_counters_track_hits_and_fallbacks() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    for i in 0..3 {
+        graph
+            .store_discovery(
+                "agent",
+                "Symbol",
+                &format!("sym_{}", i),
+                json!({"summary": format!("test discovery number {}", i)}),
+            )
+            .expect("store");
+    }
+    graph.build_search_index().expect("build index");
+
+    // A broad query that matches HNSW fully with k=1 should be a hit.
+    let _ = graph
+        .lexical_search("test discovery", 1, None, None)
+        .expect("search hit");
+    let stats = graph.runtime_stats();
+    assert_eq!(stats.search_queries, 1);
+    assert!(stats.hnsw_hits >= 1, "HNSW should record a hit");
+
+    // A query with k larger than the entity count forces fallback to token scan.
+    let _ = graph
+        .lexical_search("xyz_unlikely_fallback_query", 20, None, None)
+        .expect("search fallback");
+    let stats = graph.runtime_stats();
+    assert_eq!(stats.search_queries, 2);
+    assert!(
+        stats.hnsw_fallback_scans >= 1,
+        "fallback scan should be recorded"
+    );
+}
+
+#[test]
+fn memory_row_repair_counter_increments_on_missing_sql_row() {
+    let db_file = tempfile::NamedTempFile::new().expect("tempfile");
+    let db_path = db_file.path().to_path_buf();
+    let graph = AtheneumGraph::open(&db_path).expect("open");
+
+    let _id = graph
+        .store_memory("timezone", "UTC+0", "user", 1.0, None)
+        .expect("store initial");
+
+    let conn = rusqlite::Connection::open(&db_path).expect("open sqlite");
+    conn.execute(
+        "DELETE FROM memory_entries WHERE key = ?1",
+        rusqlite::params!["timezone"],
+    )
+    .expect("delete memory row");
+
+    assert_eq!(
+        graph.runtime_stats().memory_row_repairs,
+        0,
+        "no repair before update"
+    );
+
+    graph
+        .store_memory("timezone", "UTC+1", "user", 0.9, None)
+        .expect("store update triggers repair");
+
+    assert_eq!(
+        graph.runtime_stats().memory_row_repairs,
+        1,
+        "missing SQL row should count as one repair"
+    );
+}
+
+#[test]
+fn dream_and_consolidate_counters_increment() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    graph
+        .store_memory("a", "alpha", "user", 1.0, None)
+        .expect("store a");
+    graph
+        .store_memory("b", "beta", "user", 1.0, None)
+        .expect("store b");
+
+    let _ = graph
+        .dream_pass(
+            atheneum::graph::DreamMode::DryRun,
+            Some("user"),
+            None,
+            &atheneum::graph::DreamConfig::default(),
+        )
+        .expect("dream");
+    assert_eq!(graph.runtime_stats().dream_runs, 1);
+
+    let _ = graph
+        .wiki_dream_pass(
+            atheneum::graph::DreamMode::DryRun,
+            None,
+            &atheneum::graph::DreamConfig::default(),
+        )
+        .expect("wiki dream");
+    assert_eq!(graph.runtime_stats().wiki_dream_runs, 1);
+
+    // consolidation_pass over an empty discovery set still counts as a run.
+    let _ = graph.consolidation_pass(None).expect("consolidation");
+    assert_eq!(graph.runtime_stats().consolidate_runs, 1);
+}

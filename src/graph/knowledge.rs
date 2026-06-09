@@ -107,6 +107,7 @@ impl AtheneumGraph {
     }
 
     pub fn consolidation_pass(&self, project_id: Option<&str>) -> Result<Vec<(String, i64)>> {
+        self.runtime.record_consolidate_run();
         let targets: Vec<String> = self.with_raw_connection(|conn| {
             let sql = if project_id.is_some() {
                 "SELECT DISTINCT json_extract(data, '$.target') FROM graph_entities
