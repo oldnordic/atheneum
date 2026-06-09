@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AtheneumGraph::preview_discovery()`, `AtheneumGraph::preview_memory()`, and `AtheneumGraph::preview_handoff()` — read-only proposal APIs that return normalized payloads, deterministic content hashes, likely existing matches, and vector-based disambiguation analysis before commit.
 - `AtheneumGraph::preview_navigate_query()` — staged validation/repair for navigation queries, including normalized query text, canonical entity-kind resolution, and explicit warnings/errors before execution.
 - `ProvenanceData` — typed struct for edge provenance metadata (method, actor, created_at, extraction_mode, source_text). Replaces all 20 ad-hoc JSON provenance sites. Backward-compatible deserialization. Builder pattern. Public API export (ATH-19).
+- `EntityType::Concept` — new entity type for knowledge graph concepts extracted from prose.
+- `AtheneumGraph::upsert_concept(name, data)` — name-deduped Concept entity creation; returns existing ID if one matches.
+- `extract_triples(text, config)` — ollama LLM-powered extraction of (subject, predicate, object) triples from prose text (neural-embed feature).
+- `ingest_triples(graph, result, project_id)` — upserts Concept entities and RelatedTo edges with ai_triple provenance for each extracted triple.
+- `ProvenanceData::with_actor(actor)` — builder method to set the provenance actor field.
 
 ### Changed
 
