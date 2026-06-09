@@ -8,6 +8,7 @@ use std::collections::{HashSet, VecDeque};
 use anyhow::Result;
 use sqlitegraph::{GraphEdge, GraphEntity};
 
+use super::cache::{CacheDomain, QueryCacheKey, QueryCacheValue};
 use super::{
     AtheneumGraph, EdgeType, EntityType, GraphStats, NavigateQueryPlan, QueryIntent,
     ResolvedEntity, SubgraphView,
@@ -428,6 +429,20 @@ impl AtheneumGraph {
         project_id: Option<&str>,
         entity_kind: Option<&str>,
     ) -> Result<Vec<SubgraphView>> {
+        self.runtime.record_navigation_query();
+        let cache_key = QueryCacheKey::Navigate {
+            query: query.to_string(),
+            k,
+            depth,
+            project_id: project_id.map(str::to_string),
+            entity_kind: entity_kind.map(str::to_string),
+        };
+        if let Some(QueryCacheValue::SubgraphViews(views)) =
+            self.runtime.cache_get(&cache_key, CacheDomain::Navigation)
+        {
+            return Ok(views);
+        }
+
         let plan = self.preview_navigate_query(query, k, depth, project_id, entity_kind)?;
         if !plan.executable {
             anyhow::bail!(plan.errors.join("; "));
@@ -448,6 +463,11 @@ impl AtheneumGraph {
             let sg = self.get_subgraph_scoped(hit.id, depth, project_id)?;
             views.push(sg);
         }
+        self.runtime.cache_store(
+            cache_key,
+            CacheDomain::Navigation,
+            QueryCacheValue::SubgraphViews(views.clone()),
+        );
         Ok(views)
     }
 
@@ -460,6 +480,26 @@ impl AtheneumGraph {
         max_tokens: usize,
         project_id: Option<&str>,
     ) -> Result<Vec<SubgraphView>> {
+        self.runtime.record_navigation_query();
+        let allowed_types_key = allowed_types
+            .iter()
+            .map(|t| t.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        let cache_key = QueryCacheKey::Hopgraph {
+            query: query.to_string(),
+            k,
+            depth,
+            allowed_types_key,
+            max_tokens,
+            project_id: project_id.map(str::to_string),
+        };
+        if let Some(QueryCacheValue::SubgraphViews(views)) =
+            self.runtime.cache_get(&cache_key, CacheDomain::Navigation)
+        {
+            return Ok(views);
+        }
+
         let hits = self.lexical_search(query, k, project_id, None)?;
         if hits.is_empty() {
             return Ok(Vec::new());
@@ -491,7 +531,11 @@ impl AtheneumGraph {
                 break;
             }
         }
-
+        self.runtime.cache_store(
+            cache_key,
+            CacheDomain::Navigation,
+            QueryCacheValue::SubgraphViews(views.clone()),
+        );
         Ok(views)
     }
 

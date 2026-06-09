@@ -389,7 +389,9 @@ impl AtheneumGraph {
             edge_type: edge_type_str.to_string(),
             data,
         };
-        self.inner.insert_edge(&edge).map_err(Into::into)
+        let edge_id = self.inner.insert_edge(&edge)?;
+        self.runtime.bump_navigation_generation();
+        Ok(edge_id)
     }
 
     pub fn events_performed_by(&self, agent_id: i64) -> Result<Vec<GraphEntity>> {

@@ -4,6 +4,7 @@ use sqlitegraph::hnsw::{DistanceMetric, HnswConfigBuilder};
 use sqlitegraph::GraphEntity;
 use std::collections::HashSet;
 
+use super::cache::{CacheDomain, QueryCacheKey, QueryCacheValue};
 use super::{AtheneumGraph, SearchResult};
 
 const SEARCH_INDEX_NAME: &str = "discoveries";
@@ -298,6 +299,19 @@ impl AtheneumGraph {
         project_id: Option<&str>,
         entity_kind: Option<&str>,
     ) -> Result<Vec<SearchResult>> {
+        self.runtime.record_search_query();
+        let cache_key = QueryCacheKey::LexicalSearch {
+            query: query.to_string(),
+            k,
+            project_id: project_id.map(str::to_string),
+            entity_kind: entity_kind.map(str::to_string),
+        };
+        if let Some(QueryCacheValue::SearchResults(results)) =
+            self.runtime.cache_get(&cache_key, CacheDomain::Search)
+        {
+            return Ok(results);
+        }
+
         let query_vec = self.embedder.embed(query)?;
         let hnsw_results = match self.ensure_search_index() {
             Ok(()) => match self.try_hnsw_search(&query_vec, k, project_id, entity_kind) {
@@ -331,11 +345,17 @@ impl AtheneumGraph {
         };
 
         let results = hnsw_results.unwrap_or_default();
-        if results.len() >= k {
-            return Ok(results);
-        }
-
-        self.fallback_lexical_search(query, k, project_id, entity_kind, results)
+        let results = if results.len() >= k {
+            results
+        } else {
+            self.fallback_lexical_search(query, k, project_id, entity_kind, results)?
+        };
+        self.runtime.cache_store(
+            cache_key,
+            CacheDomain::Search,
+            QueryCacheValue::SearchResults(results.clone()),
+        );
+        Ok(results)
     }
 
     /// Return ranked existing entities for a fuzzy identifier without mutating the graph.

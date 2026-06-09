@@ -19,6 +19,8 @@ pub(crate) enum CacheDomain {
     Events,
     Wiki,
     Knowledge,
+    Search,
+    Navigation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -49,6 +51,27 @@ pub(crate) enum QueryCacheKey {
         target: String,
         project_id: Option<String>,
     },
+    LexicalSearch {
+        query: String,
+        k: usize,
+        project_id: Option<String>,
+        entity_kind: Option<String>,
+    },
+    Navigate {
+        query: String,
+        k: usize,
+        depth: u32,
+        project_id: Option<String>,
+        entity_kind: Option<String>,
+    },
+    Hopgraph {
+        query: String,
+        k: usize,
+        depth: u32,
+        allowed_types_key: String,
+        max_tokens: usize,
+        project_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +81,8 @@ pub(crate) enum QueryCacheValue {
     Events(Vec<Value>),
     WikiPages(Vec<WikiPage>),
     Json(Value),
+    SearchResults(Vec<super::SearchResult>),
+    SubgraphViews(Vec<super::SubgraphView>),
 }
 
 struct CacheEntry {
@@ -81,6 +106,8 @@ pub struct RuntimeStats {
     pub knowledge_writes: u64,
     pub wiki_queries: u64,
     pub wiki_writes: u64,
+    pub search_queries: u64,
+    pub navigation_queries: u64,
 }
 
 pub(crate) struct GraphRuntime {
@@ -90,6 +117,8 @@ pub(crate) struct GraphRuntime {
     event_generation: AtomicU64,
     wiki_generation: AtomicU64,
     knowledge_generation: AtomicU64,
+    search_generation: AtomicU64,
+    navigation_generation: AtomicU64,
     cache_hits: AtomicU64,
     cache_misses: AtomicU64,
     memory_queries: AtomicU64,
@@ -102,6 +131,8 @@ pub(crate) struct GraphRuntime {
     knowledge_writes: AtomicU64,
     wiki_queries: AtomicU64,
     wiki_writes: AtomicU64,
+    search_queries: AtomicU64,
+    navigation_queries: AtomicU64,
 }
 
 impl Default for GraphRuntime {
@@ -113,6 +144,8 @@ impl Default for GraphRuntime {
             event_generation: AtomicU64::new(0),
             wiki_generation: AtomicU64::new(0),
             knowledge_generation: AtomicU64::new(0),
+            search_generation: AtomicU64::new(0),
+            navigation_generation: AtomicU64::new(0),
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
             memory_queries: AtomicU64::new(0),
@@ -125,6 +158,8 @@ impl Default for GraphRuntime {
             knowledge_writes: AtomicU64::new(0),
             wiki_queries: AtomicU64::new(0),
             wiki_writes: AtomicU64::new(0),
+            search_queries: AtomicU64::new(0),
+            navigation_queries: AtomicU64::new(0),
         }
     }
 }
@@ -182,6 +217,13 @@ impl GraphRuntime {
 
     pub(crate) fn bump_generation(&self, domain: CacheDomain) {
         self.generation_cell(domain).fetch_add(1, Ordering::Relaxed);
+        // Search and navigation caches depend on all entity domains.
+        self.search_generation.fetch_add(1, Ordering::Relaxed);
+        self.navigation_generation.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn bump_navigation_generation(&self) {
+        self.navigation_generation.fetch_add(1, Ordering::Relaxed);
     }
 
     pub(crate) fn record_memory_query(&self) {
@@ -224,6 +266,14 @@ impl GraphRuntime {
         self.wiki_writes.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn record_search_query(&self) {
+        self.search_queries.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_navigation_query(&self) {
+        self.navigation_queries.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub(crate) fn snapshot(&self) -> RuntimeStats {
         RuntimeStats {
             cache_hits: self.cache_hits.load(Ordering::Relaxed),
@@ -238,6 +288,8 @@ impl GraphRuntime {
             knowledge_writes: self.knowledge_writes.load(Ordering::Relaxed),
             wiki_queries: self.wiki_queries.load(Ordering::Relaxed),
             wiki_writes: self.wiki_writes.load(Ordering::Relaxed),
+            search_queries: self.search_queries.load(Ordering::Relaxed),
+            navigation_queries: self.navigation_queries.load(Ordering::Relaxed),
         }
     }
 
@@ -252,6 +304,8 @@ impl GraphRuntime {
             CacheDomain::Events => &self.event_generation,
             CacheDomain::Wiki => &self.wiki_generation,
             CacheDomain::Knowledge => &self.knowledge_generation,
+            CacheDomain::Search => &self.search_generation,
+            CacheDomain::Navigation => &self.navigation_generation,
         }
     }
 }
