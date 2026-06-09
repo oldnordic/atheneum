@@ -7,6 +7,8 @@
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "neural-embed")]
+use serde_json::Value;
 
 use super::{AtheneumGraph, EdgeType, ProvenanceData};
 
@@ -85,7 +87,7 @@ pub fn extract_triples(text: &str, config: &ExtractionConfig) -> Result<Extracti
         serde_json::from_str(raw_response)?
     } else {
         let wrapped: Value = serde_json::from_str(raw_response)?;
-        if let Some(arr) = wrapped.as_array() {
+        if wrapped.is_array() {
             serde_json::from_value(wrapped)?
         } else {
             // Try common wrapper keys
