@@ -616,7 +616,7 @@ atheneum memory-store <db-path> <key> <content> [--scope S] [--confidence N] [--
 # Retrieve memory by key
 atheneum memory-get <db-path> <key> [--scope S] [--project P]
 
-# List memories (paginated)
+# List memories (paginated; default limit 1000)
 atheneum memory-list <db-path> [--scope S] [--project P] [--offset N] [--limit N]
 ```
 
@@ -660,7 +660,7 @@ atheneum query-sessions <db-path> [--project P] [--offset N] [--limit N]
 # Event log
 atheneum query-events <db-path> [--session <id>] [--type <type>] [--offset N] [--limit N]
 
-# List wiki pages
+# List wiki pages (default limit 1000)
 atheneum list-pages <db-path> [--project P] [--offset N] [--limit N]
 
 # Print a graph entity as JSON

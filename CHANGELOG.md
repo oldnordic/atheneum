@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Paged variants issue SQL `LIMIT ? OFFSET ?` directly and are intentionally uncached to avoid cache-key explosion; the original `Vec`-returning APIs remain cached and delegate to the paged implementations with `offset=0`.
+- CLI `memory-list` and `list-pages` now default to `--limit 1000` (was unbounded) to prevent context bloat on large databases. Explicit `--limit` overrides the default.
 
 ## [0.3.1] — 2026-06-07
 

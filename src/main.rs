@@ -562,7 +562,7 @@ fn run() -> anyhow::Result<()> {
             let db_path = PathBuf::from(&args[2]);
             let opts = parse_options(&args[3..])?;
             let offset = parse_usize_option(opts.offset.as_deref(), "offset")?.unwrap_or(0);
-            let limit = parse_usize_option(opts.limit.as_deref(), "limit")?.unwrap_or(usize::MAX);
+            let limit = parse_usize_option(opts.limit.as_deref(), "limit")?.unwrap_or(1000);
             let graph = AtheneumGraph::open(&db_path)?;
             let pages = graph.list_wiki_pages_page(opts.project.as_deref(), offset, limit)?;
             print_json(json!({
@@ -655,7 +655,7 @@ fn run() -> anyhow::Result<()> {
             let db_path = PathBuf::from(&args[2]);
             let opts = parse_options(&args[3..])?;
             let offset = parse_usize_option(opts.offset.as_deref(), "offset")?.unwrap_or(0);
-            let limit = parse_usize_option(opts.limit.as_deref(), "limit")?.unwrap_or(usize::MAX);
+            let limit = parse_usize_option(opts.limit.as_deref(), "limit")?.unwrap_or(1000);
             let graph = AtheneumGraph::open(&db_path)?;
             let items = graph.list_memory_page(
                 opts.scope.as_deref(),
