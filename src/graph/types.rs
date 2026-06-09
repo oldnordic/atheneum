@@ -258,7 +258,7 @@ pub const ONTOLOGY_CLASS_KIND: &str = "OntologyClass";
 
 pub const ONTOLOGY_PROPERTY_KIND: &str = "OntologyProperty";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SearchResult {
     pub id: i64,
     pub name: String,
@@ -323,16 +323,83 @@ pub struct HandoffPreview {
     pub disambiguation: Option<DisambiguationResult>,
 }
 
+/// Classified intent of a navigation query.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub enum QueryIntent {
+    /// Find entities matching a name/description.
+    Search,
+    /// Explore the neighborhood around specific entities.
+    Navigate,
+    /// Find paths between entities.
+    Path,
+    /// Ambiguous or unclear intent.
+    Unknown,
+}
+
+impl QueryIntent {
+    /// Classify a query string into a likely intent.
+    pub fn classify(query: &str) -> Self {
+        let lower = query.to_lowercase();
+        let words: Vec<&str> = lower.split_whitespace().collect();
+
+        // Path-finding patterns
+        if words.contains(&"path")
+            || words.contains(&"between")
+            || words.contains(&"from") && words.contains(&"to")
+        {
+            return QueryIntent::Path;
+        }
+
+        // Navigation patterns
+        if words.contains(&"neighbors")
+            || words.contains(&"neighbours")
+            || words.contains(&"connections")
+            || words.contains(&"edges")
+            || words.contains(&"links")
+            || words.contains(&"around")
+            || words.contains(&"explore")
+        {
+            return QueryIntent::Navigate;
+        }
+
+        // Search patterns (default for most queries)
+        if words.contains(&"find")
+            || words.contains(&"search")
+            || words.contains(&"where")
+            || words.contains(&"what")
+            || words.contains(&"who")
+            || words.contains(&"list")
+            || words.contains(&"show")
+        {
+            return QueryIntent::Search;
+        }
+
+        QueryIntent::Unknown
+    }
+}
+
+/// A resolved entity reference from a query term.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ResolvedEntity {
+    pub query_term: String,
+    pub entity_id: Option<i64>,
+    pub entity_name: Option<String>,
+    pub confidence: f32,
+    pub alternatives: Vec<SearchResult>,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct NavigateQueryPlan {
     pub original_query: String,
     pub normalized_query: String,
+    pub intent: QueryIntent,
     pub k: usize,
     pub depth: u32,
     pub project_id: Option<String>,
     pub requested_kind: Option<String>,
     pub resolved_kind: Option<String>,
     pub kind_repaired: bool,
+    pub resolved_entities: Vec<ResolvedEntity>,
     pub executable: bool,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,

@@ -8,7 +8,10 @@ use std::collections::{HashSet, VecDeque};
 use anyhow::Result;
 use sqlitegraph::{GraphEdge, GraphEntity};
 
-use super::{AtheneumGraph, EdgeType, EntityType, GraphStats, NavigateQueryPlan, SubgraphView};
+use super::{
+    AtheneumGraph, EdgeType, EntityType, GraphStats, NavigateQueryPlan, QueryIntent,
+    ResolvedEntity, SubgraphView,
+};
 
 const CHARS_PER_TOKEN: usize = 4;
 
@@ -137,8 +140,58 @@ impl AtheneumGraph {
             }
         }
 
+        // Entity resolution: try to resolve query terms to graph entities
+        let mut resolved_entities = Vec::new();
+        if !normalized_query.is_empty() {
+            let terms: Vec<&str> = normalized_query
+                .split_whitespace()
+                .filter(|w| w.len() > 2) // skip short words
+                .collect();
+
+            for term in &terms {
+                let disambiguation = self.resolve(term, 0.3, project_id, resolved_kind.as_deref());
+                match disambiguation {
+                    Ok(result) => {
+                        let (entity_id, entity_name, confidence, alternatives) =
+                            if let Some(resolved) = &result.resolved {
+                                (
+                                    Some(resolved.id),
+                                    Some(resolved.name.clone()),
+                                    resolved.score,
+                                    result.candidates,
+                                )
+                            } else if !result.candidates.is_empty() {
+                                let top = &result.candidates[0];
+                                (None, Some(top.name.clone()), top.score, result.candidates)
+                            } else {
+                                (None, None, 0.0, vec![])
+                            };
+
+                        if entity_name.is_some() || !alternatives.is_empty() {
+                            resolved_entities.push(ResolvedEntity {
+                                query_term: term.to_string(),
+                                entity_id,
+                                entity_name,
+                                confidence,
+                                alternatives,
+                            });
+                        }
+                    }
+                    Err(_) => {
+                        // Resolution failed silently -- not an error for preview
+                    }
+                }
+            }
+
+            // Add warning if no entities could be resolved
+            if resolved_entities.is_empty() && !terms.is_empty() {
+                warnings.push("no query terms matched any graph entities".to_string());
+            }
+        }
+
         Ok(NavigateQueryPlan {
             original_query: query.to_string(),
+            intent: QueryIntent::classify(&normalized_query),
             normalized_query,
             k,
             depth,
@@ -146,6 +199,7 @@ impl AtheneumGraph {
             requested_kind,
             resolved_kind,
             kind_repaired,
+            resolved_entities,
             executable: errors.is_empty(),
             warnings,
             errors,
@@ -454,5 +508,134 @@ impl AtheneumGraph {
             entity_counts,
             edge_counts,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_graph() -> AtheneumGraph {
+        AtheneumGraph::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn intent_classify_search() {
+        assert_eq!(
+            QueryIntent::classify("find entities related to rust"),
+            QueryIntent::Search
+        );
+        assert_eq!(
+            QueryIntent::classify("search for memory"),
+            QueryIntent::Search
+        );
+        assert_eq!(
+            QueryIntent::classify("what is ownership"),
+            QueryIntent::Search
+        );
+    }
+
+    #[test]
+    fn intent_classify_navigate() {
+        assert_eq!(
+            QueryIntent::classify("neighbors of rust-ownership"),
+            QueryIntent::Navigate
+        );
+        assert_eq!(
+            QueryIntent::classify("explore connections around lending"),
+            QueryIntent::Navigate
+        );
+        assert_eq!(
+            QueryIntent::classify("edges from concept"),
+            QueryIntent::Navigate
+        );
+    }
+
+    #[test]
+    fn intent_classify_path() {
+        assert_eq!(
+            QueryIntent::classify("path from ownership to borrowing"),
+            QueryIntent::Path
+        );
+        assert_eq!(
+            QueryIntent::classify("how to get between concepts"),
+            QueryIntent::Path
+        );
+    }
+
+    #[test]
+    fn intent_classify_unknown() {
+        assert_eq!(QueryIntent::classify("rust"), QueryIntent::Unknown);
+        assert_eq!(
+            QueryIntent::classify("the quick brown fox"),
+            QueryIntent::Unknown
+        );
+    }
+
+    #[test]
+    fn preview_plan_classifies_intent() {
+        let graph = make_graph();
+        let plan = graph
+            .preview_navigate_query("find rust concepts", 5, 2, None, None)
+            .unwrap();
+        assert_eq!(plan.intent, QueryIntent::Search);
+        assert!(plan.executable);
+    }
+
+    #[test]
+    fn preview_plan_resolves_entities() {
+        let graph = make_graph();
+        // Seed an entity to resolve against
+        graph
+            .upsert_concept(
+                "rust-ownership",
+                &serde_json::json!({"topic": "memory safety"}),
+            )
+            .unwrap();
+
+        let plan = graph
+            .preview_navigate_query("rust-ownership", 5, 2, None, None)
+            .unwrap();
+        // Should have resolved at least one entity
+        assert!(
+            !plan.resolved_entities.is_empty(),
+            "expected resolved entities for 'rust-ownership'"
+        );
+        let resolved = &plan.resolved_entities[0];
+        assert!(
+            resolved.confidence > 0.0,
+            "expected positive confidence, got {}",
+            resolved.confidence
+        );
+    }
+
+    #[test]
+    fn preview_plan_warns_no_match() {
+        let graph = make_graph();
+        // Empty graph -- nothing to resolve
+        let plan = graph
+            .preview_navigate_query("nonexistent_xyzzy_entity", 5, 2, None, None)
+            .unwrap();
+        assert!(
+            plan.warnings
+                .iter()
+                .any(|w| w.contains("no query terms matched")),
+            "expected no-match warning, got {:?}",
+            plan.warnings
+        );
+    }
+
+    #[test]
+    fn preview_plan_repairs_kind() {
+        let graph = make_graph();
+        let plan = graph
+            .preview_navigate_query("test query", 5, 2, None, Some("memory"))
+            .unwrap();
+        assert_eq!(plan.resolved_kind.as_deref(), Some("Memory"));
+        assert!(
+            plan.kind_repaired,
+            "expected kind to be repaired from 'memory' to 'Memory'"
+        );
+        assert!(plan.warnings.iter().any(|w| w.contains("repaired")));
     }
 }

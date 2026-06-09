@@ -38,9 +38,10 @@ pub use types::{
     DisambiguationResult, DiscoveryPreview, EdgeType, EndSessionParams, EntityType,
     FileAccessParams, FileWriteParams, FixChainParams, GraphStats, HandoffPreview, MemoryPreview,
     NavigateQueryPlan, Neighbors, OntologyClassInfo, OntologyPropertyInfo, PromptParams,
-    RecordEventParams, RelationEndpoint, RelationHint, RequirementStatus, SearchResult,
-    SessionParams, SessionProgressParams, SessionSummary, SubgraphView, TaskDetail, TestRunParams,
-    ToolCallParams, ToolCallRecord, ToolCallTrace, ONTOLOGY_CLASS_KIND, ONTOLOGY_PROPERTY_KIND,
+    QueryIntent, RecordEventParams, RelationEndpoint, RelationHint, RequirementStatus,
+    ResolvedEntity, SearchResult, SessionParams, SessionProgressParams, SessionSummary,
+    SubgraphView, TaskDetail, TestRunParams, ToolCallParams, ToolCallRecord, ToolCallTrace,
+    ONTOLOGY_CLASS_KIND, ONTOLOGY_PROPERTY_KIND,
 };
 pub use wiki::{
     content_hash, extract_kanban_updates, extract_wikilinks, parse_journal_sections,
