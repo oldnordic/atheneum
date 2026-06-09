@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AtheneumGraph::resolve(name, min_confidence, project_id, entity_kind)` — single-best entity resolution above a confidence threshold, returning `DisambiguationResult` with resolved entity, candidates, and threshold.
 - `DisambiguationResult` — struct capturing entity disambiguation outcome: resolved entity (if confidence met), all ranked candidates, and the minimum confidence threshold used.
 - `AtheneumGraph::preview_entity_candidates()` — a no-mutation candidate-preview API for fuzzy entity lookup over the existing search index.
-- `AtheneumGraph::preview_discovery()`, `AtheneumGraph::preview_memory()`, and `AtheneumGraph::preview_handoff()` — read-only proposal APIs that return normalized payloads, deterministic content hashes, and likely existing matches before commit.
+- `AtheneumGraph::preview_discovery()`, `AtheneumGraph::preview_memory()`, and `AtheneumGraph::preview_handoff()` — read-only proposal APIs that return normalized payloads, deterministic content hashes, likely existing matches, and vector-based disambiguation analysis before commit.
 - `AtheneumGraph::preview_navigate_query()` — staged validation/repair for navigation queries, including normalized query text, canonical entity-kind resolution, and explicit warnings/errors before execution.
 - `ProvenanceData` — typed struct for edge provenance metadata (method, actor, created_at, extraction_mode, source_text). Replaces all 20 ad-hoc JSON provenance sites. Backward-compatible deserialization. Builder pattern. Public API export (ATH-19).
 
