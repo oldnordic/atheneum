@@ -345,19 +345,27 @@ fn run() -> anyhow::Result<()> {
             }
             let db_path = PathBuf::from(&args[2]);
             let graph = AtheneumGraph::open(&db_path)?;
-            let stats_before = graph.graph_stats()?;
-            graph.build_search_index()?;
-            let stats_after = graph.graph_stats()?;
             #[cfg(feature = "semantic-search")]
-            stdoutln(format_args!(
-                "Reindexed: {} entities ({} total), was {} entities before",
-                stats_after.total_entities, stats_after.total_entities, stats_before.total_entities,
-            ))?;
+            {
+                let stats_before = graph.graph_stats()?;
+                graph.build_search_index()?;
+                let stats_after = graph.graph_stats()?;
+                stdoutln(format_args!(
+                    "Reindexed: {} entities ({} total), was {} entities before",
+                    stats_after.total_entities,
+                    stats_after.total_entities,
+                    stats_before.total_entities,
+                ))?;
+            }
             #[cfg(not(feature = "semantic-search"))]
-            stdoutln(format_args!(
-                "Semantic search disabled. Graph has {} entities (no index to rebuild).",
-                stats_after.total_entities,
-            ))?;
+            {
+                graph.build_search_index()?;
+                let stats_after = graph.graph_stats()?;
+                stdoutln(format_args!(
+                    "Semantic search disabled. Graph has {} entities (no index to rebuild).",
+                    stats_after.total_entities,
+                ))?;
+            }
         }
         "store-discovery" => {
             if args.len() < 6 {
