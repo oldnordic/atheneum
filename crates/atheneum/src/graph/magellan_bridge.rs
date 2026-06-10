@@ -229,7 +229,7 @@ impl AtheneumGraph {
                     file_path: None,
                     data: metadata_for_entity,
                 };
-                self.inner.insert_entity(&entity).map_err(Into::into)
+                self.insert_entity_and_index(entity)
             }
         } else {
             self.store_discovery_in_project(agent_name, "Symbol", target, project_id, metadata)

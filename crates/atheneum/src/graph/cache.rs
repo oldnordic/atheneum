@@ -6,6 +6,8 @@ use parking_lot::RwLock;
 use serde_json::Value;
 use sqlitegraph::GraphEntity;
 
+pub(crate) type EntityIdIndex = HashMap<(String, String), i64>;
+
 use super::{SessionSummary, WikiPage};
 
 const BASE_TTL: Duration = Duration::from_secs(5);
@@ -121,6 +123,7 @@ pub struct RuntimeStats {
 
 pub(crate) struct GraphRuntime {
     cache: RwLock<HashMap<QueryCacheKey, CacheEntry>>,
+    entity_id_index: RwLock<EntityIdIndex>,
     memory_generation: AtomicU64,
     session_generation: AtomicU64,
     event_generation: AtomicU64,
@@ -154,6 +157,7 @@ impl Default for GraphRuntime {
     fn default() -> Self {
         Self {
             cache: RwLock::new(HashMap::new()),
+            entity_id_index: RwLock::new(HashMap::new()),
             memory_generation: AtomicU64::new(0),
             session_generation: AtomicU64::new(0),
             event_generation: AtomicU64::new(0),
@@ -361,4 +365,32 @@ impl GraphRuntime {
             CacheDomain::Navigation => &self.navigation_generation,
         }
     }
+
+    // ── Entity ID index ──────────────────────────────────────────────────
+
+    pub(crate) fn build_entity_id_index(&self, entries: &[(String, String, i64)]) {
+        let mut index = self.entity_id_index.write();
+        index.clear();
+        index.reserve(entries.len());
+        for (kind, name, id) in entries {
+            index.insert((kind.clone(), name.clone()), *id);
+        }
+    }
+
+    pub(crate) fn resolve_entity_id(&self, kind: &str, name: &str) -> Option<i64> {
+        self.entity_id_index.read().get(&(kind.to_string(), name.to_string())).copied()
+    }
+
+    pub(crate) fn insert_entity_id(&self, kind: &str, name: &str, id: i64) {
+        self.entity_id_index
+            .write()
+            .insert((kind.to_string(), name.to_string()), id);
+    }
+
+    pub(crate) fn remove_entity_id(&self, kind: &str, name: &str) {
+        self.entity_id_index
+            .write()
+            .remove(&(kind.to_string(), name.to_string()));
+    }
+
 }

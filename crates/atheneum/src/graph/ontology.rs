@@ -1,6 +1,5 @@
 use anyhow::Result;
 use chrono::Utc;
-use rusqlite::params;
 use serde_json::json;
 use sqlitegraph::GraphEntity;
 
@@ -322,12 +321,6 @@ impl AtheneumGraph {
     }
 
     pub(super) fn find_ontology_entity(&self, kind: &str, name: &str) -> Result<Option<i64>> {
-        super::with_graph_conn(&self.inner, |conn| {
-            let mut stmt = conn.prepare_cached(
-                "SELECT id FROM graph_entities WHERE kind = ?1 AND name = ?2 LIMIT 1",
-            )?;
-            let id_opt: Option<i64> = stmt.query_row(params![kind, name], |row| row.get(0)).ok();
-            Ok(id_opt)
-        })
+        self.find_entity_id_by_kind_and_name(kind, name)
     }
 }

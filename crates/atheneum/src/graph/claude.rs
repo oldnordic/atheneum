@@ -317,6 +317,13 @@ impl AtheneumGraph {
         if entity_ids.is_empty() {
             return Ok(());
         }
+        // Gather kind/name for index invalidation before deletion.
+        let mut to_remove = Vec::new();
+        for &id in entity_ids {
+            if let Ok(entity) = self.get_entity(id) {
+                to_remove.push((entity.kind, entity.name));
+            }
+        }
         self.with_raw_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             for entity_id in entity_ids {
@@ -331,7 +338,11 @@ impl AtheneumGraph {
             }
             tx.commit()?;
             Ok::<(), anyhow::Error>(())
-        })
+        })?;
+        for (kind, name) in to_remove {
+            self.runtime.remove_entity_id(&kind, &name);
+        }
+        Ok(())
     }
 
     fn delete_transcript_edges_for_session(&self, session_entity_id: i64) -> Result<()> {

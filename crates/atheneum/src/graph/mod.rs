@@ -68,6 +68,7 @@ impl AtheneumGraph {
         };
         g.tune_sqlite()?;
         g.run_startup_migrations()?;
+        g.build_entity_id_index()?;
         Ok(g)
     }
 
@@ -81,6 +82,7 @@ impl AtheneumGraph {
         };
         g.tune_sqlite()?;
         g.run_startup_migrations()?;
+        g.build_entity_id_index()?;
         Ok(g)
     }
 
@@ -142,6 +144,26 @@ impl AtheneumGraph {
             Ok(())
         })
         .is_ok()
+    }
+
+    /// Build the in-memory entity ID lookup index from all graph entities.
+    /// Call once after open / migrations.
+    pub fn build_entity_id_index(&self) -> Result<()> {
+        let entries = self.with_raw_connection(|conn| {
+            let mut stmt = conn.prepare_cached(
+                "SELECT id, kind, name FROM graph_entities"
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(0)?))
+            })?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })?;
+        self.runtime.build_entity_id_index(&entries);
+        Ok(())
     }
 
     pub fn get_entity(&self, id: i64) -> Result<GraphEntity> {
@@ -316,7 +338,7 @@ impl AtheneumGraph {
             file_path: None,
             data,
         };
-        self.inner.insert_entity(&entity).map_err(Into::into)
+        self.insert_entity_and_index(entity)
     }
 
     pub fn insert_task(&self, name: &str, data: Value) -> Result<i64> {
@@ -327,7 +349,7 @@ impl AtheneumGraph {
             file_path: None,
             data,
         };
-        self.inner.insert_entity(&entity).map_err(Into::into)
+        self.insert_entity_and_index(entity)
     }
 
     pub fn insert_event(&self, name: &str, mut data: Value) -> Result<i64> {
@@ -347,19 +369,23 @@ impl AtheneumGraph {
             file_path: None,
             data,
         };
-        self.inner.insert_entity(&entity).map_err(Into::into)
+        self.insert_entity_and_index(entity)
     }
 
     /// Upsert a Concept entity by name. If an entity of kind "Concept" with
     /// the same name already exists, returns its ID. Otherwise creates a new one.
+    /// Insert a graph entity and update the in-memory lookup index.
+    pub(super) fn insert_entity_and_index(&self, entity: GraphEntity) -> Result<i64> {
+        let id = self.inner.insert_entity(&entity).map_err(anyhow::Error::from)?;
+        self.runtime.insert_entity_id(&entity.kind, &entity.name, id);
+        Ok(id)
+    }
+
     pub fn upsert_concept(&self, name: &str, data: &Value) -> Result<i64> {
-        let existing = with_graph_conn(&self.inner, |conn| {
-            let mut stmt = conn.prepare_cached(
-                "SELECT id FROM graph_entities WHERE kind = ?1 AND name = ?2 LIMIT 1"
-            )?;
-            Ok(stmt.query_row(params![EntityType::Concept.as_str(), name], |r| r.get(0))?)
-        });
-        if let Ok(id) = existing {
+        if let Some(id) = self.find_entity_id_by_kind_and_name(
+            EntityType::Concept.as_str(),
+            name,
+        )? {
             return Ok(id);
         }
         let entity = GraphEntity {
@@ -369,7 +395,7 @@ impl AtheneumGraph {
             file_path: None,
             data: data.clone(),
         };
-        self.inner.insert_entity(&entity).map_err(Into::into)
+        self.insert_entity_and_index(entity)
     }
 
     pub fn insert_edge(
@@ -504,7 +530,10 @@ impl AtheneumGraph {
         kind: &str,
         name: &str,
     ) -> Result<Option<i64>> {
-        self.with_raw_connection(|conn| {
+        if let Some(id) = self.runtime.resolve_entity_id(kind, name) {
+            return Ok(Some(id));
+        }
+        let id = self.with_raw_connection(|conn| {
             Ok(conn
                 .query_row(
                     "SELECT id FROM graph_entities WHERE kind = ?1 AND name = ?2 LIMIT 1",
@@ -512,7 +541,11 @@ impl AtheneumGraph {
                     |r| r.get(0),
                 )
                 .ok())
-        })
+        })?;
+        if let Some(id) = id {
+            self.runtime.insert_entity_id(kind, name, id);
+        }
+        Ok(id)
     }
 
     fn update_entity_data(&self, id: i64, data: &Value) -> Result<()> {
