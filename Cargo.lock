@@ -115,7 +115,7 @@ dependencies = [
 
 [[package]]
 name = "atheneum"
-version = "0.3.3"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "askama",
@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "atheneum-mcp"
-version = "0.3.3"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
