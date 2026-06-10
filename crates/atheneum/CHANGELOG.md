@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `find_entity_id_by_kind_and_name()` — checks index first, falls back to SQL, caches on miss.
   - `insert_entity_and_index()` — wrapper that inserts into graph + index atomically.
   - `delete_graph_entities()` — invalidates index entries before deletion.
+- **Batch write API** — Wraps sqlitegraph's `bulk_insert_entities` / `bulk_insert_edges` for single-transaction batch writes.
+  - `AtheneumGraph::batch_insert_entities()` — inserts multiple entities in one transaction; updates the entity ID index.
+  - `AtheneumGraph::batch_insert_edges()` — inserts multiple edges in one transaction.
+  - `consolidate_discoveries` now uses `batch_insert_edges` for DerivedFrom edges instead of looped individual inserts.
 
 ## [0.4.0] — 2026-06-09
 
