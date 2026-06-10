@@ -463,8 +463,7 @@ impl AtheneumGraph {
                 data: e.data.clone(),
             })
             .collect();
-        let ids =
-            bulk_insert_entities(&self.inner, &creates).map_err(|e| anyhow::Error::from(e))?;
+        let ids = bulk_insert_entities(&self.inner, &creates).map_err(anyhow::Error::from)?;
         for (entity, id) in entities.iter().zip(&ids) {
             self.runtime
                 .insert_entity_id(&entity.kind, &entity.name, *id);
@@ -484,7 +483,7 @@ impl AtheneumGraph {
                 data: e.data.clone(),
             })
             .collect();
-        let ids = bulk_insert_edges(&self.inner, &creates).map_err(|e| anyhow::Error::from(e))?;
+        let ids = bulk_insert_edges(&self.inner, &creates).map_err(anyhow::Error::from)?;
         self.runtime.bump_navigation_generation();
         Ok(ids)
     }
