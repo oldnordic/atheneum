@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `AtheneumGraph::batch_insert_entities()` — inserts multiple entities in one transaction; updates the entity ID index.
   - `AtheneumGraph::batch_insert_edges()` — inserts multiple edges in one transaction.
   - `consolidate_discoveries` now uses `batch_insert_edges` for DerivedFrom edges instead of looped individual inserts.
+- **Meta.db routing layer** — `MetaRouter` maintains a separate SQLite database (`~/.local/share/atheneum/meta.db`) that tracks registered projects, their magellan/atheneum DB paths, languages, and indexing status.
+  - `MetaRouter::open()` / `open_at()` — open the meta.db, creating schema if needed.
+  - `MetaRouter::register_project()` — upsert a project into the registry.
+  - `MetaRouter::list_projects()` / `list_projects_by_language()` — query enabled projects.
+  - `MetaRouter::get_project()` / `disable_project()` — single-project lookup and soft-delete.
+  - CLI: `meta-register <name> <root-path> <magellan-db> [--atheneum-db PATH] [--language LANG]` and `meta-list [--language LANG]`.
+  - Schema: `project_registry`, `symbol_index`, `symbol_analogies` tables with indexes.
 
 ## [0.4.0] — 2026-06-09
 

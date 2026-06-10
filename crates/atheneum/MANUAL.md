@@ -690,6 +690,26 @@ atheneum graph-stats <db-path>
 
 `query-knowledge` aggregates discoveries and handoffs for a target. Use `--max-tokens` to limit the total response size; discoveries are dropped first, then handoffs, and `"truncated": true` is set when truncation occurs.
 
+### Cross-Project Registry (Meta)
+
+```bash
+# Register a project in the meta.db routing layer
+atheneum meta-register envoy /home/feanor/Projects/envoy \
+  /home/feanor/Projects/envoy/.magellan/magellan.db \
+  --atheneum-db /home/feanor/Projects/envoy/atheneum.db \
+  --language rust
+
+# List all registered projects
+atheneum meta-list
+
+# List projects filtered by language
+atheneum meta-list --language rust
+```
+
+`meta-register` upserts a project into `~/.local/share/atheneum/meta.db` (or `$XDG_DATA_HOME/atheneum/meta.db`). Re-registering the same name updates all fields and re-enables the project.
+
+`meta-list` queries enabled projects from the registry. Use `--language` to filter by programming language.
+
 ### Maintenance
 
 ```bash

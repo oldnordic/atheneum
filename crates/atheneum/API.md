@@ -683,6 +683,38 @@ Trace a causal chain from an event.
 
 ---
 
+## Meta Router (Cross-Project Registry)
+
+### `MetaRouter::open() -> Result<Self>`
+
+Open the default meta.db at `~/.local/share/atheneum/meta.db` (or `$XDG_DATA_HOME/atheneum/meta.db`). Creates parent directory and schema if needed.
+
+### `MetaRouter::open_at(path) -> Result<Self>`
+
+Open a meta.db at an explicit path.
+
+### `MetaRouter::register_project(name, root_path, magellan_db, atheneum_db, language) -> Result<()>`
+
+Register or update a project. Upsert semantics — re-registering the same name updates all fields and resets `enabled = 1`.
+
+### `MetaRouter::list_projects() -> Result<Vec<ProjectInfo>>`
+
+List all enabled projects, ordered by name.
+
+### `MetaRouter::list_projects_by_language(language) -> Result<Vec<ProjectInfo>>`
+
+List enabled projects filtered by language (e.g., `"rust"`, `"typescript"`).
+
+### `MetaRouter::get_project(name) -> Result<Option<ProjectInfo>>`
+
+Look up a single project by name.
+
+### `MetaRouter::disable_project(name) -> Result<()>`
+
+Soft-delete a project (sets `enabled = 0`).
+
+---
+
 ## Ontology
 
 ### `register_ontology_class(name, description) -> Result<i64>`
