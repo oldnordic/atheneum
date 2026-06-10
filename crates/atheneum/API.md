@@ -601,6 +601,22 @@ Consolidate all distinct discovery targets. Returns (target, knowledge_id) pairs
 
 ## Graph Introspection
 
+### `checkpoint() -> Result<()>`
+
+Force a WAL checkpoint (`PRAGMA wal_checkpoint(TRUNCATE)`). Call after large write batches or before shutdown to reclaim WAL space.
+
+### `build_entity_id_index() -> Result<()>`
+
+Rebuild the in-memory `(kind, name) -> id` lookup index from all graph entities. Called automatically on open; useful after bulk external mutations.
+
+### `batch_insert_entities(entities: &[GraphEntity]) -> Result<Vec<i64>>`
+
+Insert multiple entities in a single SQLite transaction. Updates the in-memory entity ID index. Much faster than individual inserts for >1 item.
+
+### `batch_insert_edges(edges: &[GraphEdge]) -> Result<Vec<i64>>`
+
+Insert multiple edges in a single SQLite transaction. No ontology validation — caller must ensure domain/range constraints are satisfied.
+
 ### `get_entity(id) -> Result<GraphEntity>`
 
 Retrieve a single entity by ID.

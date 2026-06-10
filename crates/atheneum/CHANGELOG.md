@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — Pending
 
+(nothing yet)
+
+## [0.5.0] — 2026-06-09
+
 ### Added
 
 - **SQLite PRAGMA tuning on open.** `AtheneumGraph::open()` now applies production-hardened SQLite settings:

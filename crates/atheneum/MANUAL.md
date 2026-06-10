@@ -706,7 +706,7 @@ atheneum --version
 atheneum help
 ```
 
-`reindex` rebuilds the HNSW index over all entities. Useful after bulk imports or if search results seem incomplete.
+`reindex` rebuilds the HNSW index over all entities and then runs a WAL checkpoint to reclaim disk space. Useful after bulk imports or if search results seem incomplete.
 
 `consolidate` merges all Discovery entities for a target (or all targets) into deduplicated Knowledge entities with `DerivedFrom` edges. Idempotent -- re-running returns the existing Knowledge entity.
 
