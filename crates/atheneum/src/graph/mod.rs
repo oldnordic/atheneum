@@ -3,9 +3,8 @@ use chrono::Utc;
 use rusqlite::params;
 use serde_json::Value;
 use sqlitegraph::{
-    GraphEdge, GraphEntity, SqliteConfig, SqliteGraph,
-    GraphEdgeCreate, GraphEntityCreate,
-    bulk_insert_edges, bulk_insert_entities,
+    bulk_insert_edges, bulk_insert_entities, GraphEdge, GraphEdgeCreate, GraphEntity,
+    GraphEntityCreate, SqliteConfig, SqliteGraph,
 };
 
 use embed::HashEmbedder;
@@ -154,11 +153,13 @@ impl AtheneumGraph {
     /// Call once after open / migrations.
     pub fn build_entity_id_index(&self) -> Result<()> {
         let entries = self.with_raw_connection(|conn| {
-            let mut stmt = conn.prepare_cached(
-                "SELECT id, kind, name FROM graph_entities"
-            )?;
+            let mut stmt = conn.prepare_cached("SELECT id, kind, name FROM graph_entities")?;
             let rows = stmt.query_map([], |row| {
-                Ok((row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(0)?))
+                Ok((
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(0)?,
+                ))
             })?;
             let mut out = Vec::new();
             for row in rows {
@@ -380,16 +381,19 @@ impl AtheneumGraph {
     /// the same name already exists, returns its ID. Otherwise creates a new one.
     /// Insert a graph entity and update the in-memory lookup index.
     pub(super) fn insert_entity_and_index(&self, entity: GraphEntity) -> Result<i64> {
-        let id = self.inner.insert_entity(&entity).map_err(anyhow::Error::from)?;
-        self.runtime.insert_entity_id(&entity.kind, &entity.name, id);
+        let id = self
+            .inner
+            .insert_entity(&entity)
+            .map_err(anyhow::Error::from)?;
+        self.runtime
+            .insert_entity_id(&entity.kind, &entity.name, id);
         Ok(id)
     }
 
     pub fn upsert_concept(&self, name: &str, data: &Value) -> Result<i64> {
-        if let Some(id) = self.find_entity_id_by_kind_and_name(
-            EntityType::Concept.as_str(),
-            name,
-        )? {
+        if let Some(id) =
+            self.find_entity_id_by_kind_and_name(EntityType::Concept.as_str(), name)?
+        {
             return Ok(id);
         }
         let entity = GraphEntity {
@@ -459,10 +463,11 @@ impl AtheneumGraph {
                 data: e.data.clone(),
             })
             .collect();
-        let ids = bulk_insert_entities(&self.inner, &creates)
-            .map_err(|e| anyhow::Error::from(e))?;
+        let ids =
+            bulk_insert_entities(&self.inner, &creates).map_err(|e| anyhow::Error::from(e))?;
         for (entity, id) in entities.iter().zip(&ids) {
-            self.runtime.insert_entity_id(&entity.kind, &entity.name, *id);
+            self.runtime
+                .insert_entity_id(&entity.kind, &entity.name, *id);
         }
         Ok(ids)
     }
@@ -479,8 +484,7 @@ impl AtheneumGraph {
                 data: e.data.clone(),
             })
             .collect();
-        let ids = bulk_insert_edges(&self.inner, &creates)
-            .map_err(|e| anyhow::Error::from(e))?;
+        let ids = bulk_insert_edges(&self.inner, &creates).map_err(|e| anyhow::Error::from(e))?;
         self.runtime.bump_navigation_generation();
         Ok(ids)
     }
@@ -827,7 +831,9 @@ mod tests {
                 data: serde_json::json!({}),
             })
             .collect();
-        let ids = graph.batch_insert_entities(&entities).expect("batch insert");
+        let ids = graph
+            .batch_insert_entities(&entities)
+            .expect("batch insert");
         assert_eq!(ids.len(), 5);
 
         // Verify index is populated

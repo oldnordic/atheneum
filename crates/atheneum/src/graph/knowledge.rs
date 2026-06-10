@@ -81,7 +81,8 @@ impl AtheneumGraph {
             data,
         };
 
-        let knowledge_id = self.insert_entity_and_index(entity.clone())
+        let knowledge_id = self
+            .insert_entity_and_index(entity.clone())
             .map_err(|e| anyhow::anyhow!("Failed to insert Knowledge: {}", e))?;
 
         let edges: Vec<GraphEdge> = discoveries

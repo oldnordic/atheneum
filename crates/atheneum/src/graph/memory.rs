@@ -104,14 +104,14 @@ impl AtheneumGraph {
                     "SELECT id FROM graph_entities
                      WHERE kind = ?1 AND name = ?2
                        AND json_extract(data, '$.scope') = ?3
-                       AND json_extract(data, '$.project_id') = ?4"
+                       AND json_extract(data, '$.project_id') = ?4",
                 )?
             } else {
                 conn.prepare_cached(
                     "SELECT id FROM graph_entities
                      WHERE kind = ?1 AND name = ?2
                        AND json_extract(data, '$.scope') = ?3
-                       AND json_extract(data, '$.project_id') IS NULL"
+                       AND json_extract(data, '$.project_id') IS NULL",
                 )?
             };
             let id: Option<i64> = if let Some(pid) = project_id {

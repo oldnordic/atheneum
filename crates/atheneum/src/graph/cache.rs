@@ -378,7 +378,10 @@ impl GraphRuntime {
     }
 
     pub(crate) fn resolve_entity_id(&self, kind: &str, name: &str) -> Option<i64> {
-        self.entity_id_index.read().get(&(kind.to_string(), name.to_string())).copied()
+        self.entity_id_index
+            .read()
+            .get(&(kind.to_string(), name.to_string()))
+            .copied()
     }
 
     pub(crate) fn insert_entity_id(&self, kind: &str, name: &str, id: i64) {
@@ -392,5 +395,4 @@ impl GraphRuntime {
             .write()
             .remove(&(kind.to_string(), name.to_string()));
     }
-
 }
