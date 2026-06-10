@@ -5,6 +5,9 @@
 
 pub(crate) mod db;
 pub mod graph;
+pub mod meta;
+
+pub use meta::{MetaRouter, ProjectInfo};
 
 pub use graph::{
     AtheneumGraph, ClaudeTranscriptImportParams, ClaudeTranscriptImportSummary,

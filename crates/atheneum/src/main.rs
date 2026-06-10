@@ -2,8 +2,8 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 use atheneum::{
-    AtheneumGraph, ClaudeTranscriptImportParams, EdgeType, GraphEdge, GraphEntity, SearchResult,
-    WikiPage,
+    AtheneumGraph, ClaudeTranscriptImportParams, EdgeType, GraphEdge, GraphEntity, MetaRouter,
+    SearchResult, WikiPage,
 };
 use serde_json::json;
 
@@ -743,6 +743,50 @@ fn run() -> anyhow::Result<()> {
                 graph.wiki_dream_pass(mode, opts.project.as_deref(), &DreamConfig::default())?;
             print_json(serde_json::to_value(&report)?)?;
         }
+        "meta-register" => {
+            if args.len() < 5 {
+                eprintln!("Usage: atheneum meta-register <name> <root-path> <magellan-db> [--atheneum-db PATH] [--language LANG]");
+                std::process::exit(1);
+            }
+            let name = &args[2];
+            let root_path = &args[3];
+            let magellan_db = &args[4];
+            let opts = parse_options(&args[5..])?;
+            let mut router = MetaRouter::open()?;
+            router.register_project(
+                name,
+                root_path,
+                magellan_db,
+                opts.atheneum_db.as_deref(),
+                opts.language.as_deref(),
+            )?;
+            stdoutln(format_args!("Registered project: {}", name))?;
+        }
+        "meta-list" => {
+            let router = MetaRouter::open()?;
+            let projects = if args.len() > 2 && args[2] == "--language" {
+                if args.len() < 4 {
+                    eprintln!("Usage: atheneum meta-list [--language LANG]");
+                    std::process::exit(1);
+                }
+                router.list_projects_by_language(&args[3])?
+            } else {
+                router.list_projects()?
+            };
+            if projects.is_empty() {
+                stdoutln(format_args!("No projects registered."))?;
+            } else {
+                stdoutln(format_args!("Registered projects ({}):", projects.len()))?;
+                for p in projects {
+                    let lang = p.language.as_deref().unwrap_or("unknown");
+                    let ath = p.atheneum_db.as_deref().unwrap_or("none");
+                    stdoutln(format_args!(
+                        "  {} [{}] root={} magellan={} atheneum={}",
+                        p.name, lang, p.root_path, p.magellan_db, ath
+                    ))?;
+                }
+            }
+        }
         _ => {
             eprintln!("Unknown command: {}", args[1]);
             print_usage()?;
@@ -890,6 +934,20 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
         "  graph-stats <db-path>                   Graph topology and runtime counters"
     )?;
     writeln!(writer)?;
+    writeln!(writer, "META (cross-project registry):")?;
+    writeln!(
+        writer,
+        "  meta-register <name> <root-path> <magellan-db> [--atheneum-db PATH] [--language LANG]"
+    )?;
+    writeln!(
+        writer,
+        "    Register a project in the meta.db routing layer"
+    )?;
+    writeln!(
+        writer,
+        "  meta-list [--language LANG]               List registered projects"
+    )?;
+    writeln!(writer)?;
     writeln!(writer, "MAINTENANCE:")?;
     writeln!(
         writer,
@@ -979,6 +1037,8 @@ struct CliOptions {
     scope: Option<String>,
     confidence: Option<String>,
     max_tokens: Option<String>,
+    atheneum_db: Option<String>,
+    language: Option<String>,
     dry_run: bool,
     auto_merge: bool,
 }
@@ -1012,6 +1072,8 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
                 "--scope" => opts.scope = Some(value),
                 "--confidence" => opts.confidence = Some(value),
                 "--max-tokens" => opts.max_tokens = Some(value),
+                "--atheneum-db" => opts.atheneum_db = Some(value),
+                "--language" => opts.language = Some(value),
                 other => anyhow::bail!("unknown option: {}", other),
             }
             i += 2;
