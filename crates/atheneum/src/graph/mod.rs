@@ -354,8 +354,9 @@ impl AtheneumGraph {
     /// the same name already exists, returns its ID. Otherwise creates a new one.
     pub fn upsert_concept(&self, name: &str, data: &Value) -> Result<i64> {
         let existing = with_graph_conn(&self.inner, |conn| {
-            let mut stmt = conn
-                .prepare("SELECT id FROM graph_entities WHERE kind = ?1 AND name = ?2 LIMIT 1")?;
+            let mut stmt = conn.prepare_cached(
+                "SELECT id FROM graph_entities WHERE kind = ?1 AND name = ?2 LIMIT 1"
+            )?;
             Ok(stmt.query_row(params![EntityType::Concept.as_str(), name], |r| r.get(0))?)
         });
         if let Ok(id) = existing {

@@ -99,18 +99,21 @@ impl AtheneumGraph {
 
         // Check for existing memory by composite key (key, scope, project_id).
         let existing_id = super::with_graph_conn(&self.inner, |conn| {
-            let sql = if project_id.is_some() {
-                "SELECT id FROM graph_entities
-                 WHERE kind = ?1 AND name = ?2
-                   AND json_extract(data, '$.scope') = ?3
-                   AND json_extract(data, '$.project_id') = ?4"
+            let mut stmt = if project_id.is_some() {
+                conn.prepare_cached(
+                    "SELECT id FROM graph_entities
+                     WHERE kind = ?1 AND name = ?2
+                       AND json_extract(data, '$.scope') = ?3
+                       AND json_extract(data, '$.project_id') = ?4"
+                )?
             } else {
-                "SELECT id FROM graph_entities
-                 WHERE kind = ?1 AND name = ?2
-                   AND json_extract(data, '$.scope') = ?3
-                   AND json_extract(data, '$.project_id') IS NULL"
+                conn.prepare_cached(
+                    "SELECT id FROM graph_entities
+                     WHERE kind = ?1 AND name = ?2
+                       AND json_extract(data, '$.scope') = ?3
+                       AND json_extract(data, '$.project_id') IS NULL"
+                )?
             };
-            let mut stmt = conn.prepare(sql)?;
             let id: Option<i64> = if let Some(pid) = project_id {
                 stmt.query_row(params![EntityType::Memory.as_str(), key, scope, pid], |r| {
                     r.get(0)
@@ -276,7 +279,7 @@ impl AtheneumGraph {
             let mut out = Vec::new();
             match (scope, project_id) {
                 (Some(s), Some(pid)) => {
-                    let mut stmt = conn.prepare(
+                    let mut stmt = conn.prepare_cached(
                         "SELECT id, kind, name, file_path, data FROM graph_entities
                          WHERE kind = ?1 AND name = ?2
                            AND json_extract(data, '$.scope') = ?3
@@ -291,7 +294,7 @@ impl AtheneumGraph {
                     }
                 }
                 (Some(s), None) => {
-                    let mut stmt = conn.prepare(
+                    let mut stmt = conn.prepare_cached(
                         "SELECT id, kind, name, file_path, data FROM graph_entities
                          WHERE kind = ?1 AND name = ?2
                            AND json_extract(data, '$.scope') = ?3",
@@ -303,7 +306,7 @@ impl AtheneumGraph {
                     }
                 }
                 (None, Some(pid)) => {
-                    let mut stmt = conn.prepare(
+                    let mut stmt = conn.prepare_cached(
                         "SELECT id, kind, name, file_path, data FROM graph_entities
                          WHERE kind = ?1 AND name = ?2
                            AND json_extract(data, '$.project_id') = ?3",
@@ -317,7 +320,7 @@ impl AtheneumGraph {
                     }
                 }
                 (None, None) => {
-                    let mut stmt = conn.prepare(
+                    let mut stmt = conn.prepare_cached(
                         "SELECT id, kind, name, file_path, data FROM graph_entities
                          WHERE kind = ?1 AND name = ?2",
                     )?;
@@ -355,7 +358,7 @@ impl AtheneumGraph {
             let mut out = Vec::new();
             match (scope, project_id) {
                 (Some(s), Some(pid)) => {
-                    let mut stmt = conn.prepare(
+                    let mut stmt = conn.prepare_cached(
                         "SELECT id, kind, name, file_path, data FROM graph_entities
                          WHERE kind = ?1
                            AND json_extract(data, '$.scope') = ?2
@@ -371,7 +374,7 @@ impl AtheneumGraph {
                     }
                 }
                 (Some(s), None) => {
-                    let mut stmt = conn.prepare(
+                    let mut stmt = conn.prepare_cached(
                         "SELECT id, kind, name, file_path, data FROM graph_entities
                          WHERE kind = ?1
                            AND json_extract(data, '$.scope') = ?2
@@ -386,7 +389,7 @@ impl AtheneumGraph {
                     }
                 }
                 (None, Some(pid)) => {
-                    let mut stmt = conn.prepare(
+                    let mut stmt = conn.prepare_cached(
                         "SELECT id, kind, name, file_path, data FROM graph_entities
                          WHERE kind = ?1
                            AND json_extract(data, '$.project_id') = ?2
@@ -401,7 +404,7 @@ impl AtheneumGraph {
                     }
                 }
                 (None, None) => {
-                    let mut stmt = conn.prepare(
+                    let mut stmt = conn.prepare_cached(
                         "SELECT id, kind, name, file_path, data FROM graph_entities
                          WHERE kind = ?1
                          LIMIT ?2 OFFSET ?3",

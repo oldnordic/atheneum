@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — Pending
 
-(nothing yet)
+### Added
+
+- **SQLite PRAGMA tuning on open.** `AtheneumGraph::open()` now applies production-hardened SQLite settings:
+  - `PRAGMA journal_mode = WAL` — write-ahead logging for concurrent readers/writers
+  - `PRAGMA synchronous = NORMAL` — durability/speed balance (fsync only on checkpoint)
+  - `PRAGMA cache_size = -64000` — 64 MB page cache
+  - `PRAGMA temp_store = MEMORY` — temp tables/indexes in RAM, not disk
+- **`AtheneumGraph::checkpoint()`** — public API for forced WAL checkpoint (`PRAGMA wal_checkpoint(TRUNCATE)`). Called by the `reindex` CLI after rebuilding the HNSW index to reclaim WAL space.
 
 ## [0.4.0] — 2026-06-09
 
