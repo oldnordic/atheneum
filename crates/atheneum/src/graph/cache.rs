@@ -295,10 +295,12 @@ impl GraphRuntime {
         self.navigation_queries.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[cfg(feature = "semantic-search")]
     pub(crate) fn record_hnsw_hit(&self) {
         self.hnsw_hits.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[cfg(feature = "semantic-search")]
     pub(crate) fn record_hnsw_fallback_scan(&self) {
         self.hnsw_fallback_scans.fetch_add(1, Ordering::Relaxed);
     }

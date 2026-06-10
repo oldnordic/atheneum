@@ -43,7 +43,8 @@ tempfile = "3.19"
 walkdir = "2.5"
 
 [features]
-default = []
+default = ["semantic-search"]
 web-ui = ["dep:axum", "dep:tower-http", "dep:askama"]
 async = ["tokio", "tracing-subscriber"]
 neural-embed = ["dep:ureq"]
+semantic-search = []

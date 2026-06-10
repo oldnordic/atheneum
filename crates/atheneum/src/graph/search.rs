@@ -1,12 +1,16 @@
 use anyhow::Result;
+#[cfg(feature = "semantic-search")]
 use serde_json::json;
-use sqlitegraph::hnsw::{DistanceMetric, HnswConfigBuilder};
 use sqlitegraph::GraphEntity;
 use std::collections::HashSet;
+
+#[cfg(feature = "semantic-search")]
+use sqlitegraph::hnsw::{DistanceMetric, HnswConfigBuilder};
 
 use super::cache::{CacheDomain, QueryCacheKey, QueryCacheValue};
 use super::{AtheneumGraph, SearchResult};
 
+#[cfg(feature = "semantic-search")]
 const SEARCH_INDEX_NAME: &str = "discoveries";
 
 fn embed_text_for_entity(entity: &GraphEntity) -> String {
@@ -57,6 +61,7 @@ fn lexical_token_score(entity: &GraphEntity, tokens: &[String]) -> f32 {
     matched as f32 / tokens.len() as f32
 }
 
+#[cfg(feature = "semantic-search")]
 fn search_config(dim: usize) -> Result<sqlitegraph::hnsw::HnswConfig> {
     HnswConfigBuilder::new()
         .dimension(dim)
@@ -100,6 +105,7 @@ impl AtheneumGraph {
         candidate_matches
     }
 
+    #[cfg(feature = "semantic-search")]
     /// Ensure the HNSW index exists. Creates it lazily on first use.
     fn ensure_search_index(&self) -> Result<()> {
         let existing = self
@@ -130,27 +136,36 @@ impl AtheneumGraph {
     }
 
     /// Add a single entity's vector to the existing HNSW index.
-    pub(super) fn add_entity_to_search_index(&self, entity: &GraphEntity) -> Result<()> {
-        self.ensure_search_index()?;
-        let text = embed_text_for_entity(entity);
-        let vector = self.embedder.embed(&text)?;
-        let entity_id = entity.id;
-        self.inner
-            .get_hnsw_index_mut(SEARCH_INDEX_NAME, move |idx| {
-                idx.insert_vector(&vector, Some(json!({"entity_id": entity_id})))
-            })
-            .map_err(|e| anyhow::anyhow!("get_hnsw_index_mut failed: {}", e))?
-            .map_err(|e| anyhow::anyhow!("insert_vector failed: {}", e))?;
+    /// No-op when `semantic-search` feature is disabled.
+    pub(super) fn add_entity_to_search_index(&self, _entity: &GraphEntity) -> Result<()> {
+        #[cfg(feature = "semantic-search")]
+        {
+            self.ensure_search_index()?;
+            let text = embed_text_for_entity(_entity);
+            let vector = self.embedder.embed(&text)?;
+            let entity_id = _entity.id;
+            self.inner
+                .get_hnsw_index_mut(SEARCH_INDEX_NAME, move |idx| {
+                    idx.insert_vector(&vector, Some(json!({"entity_id": entity_id})))
+                })
+                .map_err(|e| anyhow::anyhow!("get_hnsw_index_mut failed: {}", e))?
+                .map_err(|e| anyhow::anyhow!("insert_vector failed: {}", e))?;
+        }
         Ok(())
     }
 
-    /// Full rebuild of the HNSW index (still useful for manual reindexing).
+    /// Full rebuild of the HNSW index.
+    /// No-op when `semantic-search` feature is disabled.
     pub fn build_search_index(&self) -> Result<()> {
-        let _ = self.inner.delete_hnsw_index(SEARCH_INDEX_NAME);
-        self.ensure_search_index()?;
+        #[cfg(feature = "semantic-search")]
+        {
+            let _ = self.inner.delete_hnsw_index(SEARCH_INDEX_NAME);
+            self.ensure_search_index()?;
+        }
         Ok(())
     }
 
+    #[cfg(feature = "semantic-search")]
     fn try_hnsw_search(
         &self,
         query_vec: &[f32],
@@ -314,49 +329,59 @@ impl AtheneumGraph {
             return Ok(results);
         }
 
-        let query_vec = self.embedder.embed(query)?;
-        let hnsw_results = match self.ensure_search_index() {
-            Ok(()) => match self.try_hnsw_search(&query_vec, k, project_id, entity_kind) {
-                Ok(results) => Some(results),
-                Err(first_err) => {
-                    eprintln!("[atheneum] search index warning: {}", first_err);
-                    match self.build_search_index() {
-                        Ok(()) => {
-                            match self.try_hnsw_search(&query_vec, k, project_id, entity_kind) {
-                                Ok(results) => Some(results),
-                                Err(second_err) => {
-                                    eprintln!(
-                                        "[atheneum] search index rebuild warning: {}",
-                                        second_err
-                                    );
-                                    None
+        #[cfg(feature = "semantic-search")]
+        let results = {
+            let query_vec = self.embedder.embed(query)?;
+            let hnsw_results = match self.ensure_search_index() {
+                Ok(()) => match self.try_hnsw_search(&query_vec, k, project_id, entity_kind) {
+                    Ok(results) => Some(results),
+                    Err(first_err) => {
+                        eprintln!("[atheneum] search index warning: {}", first_err);
+                        match self.build_search_index() {
+                            Ok(()) => {
+                                match self.try_hnsw_search(&query_vec, k, project_id, entity_kind) {
+                                    Ok(results) => Some(results),
+                                    Err(second_err) => {
+                                        eprintln!(
+                                            "[atheneum] search index rebuild warning: {}",
+                                            second_err
+                                        );
+                                        None
+                                    }
                                 }
                             }
-                        }
-                        Err(rebuild_err) => {
-                            eprintln!("[atheneum] search index rebuild failed: {}", rebuild_err);
-                            None
+                            Err(rebuild_err) => {
+                                eprintln!(
+                                    "[atheneum] search index rebuild failed: {}",
+                                    rebuild_err
+                                );
+                                None
+                            }
                         }
                     }
+                },
+                Err(err) => {
+                    eprintln!("[atheneum] search index unavailable: {}", err);
+                    None
                 }
-            },
-            Err(err) => {
-                eprintln!("[atheneum] search index unavailable: {}", err);
-                None
+            };
+
+            let results = hnsw_results.unwrap_or_default();
+            if results.len() >= k {
+                self.runtime.record_hnsw_hit();
+                results
+            } else {
+                if !results.is_empty() {
+                    self.runtime.record_hnsw_hit();
+                }
+                self.runtime.record_hnsw_fallback_scan();
+                self.fallback_lexical_search(query, k, project_id, entity_kind, results)?
             }
         };
 
-        let results = hnsw_results.unwrap_or_default();
-        let results = if results.len() >= k {
-            self.runtime.record_hnsw_hit();
-            results
-        } else {
-            if !results.is_empty() {
-                self.runtime.record_hnsw_hit();
-            }
-            self.runtime.record_hnsw_fallback_scan();
-            self.fallback_lexical_search(query, k, project_id, entity_kind, results)?
-        };
+        #[cfg(not(feature = "semantic-search"))]
+        let results =
+            self.fallback_lexical_search(query, k, project_id, entity_kind, Vec::new())?;
 
         let results = if let Some(max_tokens) = max_tokens {
             let mut budget = max_tokens;

@@ -173,6 +173,7 @@ graph.link_wiki_to_symbols(
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `default` | ✓ | Core graph, wiki, sessions, planning, search |
+| `semantic-search` | ✓ | HNSW vector index for `search` (disable for pure lexical/graph traversal) |
 | `neural-embed` | — | Ollama neural embeddings (requires `ureq`, ollama + nomic-embed-text) |
 | `web` | — | Web dashboard (axum + askama templates) |
 | `cli` | — | `atheneum` CLI binary |
