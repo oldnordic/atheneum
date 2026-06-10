@@ -349,6 +349,7 @@ fn run() -> anyhow::Result<()> {
             {
                 let stats_before = graph.graph_stats()?;
                 graph.build_search_index()?;
+                graph.checkpoint()?;
                 let stats_after = graph.graph_stats()?;
                 stdoutln(format_args!(
                     "Reindexed: {} entities ({} total), was {} entities before",
@@ -360,6 +361,7 @@ fn run() -> anyhow::Result<()> {
             #[cfg(not(feature = "semantic-search"))]
             {
                 graph.build_search_index()?;
+                graph.checkpoint()?;
                 let stats_after = graph.graph_stats()?;
                 stdoutln(format_args!(
                     "Semantic search disabled. Graph has {} entities (no index to rebuild).",

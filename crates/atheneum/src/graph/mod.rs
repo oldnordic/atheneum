@@ -66,6 +66,7 @@ impl AtheneumGraph {
             embedder: Box::new(HashEmbedder::new(128)),
             runtime: GraphRuntime::default(),
         };
+        g.tune_sqlite()?;
         g.run_startup_migrations()?;
         Ok(g)
     }
@@ -78,8 +79,29 @@ impl AtheneumGraph {
             embedder: Box::new(HashEmbedder::new(128)),
             runtime: GraphRuntime::default(),
         };
+        g.tune_sqlite()?;
         g.run_startup_migrations()?;
         Ok(g)
+    }
+
+    fn tune_sqlite(&self) -> Result<()> {
+        self.with_raw_connection(|conn| {
+            conn.execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 PRAGMA synchronous = NORMAL;
+                 PRAGMA cache_size = -64000;
+                 PRAGMA temp_store = MEMORY;",
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Force a WAL checkpoint. Call after large write batches or before shutdown.
+    pub fn checkpoint(&self) -> Result<()> {
+        self.with_raw_connection(|conn| {
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)", [])?;
+            Ok(())
+        })
     }
 
     pub fn set_embedder(&mut self, embedder: Box<dyn embed::TextEmbedder>) {
