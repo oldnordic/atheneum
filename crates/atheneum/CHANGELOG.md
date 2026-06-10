@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `PRAGMA cache_size = -64000` — 64 MB page cache
   - `PRAGMA temp_store = MEMORY` — temp tables/indexes in RAM, not disk
 - **`AtheneumGraph::checkpoint()`** — public API for forced WAL checkpoint (`PRAGMA wal_checkpoint(TRUNCATE)`). Called by the `reindex` CLI after rebuilding the HNSW index to reclaim WAL space.
+- **Prepared statement caching** — Switched remaining `conn.prepare()` calls to `conn.prepare_cached()` in hot paths (memory CRUD, concept upsert). Uses rusqlite's per-connection LRU cache (default 16 entries).
+- **In-memory entity ID lookup index** — `GraphRuntime` now maintains a `HashMap<(kind, name), id>` (`parking_lot::RwLock`) for O(1) entity-by-name lookups.
+  - `AtheneumGraph::build_entity_id_index()` — full scan on open; rebuilt after migrations.
+  - `find_entity_id_by_kind_and_name()` — checks index first, falls back to SQL, caches on miss.
+  - `insert_entity_and_index()` — wrapper that inserts into graph + index atomically.
+  - `delete_graph_entities()` — invalidates index entries before deletion.
 
 ## [0.4.0] — 2026-06-09
 
