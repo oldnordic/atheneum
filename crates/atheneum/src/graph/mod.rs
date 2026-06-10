@@ -2,7 +2,11 @@ use anyhow::Result;
 use chrono::Utc;
 use rusqlite::params;
 use serde_json::Value;
-use sqlitegraph::{GraphEdge, GraphEntity, SqliteConfig, SqliteGraph};
+use sqlitegraph::{
+    GraphEdge, GraphEntity, SqliteConfig, SqliteGraph,
+    GraphEdgeCreate, GraphEntityCreate,
+    bulk_insert_edges, bulk_insert_entities,
+};
 
 use embed::HashEmbedder;
 
@@ -443,6 +447,44 @@ impl AtheneumGraph {
         Ok(edge_id)
     }
 
+    /// Batch insert entities in a single transaction. Updates the in-memory
+    /// entity ID index. Much faster than individual inserts for >1 item.
+    pub fn batch_insert_entities(&self, entities: &[GraphEntity]) -> Result<Vec<i64>> {
+        let creates: Vec<GraphEntityCreate> = entities
+            .iter()
+            .map(|e| GraphEntityCreate {
+                kind: e.kind.clone(),
+                name: e.name.clone(),
+                file_path: e.file_path.clone(),
+                data: e.data.clone(),
+            })
+            .collect();
+        let ids = bulk_insert_entities(&self.inner, &creates)
+            .map_err(|e| anyhow::Error::from(e))?;
+        for (entity, id) in entities.iter().zip(&ids) {
+            self.runtime.insert_entity_id(&entity.kind, &entity.name, *id);
+        }
+        Ok(ids)
+    }
+
+    /// Batch insert edges in a single transaction. No ontology validation —
+    /// caller must ensure domain/range constraints are satisfied.
+    pub fn batch_insert_edges(&self, edges: &[GraphEdge]) -> Result<Vec<i64>> {
+        let creates: Vec<GraphEdgeCreate> = edges
+            .iter()
+            .map(|e| GraphEdgeCreate {
+                from_id: e.from_id,
+                to_id: e.to_id,
+                edge_type: e.edge_type.clone(),
+                data: e.data.clone(),
+            })
+            .collect();
+        let ids = bulk_insert_edges(&self.inner, &creates)
+            .map_err(|e| anyhow::Error::from(e))?;
+        self.runtime.bump_navigation_generation();
+        Ok(ids)
+    }
+
     pub fn events_performed_by(&self, agent_id: i64) -> Result<Vec<GraphEntity>> {
         let mut events = Vec::new();
 
@@ -770,5 +812,43 @@ mod tests {
             result.is_ok(),
             "insert_edge should accept CausedBy from any entity kind to any entity kind"
         );
+    }
+
+    #[test]
+    fn batch_insert_entities_and_edges() {
+        let graph = AtheneumGraph::open_in_memory().expect("in-memory graph");
+
+        let entities: Vec<sqlitegraph::GraphEntity> = (0..5)
+            .map(|i| sqlitegraph::GraphEntity {
+                id: 0,
+                kind: EntityType::Agent.as_str().to_string(),
+                name: format!("agent-{i}"),
+                file_path: None,
+                data: serde_json::json!({}),
+            })
+            .collect();
+        let ids = graph.batch_insert_entities(&entities).expect("batch insert");
+        assert_eq!(ids.len(), 5);
+
+        // Verify index is populated
+        for (i, id) in ids.iter().enumerate() {
+            let resolved = graph
+                .find_entity_id_by_kind_and_name(EntityType::Agent.as_str(), &format!("agent-{i}"))
+                .expect("resolve");
+            assert_eq!(resolved, Some(*id));
+        }
+
+        let edges: Vec<sqlitegraph::GraphEdge> = ids
+            .windows(2)
+            .map(|w| sqlitegraph::GraphEdge {
+                id: 0,
+                from_id: w[0],
+                to_id: w[1],
+                edge_type: EdgeType::RelatedTo.as_str().to_string(),
+                data: serde_json::json!({}),
+            })
+            .collect();
+        let edge_ids = graph.batch_insert_edges(&edges).expect("batch edges");
+        assert_eq!(edge_ids.len(), 4);
     }
 }

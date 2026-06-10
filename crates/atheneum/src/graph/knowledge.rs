@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::Utc;
 use rusqlite::params;
 use serde_json::{json, Value};
-use sqlitegraph::GraphEntity;
+use sqlitegraph::{GraphEdge, GraphEntity};
 
 use super::cache::{CacheDomain, QueryCacheKey, QueryCacheValue};
 use super::{AtheneumGraph, EdgeType, EntityType};
@@ -81,19 +81,20 @@ impl AtheneumGraph {
             data,
         };
 
-        let knowledge_id = self
-            .inner
-            .insert_entity(&entity)
+        let knowledge_id = self.insert_entity_and_index(entity.clone())
             .map_err(|e| anyhow::anyhow!("Failed to insert Knowledge: {}", e))?;
 
-        for discovery in &discoveries {
-            let _ = self.insert_edge(
-                knowledge_id,
-                discovery.id,
-                EdgeType::DerivedFrom,
-                json!({"consolidation": "auto"}),
-            );
-        }
+        let edges: Vec<GraphEdge> = discoveries
+            .iter()
+            .map(|d| GraphEdge {
+                id: 0,
+                from_id: knowledge_id,
+                to_id: d.id,
+                edge_type: EdgeType::DerivedFrom.as_str().to_string(),
+                data: json!({"consolidation": "auto"}),
+            })
+            .collect();
+        let _ = self.batch_insert_edges(&edges);
 
         let indexed = GraphEntity {
             id: knowledge_id,
