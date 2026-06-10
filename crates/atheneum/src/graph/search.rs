@@ -298,6 +298,7 @@ impl AtheneumGraph {
         k: usize,
         project_id: Option<&str>,
         entity_kind: Option<&str>,
+        max_tokens: Option<usize>,
     ) -> Result<Vec<SearchResult>> {
         self.runtime.record_search_query();
         let cache_key = QueryCacheKey::LexicalSearch {
@@ -305,6 +306,7 @@ impl AtheneumGraph {
             k,
             project_id: project_id.map(str::to_string),
             entity_kind: entity_kind.map(str::to_string),
+            max_tokens,
         };
         if let Some(QueryCacheValue::SearchResults(results)) =
             self.runtime.cache_get(&cache_key, CacheDomain::Search)
@@ -355,6 +357,26 @@ impl AtheneumGraph {
             self.runtime.record_hnsw_fallback_scan();
             self.fallback_lexical_search(query, k, project_id, entity_kind, results)?
         };
+
+        let results = if let Some(max_tokens) = max_tokens {
+            let mut budget = max_tokens;
+            let mut kept = Vec::new();
+            for result in results {
+                let cost =
+                    (result.name.len() + result.kind.len() + result.data.to_string().len() + 20)
+                        / 4;
+                if cost <= budget {
+                    kept.push(result);
+                    budget = budget.saturating_sub(cost);
+                } else {
+                    break;
+                }
+            }
+            kept
+        } else {
+            results
+        };
+
         self.runtime.cache_store(
             cache_key,
             CacheDomain::Search,
@@ -372,7 +394,7 @@ impl AtheneumGraph {
         entity_kind: Option<&str>,
         min_score: f32,
     ) -> Result<Vec<SearchResult>> {
-        let mut results = self.lexical_search(query, k, project_id, entity_kind)?;
+        let mut results = self.lexical_search(query, k, project_id, entity_kind, None)?;
         results.retain(|result| result.score >= min_score);
         results.sort_by(|left, right| {
             right
@@ -396,7 +418,7 @@ impl AtheneumGraph {
         project_id: Option<&str>,
         entity_kind: Option<&str>,
     ) -> Result<Vec<SearchResult>> {
-        self.lexical_search(name, top_k, project_id, entity_kind)
+        self.lexical_search(name, top_k, project_id, entity_kind, None)
     }
 
     /// Resolve a name to a single best-matching entity above a confidence threshold.

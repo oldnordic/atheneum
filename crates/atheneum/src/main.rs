@@ -281,7 +281,7 @@ fn run() -> anyhow::Result<()> {
         "navigate" => {
             if args.len() < 4 {
                 eprintln!(
-                    "Usage: atheneum navigate <db-path> <query> [--k N] [--depth N] [--project P] [--kind K]"
+                    "Usage: atheneum navigate <db-path> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N]"
                 );
                 std::process::exit(1);
             }
@@ -290,6 +290,7 @@ fn run() -> anyhow::Result<()> {
             let opts = parse_options(&args[4..])?;
             let k = parse_usize_option(opts.k.as_deref(), "k")?.unwrap_or(5);
             let depth = parse_u32_option(opts.depth.as_deref(), "depth")?.unwrap_or(2);
+            let max_tokens = parse_usize_option(opts.max_tokens.as_deref(), "max-tokens")?;
             let graph = AtheneumGraph::open(&db_path)?;
             let plan = graph.preview_navigate_query(
                 query,
@@ -307,6 +308,7 @@ fn run() -> anyhow::Result<()> {
                 depth,
                 opts.project.as_deref(),
                 opts.kind.as_deref(),
+                max_tokens,
             )?;
             print_json(json!({
                 "query": query,
@@ -314,6 +316,7 @@ fn run() -> anyhow::Result<()> {
                 "depth": depth,
                 "kind": opts.kind,
                 "project": opts.project,
+                "max_tokens": max_tokens,
                 "plan": plan,
                 "subgraphs": views.iter().map(subgraph_to_json).collect::<Vec<_>>(),
             }))?;
@@ -493,32 +496,36 @@ fn run() -> anyhow::Result<()> {
         }
         "search" => {
             if args.len() < 4 {
-                eprintln!("Usage: atheneum search <db-path> <query> [--k N] [--project P]");
+                eprintln!("Usage: atheneum search <db-path> <query> [--k N] [--project P] [--max-tokens N]");
                 std::process::exit(1);
             }
             let db_path = PathBuf::from(&args[2]);
             let query = &args[3];
             let opts = parse_options(&args[4..])?;
             let k = parse_usize_option(opts.k.as_deref(), "k")?.unwrap_or(10);
+            let max_tokens = parse_usize_option(opts.max_tokens.as_deref(), "max-tokens")?;
             let graph = AtheneumGraph::open(&db_path)?;
-            let hits = graph.lexical_search(query, k, opts.project.as_deref(), None)?;
+            let hits = graph.lexical_search(query, k, opts.project.as_deref(), None, max_tokens)?;
             print_json(json!({
                 "query": query,
                 "k": k,
                 "project": opts.project,
+                "max_tokens": max_tokens,
                 "results": hits.iter().map(search_result_to_json).collect::<Vec<_>>(),
             }))?;
         }
         "query-knowledge" => {
             if args.len() < 4 {
-                eprintln!("Usage: atheneum query-knowledge <db-path> <target> [--project P]");
+                eprintln!("Usage: atheneum query-knowledge <db-path> <target> [--project P] [--max-tokens N]");
                 std::process::exit(1);
             }
             let db_path = PathBuf::from(&args[2]);
             let target = &args[3];
             let opts = parse_options(&args[4..])?;
+            let max_tokens = parse_usize_option(opts.max_tokens.as_deref(), "max-tokens")?;
             let graph = AtheneumGraph::open(&db_path)?;
-            let result = graph.query_knowledge_in_project(target, opts.project.as_deref())?;
+            let result =
+                graph.query_knowledge_in_project(target, opts.project.as_deref(), max_tokens)?;
             print_json(result)?;
         }
         "consolidate" => {
@@ -820,11 +827,11 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     writeln!(writer)?;
     writeln!(
         writer,
-        "  search <db-path> <query> [--k N] [--project P]  HNSW/lexical search"
+        "  search <db-path> <query> [--k N] [--project P] [--max-tokens N]  HNSW/lexical search"
     )?;
     writeln!(
         writer,
-        "  navigate <db-path> <query> [--k N] [--depth N] [--project P] [--kind K]  Search then walk graph subgraphs"
+        "  navigate <db-path> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N]  Search then walk graph subgraphs"
     )?;
     writeln!(
         writer,
@@ -836,7 +843,7 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     )?;
     writeln!(
         writer,
-        "  query-knowledge <db-path> <target> [--project P]  Aggregated knowledge"
+        "  query-knowledge <db-path> <target> [--project P] [--max-tokens N]  Aggregated knowledge"
     )?;
     writeln!(
         writer,
@@ -955,6 +962,7 @@ struct CliOptions {
     status: Option<String>,
     scope: Option<String>,
     confidence: Option<String>,
+    max_tokens: Option<String>,
     dry_run: bool,
     auto_merge: bool,
 }
@@ -987,6 +995,7 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
                 "--status" => opts.status = Some(value),
                 "--scope" => opts.scope = Some(value),
                 "--confidence" => opts.confidence = Some(value),
+                "--max-tokens" => opts.max_tokens = Some(value),
                 other => anyhow::bail!("unknown option: {}", other),
             }
             i += 2;

@@ -129,7 +129,7 @@ fn knowledge_and_wiki_queries_cache_and_invalidate_on_writes() {
         .expect("ingest wiki");
 
     let knowledge_first = graph
-        .query_knowledge_in_project("query_cache", Some("atheneum"))
+        .query_knowledge_in_project("query_cache", Some("atheneum"), None)
         .expect("knowledge first");
     assert_eq!(knowledge_first["discovery_count"], json!(1));
 
@@ -137,7 +137,7 @@ fn knowledge_and_wiki_queries_cache_and_invalidate_on_writes() {
     assert_eq!(pages_first.len(), 1);
 
     let _knowledge_second = graph
-        .query_knowledge_in_project("query_cache", Some("atheneum"))
+        .query_knowledge_in_project("query_cache", Some("atheneum"), None)
         .expect("knowledge second");
     let _pages_second = graph
         .list_wiki_pages(Some("atheneum"))
@@ -165,7 +165,7 @@ fn knowledge_and_wiki_queries_cache_and_invalidate_on_writes() {
         .expect("ingest second wiki");
 
     let knowledge_refreshed = graph
-        .query_knowledge_in_project("query_cache", Some("atheneum"))
+        .query_knowledge_in_project("query_cache", Some("atheneum"), None)
         .expect("knowledge refreshed");
     assert_eq!(knowledge_refreshed["handoff_count"], json!(1));
 
@@ -193,7 +193,7 @@ fn lexical_search_uses_cache_and_invalidates_on_write() {
     graph.build_search_index().expect("build index");
 
     let first = graph
-        .lexical_search("cache invalidation test", 5, None, None)
+        .lexical_search("cache invalidation test", 5, None, None, None)
         .expect("first search");
     assert!(!first.is_empty(), "search should return results");
 
@@ -203,7 +203,7 @@ fn lexical_search_uses_cache_and_invalidates_on_write() {
     assert_eq!(stats_after_first.cache_misses, 1);
 
     let second = graph
-        .lexical_search("cache invalidation test", 5, None, None)
+        .lexical_search("cache invalidation test", 5, None, None, None)
         .expect("second search");
     assert_eq!(second.len(), first.len());
 
@@ -222,7 +222,7 @@ fn lexical_search_uses_cache_and_invalidates_on_write() {
         .expect("store second discovery");
 
     let refreshed = graph
-        .lexical_search("cache invalidation test", 5, None, None)
+        .lexical_search("cache invalidation test", 5, None, None, None)
         .expect("search after write");
     assert!(
         refreshed.len() >= first.len(),
@@ -248,7 +248,7 @@ fn navigate_uses_cache_and_invalidates_on_edge_insert() {
     graph.build_search_index().expect("build index");
 
     let first = graph
-        .navigate("navigation cache target", 5, 2, None, None)
+        .navigate("navigation cache target", 5, 2, None, None, None)
         .expect("first navigate");
     assert!(!first.is_empty(), "navigate should return results");
 
@@ -257,7 +257,7 @@ fn navigate_uses_cache_and_invalidates_on_edge_insert() {
     assert_eq!(stats_after_first.cache_hits, 0);
 
     let second = graph
-        .navigate("navigation cache target", 5, 2, None, None)
+        .navigate("navigation cache target", 5, 2, None, None, None)
         .expect("second navigate");
     assert_eq!(second.len(), first.len());
 
@@ -284,7 +284,7 @@ fn navigate_uses_cache_and_invalidates_on_edge_insert() {
         .expect("insert edge");
 
     let refreshed = graph
-        .navigate("navigation cache target", 5, 2, None, None)
+        .navigate("navigation cache target", 5, 2, None, None, None)
         .expect("navigate after edge insert");
     assert!(
         refreshed
@@ -353,7 +353,7 @@ fn hnsw_counters_track_hits_and_fallbacks() {
 
     // A broad query that matches HNSW fully with k=1 should be a hit.
     let _ = graph
-        .lexical_search("test discovery", 1, None, None)
+        .lexical_search("test discovery", 1, None, None, None)
         .expect("search hit");
     let stats = graph.runtime_stats();
     assert_eq!(stats.search_queries, 1);
@@ -361,7 +361,7 @@ fn hnsw_counters_track_hits_and_fallbacks() {
 
     // A query with k larger than the entity count forces fallback to token scan.
     let _ = graph
-        .lexical_search("xyz_unlikely_fallback_query", 20, None, None)
+        .lexical_search("xyz_unlikely_fallback_query", 20, None, None, None)
         .expect("search fallback");
     let stats = graph.runtime_stats();
     assert_eq!(stats.search_queries, 2);

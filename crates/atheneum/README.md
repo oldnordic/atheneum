@@ -206,11 +206,11 @@ DREAM:
   dream <db> [--scope S] [--project P] [--dry-run|--auto-merge]  Reflective memory consolidation
 
 QUERY & NAVIGATION:
-  search <db> <query> [--k N] [--project P]         HNSW/lexical search
-  navigate <db> <query> [--k N] [--depth N] [--project P] [--kind K]  Search then walk subgraphs
+  search <db> <query> [--k N] [--project P] [--max-tokens N]         HNSW/lexical search
+  navigate <db> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N]  Search then walk subgraphs
   query-wiki <db> <path>                            Query a wiki page by path
   query-journal <db> <path>                         Query journal sections by path
-  query-knowledge <db> <target> [--project P]       Aggregated knowledge
+  query-knowledge <db> <target> [--project P] [--max-tokens N]       Aggregated knowledge
   query-sessions <db> [--project P] [--offset N] [--limit N]  Session history
   query-events <db> [--session <id>] [--type <t>] [--offset N] [--limit N]  Event log
   list-pages <db> [--project P] [--offset N] [--limit N]  List wiki pages (default limit 1000)

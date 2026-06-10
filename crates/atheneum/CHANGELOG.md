@@ -9,7 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Token budgets on retrieval APIs.** All major query paths now accept an optional `max_tokens` parameter to prevent context bloat when feeding results to LLMs:
+  - `AtheneumGraph::lexical_search(..., max_tokens)` — truncates the result list greedily by estimated token cost per `SearchResult`.
+  - `AtheneumGraph::navigate(..., max_tokens)` — passes each `SubgraphView` through `truncate_subgraph`, keeping the entry entity and dropping neighbors until the budget fits.
+  - `AtheneumGraph::query_knowledge(..., max_tokens)` and `query_knowledge_in_project(..., max_tokens)` — post-hoc truncation of `discoveries` and `handoffs` arrays; sets `"truncated": true` in the JSON output when truncation occurs.
+  - CLI `--max-tokens N` flag added to `search`, `navigate`, and `query-knowledge` commands.
+  - Cache keys include `max_tokens` so truncated and untruncated queries do not collide.
+  - Regression tests: `test_lexical_search_respects_max_tokens`, `test_navigate_respects_max_tokens`, `test_query_knowledge_truncates_with_max_tokens`.
+
 - `AtheneumGraph::store_memory()` and `AtheneumGraph::preview_memory()` now accept an optional `tags: Option<&[String]>` parameter. Tags are stored in the entity's JSON `data` field alongside `key`, `scope`, `content`, and `confidence`.
+
+### Fixed
+
+- **`task-archive` CHECK constraint bug.** The `tasks` table created by migration v2 had a CHECK constraint allowing only `('TODO','IN_PROGRESS','DONE','BLOCKED')`, omitting `'ARCHIVED'`. This caused `task-archive` and `update_task_status(..., KanbanStatus::Archived)` to fail with `CHECK constraint failed` on both existing and new databases.
+  - Migration v2 (`db/planning.rs`) now creates the table with `'ARCHIVED'` in the constraint.
+  - Migration v8 (`migrate_v8_planning_archive_fix`) recreates the `tasks`, `requirements`, and `blockers` tables for existing databases, preserving all data and foreign-key relationships.
+  - Regression test: `test_archive_task_status_transition`.
 
 ### Changed
 

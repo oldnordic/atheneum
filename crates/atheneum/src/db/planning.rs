@@ -21,7 +21,7 @@ pub fn migrate_v2_planning(tx: &Transaction<'_>) -> Result<()> {
              title TEXT NOT NULL,
              description TEXT,
              status TEXT NOT NULL DEFAULT 'TODO'
-                 CHECK(status IN ('TODO','IN_PROGRESS','DONE','BLOCKED')),
+                 CHECK(status IN ('TODO','IN_PROGRESS','DONE','BLOCKED','ARCHIVED')),
              project_id TEXT,
              metadata TEXT,
              created_at TEXT NOT NULL,
@@ -57,6 +57,75 @@ pub fn migrate_v2_planning(tx: &Transaction<'_>) -> Result<()> {
     backfill_tasks(tx)?;
     backfill_requirements_and_blockers(tx)?;
 
+    Ok(())
+}
+
+/// Stage 11c-fix: The original v2 planning migration omitted 'ARCHIVED' from the
+/// tasks.status CHECK constraint.  This migration recreates the table with the
+/// correct constraint for existing databases.
+pub fn migrate_v8_planning_archive_fix(tx: &Transaction<'_>) -> Result<()> {
+    // SQLite does not support ALTER TABLE for CHECK constraints.  We must
+    // recreate the table.  To satisfy foreign-key checks we drop children
+    // (requirements, blockers) first, then the parent (tasks).
+    tx.execute_batch(
+        "ALTER TABLE tasks RENAME TO tasks_old;
+         ALTER TABLE requirements RENAME TO requirements_old;
+         ALTER TABLE blockers RENAME TO blockers_old;
+
+         -- Drop old indexes so we can reuse the names on the new tables
+         DROP INDEX IF EXISTS tasks_project_idx;
+         DROP INDEX IF EXISTS tasks_status_idx;
+         DROP INDEX IF EXISTS tasks_title_idx;
+         DROP INDEX IF EXISTS requirements_task_idx;
+         DROP INDEX IF EXISTS blockers_task_idx;
+
+         CREATE TABLE tasks (
+             id INTEGER PRIMARY KEY,
+             title TEXT NOT NULL,
+             description TEXT,
+             status TEXT NOT NULL DEFAULT 'TODO'
+                 CHECK(status IN ('TODO','IN_PROGRESS','DONE','BLOCKED','ARCHIVED')),
+             project_id TEXT,
+             metadata TEXT,
+             created_at TEXT NOT NULL,
+             status_updated_at TEXT
+         );
+         CREATE INDEX tasks_project_idx ON tasks(project_id);
+         CREATE INDEX tasks_status_idx ON tasks(status);
+         CREATE INDEX tasks_title_idx ON tasks(title);
+
+         INSERT INTO tasks SELECT * FROM tasks_old;
+
+         CREATE TABLE requirements (
+             id INTEGER PRIMARY KEY,
+             task_id INTEGER NOT NULL REFERENCES tasks(id),
+             statement TEXT NOT NULL,
+             status TEXT NOT NULL DEFAULT 'UNMET' CHECK(status IN ('MET','UNMET')),
+             verification_method TEXT,
+             created_at TEXT NOT NULL,
+             met_at TEXT
+         );
+         CREATE INDEX requirements_task_idx ON requirements(task_id);
+
+         INSERT INTO requirements SELECT * FROM requirements_old;
+
+         CREATE TABLE blockers (
+             id INTEGER PRIMARY KEY,
+             task_id INTEGER NOT NULL REFERENCES tasks(id),
+             description TEXT NOT NULL,
+             blocker_type TEXT NOT NULL
+                 CHECK(blocker_type IN ('DEPENDENCY','BUG','INFO_GAP')),
+             resolved_at TEXT,
+             created_at TEXT NOT NULL
+         );
+         CREATE INDEX blockers_task_idx ON blockers(task_id);
+
+         INSERT INTO blockers SELECT * FROM blockers_old;
+
+         DROP TABLE blockers_old;
+         DROP TABLE requirements_old;
+         DROP TABLE tasks_old;",
+    )?;
     Ok(())
 }
 

@@ -133,7 +133,7 @@ fn test_memory_searchable() {
         .unwrap();
 
     let results = graph
-        .lexical_search("gpu_warning", 10, None, Some("Memory"))
+        .lexical_search("gpu_warning", 10, None, Some("Memory"), None)
         .unwrap();
     assert!(
         results.iter().any(|r| r.name == "gpu_warning"),

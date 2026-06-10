@@ -35,7 +35,7 @@ fn test_semantic_search_returns_matching_discoveries() {
 
     // Query that semantically matches the router discovery
     let results = graph
-        .lexical_search("router construction axum routes", 5, None, None)
+        .lexical_search("router construction axum routes", 5, None, None, None)
         .expect("search");
 
     assert!(!results.is_empty(), "search should return some results");
@@ -63,7 +63,7 @@ fn test_semantic_search_respects_k_limit() {
     graph.build_search_index().expect("build_search_index");
 
     let results = graph
-        .lexical_search("test discovery", 3, None, None)
+        .lexical_search("test discovery", 3, None, None, None)
         .expect("search");
     assert!(
         results.len() <= 3,
@@ -98,7 +98,7 @@ fn test_semantic_search_filtered_by_project() {
     graph.build_search_index().expect("build_search_index");
 
     let envoy_only = graph
-        .lexical_search("message", 10, Some("envoy"), None)
+        .lexical_search("message", 10, Some("envoy"), None, None)
         .expect("search");
     assert!(
         envoy_only
@@ -116,7 +116,7 @@ fn test_semantic_search_filtered_by_project() {
     );
 
     let mag_only = graph
-        .lexical_search("message", 10, Some("magellan"), None)
+        .lexical_search("message", 10, Some("magellan"), None, None)
         .expect("search");
     assert!(mag_only
         .iter()
@@ -156,11 +156,49 @@ fn test_semantic_search_falls_back_when_hnsw_index_is_inconsistent() {
 
     let graph = AtheneumGraph::open(&db_path).expect("reopen");
     let results = graph
-        .lexical_search("build router", 5, None, None)
+        .lexical_search("build router", 5, None, None, None)
         .expect("search should fall back instead of failing");
 
     assert!(
         results.iter().any(|r| r.name == "agent: build_router"),
         "fallback search should still find the discovery"
+    );
+}
+
+#[test]
+fn test_lexical_search_respects_max_tokens() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+
+    // Store several discoveries with verbose metadata
+    for i in 0..5 {
+        graph
+            .store_discovery(
+                "agent1",
+                "symbol",
+                &format!("target_{}", i),
+                json!({"description": "a".repeat(1000)}),
+            )
+            .expect("store");
+    }
+
+    // Without budget: should find our 5 stored discoveries
+    let all = graph
+        .lexical_search("target", 10, None, None, None)
+        .expect("search");
+    assert!(
+        all.len() >= 5,
+        "should find at least the 5 stored discoveries, got {}",
+        all.len()
+    );
+
+    // With tight budget: should return fewer results
+    let truncated = graph
+        .lexical_search("target", 10, None, None, Some(50))
+        .expect("search");
+    assert!(
+        truncated.len() < all.len(),
+        "max_tokens should truncate results: got {} vs {}",
+        truncated.len(),
+        all.len()
     );
 }

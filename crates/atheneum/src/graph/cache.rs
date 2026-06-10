@@ -50,12 +50,14 @@ pub(crate) enum QueryCacheKey {
     QueryKnowledge {
         target: String,
         project_id: Option<String>,
+        max_tokens: Option<usize>,
     },
     LexicalSearch {
         query: String,
         k: usize,
         project_id: Option<String>,
         entity_kind: Option<String>,
+        max_tokens: Option<usize>,
     },
     Navigate {
         query: String,
@@ -63,6 +65,7 @@ pub(crate) enum QueryCacheKey {
         depth: u32,
         project_id: Option<String>,
         entity_kind: Option<String>,
+        max_tokens: Option<usize>,
     },
     Hopgraph {
         query: String,

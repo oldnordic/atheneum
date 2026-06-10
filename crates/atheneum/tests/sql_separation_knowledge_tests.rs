@@ -153,7 +153,7 @@ fn test_semantic_search_still_works_with_sql_backed_discoveries() {
 
     graph.build_search_index().expect("build");
     let results = graph
-        .lexical_search("router axum routes", 5, None, None)
+        .lexical_search("router axum routes", 5, None, None, None)
         .expect("search");
 
     assert!(!results.is_empty());

@@ -218,9 +218,9 @@ pub mod direct {
             let graph = self.graph.lock().await;
             tokio::task::block_in_place(|| {
                 if let Some(p) = project {
-                    graph.query_knowledge_in_project(target, Some(p))
+                    graph.query_knowledge_in_project(target, Some(p), None)
                 } else {
-                    graph.query_knowledge(target)
+                    graph.query_knowledge(target, None)
                 }
             })
         }
@@ -228,7 +228,7 @@ pub mod direct {
         async fn search(&self, query: &str, k: usize, project: Option<&str>) -> Result<Value> {
             let graph = self.graph.lock().await;
             tokio::task::block_in_place(|| {
-                let results = graph.lexical_search(query, k, project, None)?;
+                let results = graph.lexical_search(query, k, project, None, None)?;
                 Ok(serde_json::to_value(results)?)
             })
         }
@@ -289,7 +289,7 @@ pub mod direct {
         async fn navigate(&self, query: &str, k: usize, depth: u32) -> Result<Value> {
             let graph = self.graph.lock().await;
             tokio::task::block_in_place(|| {
-                let results = graph.navigate(query, k, depth, None, None)?;
+                let results = graph.navigate(query, k, depth, None, None, None)?;
                 let views: Vec<Value> = results
                     .into_iter()
                     .map(|v| {

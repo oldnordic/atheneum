@@ -39,6 +39,11 @@ const MIGRATIONS: &[(u32, &str, Migration)] = &[
     (5, "hook-compat", hook_compat::migrate_v5_hook_compat),
     (6, "transcript-imports", transcripts::migrate_v6_transcripts),
     (7, "memory-domain", memory::migrate_v7_memory),
+    (
+        8,
+        "planning-archive-fix",
+        planning::migrate_v8_planning_archive_fix,
+    ),
 ];
 
 /// Apply any pending migrations to the connection. Idempotent — already-

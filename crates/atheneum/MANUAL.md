@@ -473,7 +473,10 @@ let results = graph.full_text_search("query_sessions")?;
 
 // Lexical search via HNSW hash-projected index.
 // Matches on shared tokens — not neural/semantic. "car" won't match "automobile".
-let results = graph.lexical_search("SQL parameter ordering bug", 5, Some("atheneum"))?;
+let results = graph.lexical_search("SQL parameter ordering bug", 5, Some("atheneum"), None, None)?;
+
+// Token-budgeted search — truncate results to fit a context window.
+let results = graph.lexical_search("SQL parameter ordering bug", 5, Some("atheneum"), None, Some(500))?;
 ```
 
 ---
@@ -597,6 +600,9 @@ atheneum task-create <db-path> <title> [description] [--project P]
 # List tasks (default: non-archived)
 atheneum task-list <db-path> [--project P] [--status S]
 
+# List archived tasks explicitly
+atheneum task-list <db-path> --status ARCHIVED [--project P]
+
 # Update task status
 atheneum task-update <db-path> <task-id> <status>
 
@@ -642,10 +648,10 @@ Output is a JSON `DreamReport` with findings organized by phase (DEDUPLICATE, ST
 
 ```bash
 # HNSW/lexical search over all entities
-atheneum search <db-path> <query> [--k N] [--project P]
+atheneum search <db-path> <query> [--k N] [--project P] [--max-tokens N]
 
 # Search then BFS-walk graph subgraphs
-atheneum navigate <db-path> <query> [--k N] [--depth N] [--project P] [--kind K]
+atheneum navigate <db-path> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N]
 
 # Query a wiki page by path
 atheneum query-wiki <db-path> <path>
@@ -654,7 +660,7 @@ atheneum query-wiki <db-path> <path>
 atheneum query-journal <db-path> <path>
 
 # Aggregated knowledge for a target
-atheneum query-knowledge <db-path> <target> [--project P]
+atheneum query-knowledge <db-path> <target> [--project P] [--max-tokens N]
 
 # Session history
 atheneum query-sessions <db-path> [--project P] [--offset N] [--limit N]
@@ -678,9 +684,11 @@ atheneum neighbors <db-path> <entity-id> [--depth N]
 atheneum graph-stats <db-path>
 ```
 
-`search` uses the HNSW lexical index. It matches on shared tokens -- not semantic similarity. "car" will not match "automobile". Good for symbol and identifier search.
+`search` uses the HNSW lexical index. It matches on shared tokens -- not semantic similarity. "car" will not match "automobile". Good for symbol and identifier search. Use `--max-tokens` to truncate the result list before it reaches your LLM context window.
 
-`navigate` performs a search, then expands each hit into a subgraph using BFS. The `--kind` flag filters by entity type (accepts aliases like `memory`, `memories`, `wiki`, `discoveries`). The output includes the validated query plan plus subgraph views.
+`navigate` performs a search, then expands each hit into a subgraph using BFS. The `--kind` flag filters by entity type (accepts aliases like `memory`, `memories`, `wiki`, `discoveries`). The output includes the validated query plan plus subgraph views. Use `--max-tokens` to truncate each subgraph view to a token budget (the entry entity is always kept; neighbors are dropped until the budget fits).
+
+`query-knowledge` aggregates discoveries and handoffs for a target. Use `--max-tokens` to limit the total response size; discoveries are dropped first, then handoffs, and `"truncated": true` is set when truncation occurs.
 
 ### Maintenance
 

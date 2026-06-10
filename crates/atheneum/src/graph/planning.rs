@@ -425,6 +425,11 @@ mod tests {
         );
         assert_eq!(KanbanStatus::parse("DONE"), Some(KanbanStatus::Done));
         assert_eq!(KanbanStatus::parse("BLOCKED"), Some(KanbanStatus::Blocked));
+        assert_eq!(
+            KanbanStatus::parse("ARCHIVED"),
+            Some(KanbanStatus::Archived)
+        );
+        assert_eq!(KanbanStatus::parse("ARCHIVE"), Some(KanbanStatus::Archived));
         assert_eq!(KanbanStatus::parse("UNKNOWN"), None);
         assert_eq!(KanbanStatus::parse(""), None);
     }

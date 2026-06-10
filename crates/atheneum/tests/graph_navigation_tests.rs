@@ -158,7 +158,7 @@ fn test_navigate_finds_entry_points_and_walks() {
 
     // Navigate on "router" should find build_router → walk graph
     let views = g
-        .navigate("router construction axum", 5, 2, None, None)
+        .navigate("router construction axum", 5, 2, None, None, None)
         .expect("navigate");
 
     assert!(
@@ -201,7 +201,7 @@ fn test_navigate_repairs_lowercase_kind_filter() {
         .expect("store memory");
 
     let views = g
-        .navigate("timezone", 5, 1, None, Some("memory"))
+        .navigate("timezone", 5, 1, None, Some("memory"), None)
         .expect("navigate");
 
     assert!(!views.is_empty(), "navigate should repair lowercase kinds");
@@ -269,7 +269,7 @@ fn test_discovery_auto_indexed() {
 
     // After store_discovery we should be able to search WITHOUT manually calling build_search_index()
     let results = g
-        .lexical_search("semantic navigation HNSW traversal", 5, None, None)
+        .lexical_search("semantic navigation HNSW traversal", 5, None, None, None)
         .expect("semantic_search");
 
     assert!(
@@ -279,5 +279,47 @@ fn test_discovery_auto_indexed() {
     assert_eq!(
         results[0].name, "agent: semantic_navigation",
         "best match should be the discovery we just stored"
+    );
+}
+
+#[test]
+fn test_navigate_respects_max_tokens() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+
+    // Create a chain: A -> B -> C
+    let a = graph
+        .store_discovery("agent1", "symbol", "root", json!({"file":"src/a.rs"}))
+        .expect("store a");
+    let b = graph
+        .store_discovery("agent1", "symbol", "child", json!({"file":"src/b.rs"}))
+        .expect("store b");
+    let c = graph
+        .store_discovery("agent1", "symbol", "grandchild", json!({"file":"src/c.rs"}))
+        .expect("store c");
+
+    graph
+        .insert_edge(a, b, atheneum::EdgeType::Explains, json!({}))
+        .expect("edge a->b");
+    graph
+        .insert_edge(b, c, atheneum::EdgeType::Explains, json!({}))
+        .expect("edge b->c");
+
+    // Without budget: full subgraph
+    let full = graph
+        .navigate("root", 1, 2, None, None, None)
+        .expect("navigate");
+    assert!(!full.is_empty());
+    let full_entities = full[0].entities.len();
+
+    // With tight budget: should truncate entities
+    let truncated = graph
+        .navigate("root", 1, 2, None, None, Some(10))
+        .expect("navigate");
+    assert!(!truncated.is_empty());
+    assert!(
+        truncated[0].entities.len() <= full_entities,
+        "max_tokens should reduce entity count: got {} vs {}",
+        truncated[0].entities.len(),
+        full_entities
     );
 }

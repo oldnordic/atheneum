@@ -140,11 +140,12 @@ impl AtheneumGraph {
         Ok(results)
     }
 
-    pub fn query_knowledge(&self, target: &str) -> Result<Value> {
+    pub fn query_knowledge(&self, target: &str, max_tokens: Option<usize>) -> Result<Value> {
         self.runtime.record_knowledge_query();
         let cache_key = QueryCacheKey::QueryKnowledge {
             target: target.to_string(),
             project_id: None,
+            max_tokens,
         };
         if let Some(QueryCacheValue::Json(value)) =
             self.runtime.cache_get(&cache_key, CacheDomain::Knowledge)
@@ -216,7 +217,7 @@ impl AtheneumGraph {
             0.0
         };
 
-        let value = json!({
+        let mut value = json!({
             "target": target,
             "queried_at": Utc::now().to_rfc3339(),
             "total_entities": total_entities,
@@ -233,6 +234,9 @@ impl AtheneumGraph {
                 "percentage_reduction": percentage_reduction
             }
         });
+        if let Some(max_tokens) = max_tokens {
+            value = truncate_knowledge_value(value, max_tokens);
+        }
         self.runtime.cache_store(
             cache_key,
             CacheDomain::Knowledge,
@@ -245,15 +249,17 @@ impl AtheneumGraph {
         &self,
         target: &str,
         project_id: Option<&str>,
+        max_tokens: Option<usize>,
     ) -> Result<Value> {
         let Some(pid) = project_id else {
-            return self.query_knowledge(target);
+            return self.query_knowledge(target, max_tokens);
         };
 
         self.runtime.record_knowledge_query();
         let cache_key = QueryCacheKey::QueryKnowledge {
             target: target.to_string(),
             project_id: Some(pid.to_string()),
+            max_tokens,
         };
         if let Some(QueryCacheValue::Json(value)) =
             self.runtime.cache_get(&cache_key, CacheDomain::Knowledge)
@@ -327,7 +333,7 @@ impl AtheneumGraph {
             0.0
         };
 
-        let value = json!({
+        let mut value = json!({
             "target": target,
             "project_id": project_id,
             "queried_at": Utc::now().to_rfc3339(),
@@ -345,6 +351,9 @@ impl AtheneumGraph {
                 "percentage_reduction": percentage_reduction
             }
         });
+        if let Some(max_tokens) = max_tokens {
+            value = truncate_knowledge_value(value, max_tokens);
+        }
         self.runtime.cache_store(
             cache_key,
             CacheDomain::Knowledge,
@@ -352,4 +361,42 @@ impl AtheneumGraph {
         );
         Ok(value)
     }
+}
+
+/// Truncate a knowledge query response to fit within a token budget.
+/// Removes entries from `discoveries` and `handoffs` arrays until the
+/// estimated token count falls under the limit.
+fn truncate_knowledge_value(mut value: Value, max_tokens: usize) -> Value {
+    const CHARS_PER_TOKEN: usize = 4;
+    let mut estimated = value.to_string().len() / CHARS_PER_TOKEN;
+    if estimated <= max_tokens {
+        return value;
+    }
+    value["truncated"] = json!(true);
+    while estimated > max_tokens {
+        let removed = if let Some(arr) = value.get_mut("discoveries").and_then(|v| v.as_array_mut())
+        {
+            if !arr.is_empty() {
+                arr.pop();
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if !removed {
+            if let Some(arr) = value.get_mut("handoffs").and_then(|v| v.as_array_mut()) {
+                if !arr.is_empty() {
+                    arr.pop();
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        estimated = value.to_string().len() / CHARS_PER_TOKEN;
+    }
+    value
 }

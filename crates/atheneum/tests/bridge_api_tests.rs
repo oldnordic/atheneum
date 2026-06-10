@@ -486,7 +486,7 @@ fn test_query_knowledge_aggregates_discoveries() {
         .expect("Failed to store discovery 3");
 
     let knowledge = graph
-        .query_knowledge("http_handler")
+        .query_knowledge("http_handler", None)
         .expect("Failed to query knowledge");
 
     assert_eq!(knowledge["target"], "http_handler");
@@ -514,7 +514,7 @@ fn test_query_knowledge_includes_handoffs() {
         .expect("Failed to store handoff");
 
     let knowledge = graph
-        .query_knowledge("http_handler")
+        .query_knowledge("http_handler", None)
         .expect("Failed to query knowledge");
 
     // Handoff should be included because it mentions the target in the task
@@ -559,7 +559,7 @@ fn test_query_knowledge_calculates_token_savings() {
         .expect("Failed to store discovery 3");
 
     let knowledge = graph
-        .query_knowledge("large_file.rs")
+        .query_knowledge("large_file.rs", None)
         .expect("Failed to query knowledge");
 
     let savings = knowledge["token_savings"].as_object().unwrap();
@@ -574,7 +574,7 @@ fn test_query_knowledge_empty_target() {
     let graph = AtheneumGraph::open_in_memory().expect("Failed to create graph");
 
     let knowledge = graph
-        .query_knowledge("unknown")
+        .query_knowledge("unknown", None)
         .expect("Failed to query knowledge");
 
     assert_eq!(knowledge["target"], "unknown");
@@ -596,10 +596,47 @@ fn test_query_knowledge_includes_metadata() {
         .expect("Failed to store discovery");
 
     let knowledge = graph
-        .query_knowledge("test_target")
+        .query_knowledge("test_target", None)
         .expect("Failed to query knowledge");
 
     let obj = knowledge.as_object().expect("Knowledge should be object");
     assert!(obj.contains_key("queried_at"));
     assert!(obj.contains_key("total_entities"));
+}
+
+#[test]
+fn test_query_knowledge_truncates_with_max_tokens() {
+    let graph = AtheneumGraph::open_in_memory().expect("Failed to create graph");
+
+    for i in 0..5 {
+        graph
+            .store_discovery(
+                "claude1",
+                "symbol",
+                "bulky_target",
+                json!({"file": format!("src/file_{}.rs", i), "content": "x".repeat(500)}),
+            )
+            .expect("Failed to store discovery");
+    }
+
+    // Without budget: all discoveries returned
+    let full = graph
+        .query_knowledge("bulky_target", None)
+        .expect("Failed to query knowledge");
+    let full_count = full["discoveries"].as_array().unwrap().len();
+    assert_eq!(full_count, 5);
+    assert!(full.get("truncated").is_none());
+
+    // With tight budget: should truncate and mark
+    let truncated = graph
+        .query_knowledge("bulky_target", Some(100))
+        .expect("Failed to query knowledge");
+    let truncated_count = truncated["discoveries"].as_array().unwrap().len();
+    assert!(
+        truncated_count < full_count,
+        "max_tokens should truncate discoveries: got {} vs {}",
+        truncated_count,
+        full_count
+    );
+    assert_eq!(truncated["truncated"], true);
 }

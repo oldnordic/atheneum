@@ -363,11 +363,11 @@ pub enum KanbanStatus { Todo, InProgress, Done, Blocked, Archived }
 
 ### `list_tasks(project_id) -> Result<Vec<GraphEntity>>`
 
-List all non-archived tasks, optionally filtered by project.
+List all non-archived tasks, optionally filtered by project. Archived tasks are excluded from this view; use `list_tasks_by_status(KanbanStatus::Archived, ...)` to retrieve them.
 
 ### `list_tasks_by_status(status, project_id) -> Result<Vec<GraphEntity>>`
 
-List tasks with a specific status.
+List tasks with a specific status. Pass `KanbanStatus::Archived` to retrieve archived tasks.
 
 ### `get_task_detail(task_id) -> Result<TaskDetail>`
 

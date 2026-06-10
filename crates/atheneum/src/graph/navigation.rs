@@ -428,6 +428,7 @@ impl AtheneumGraph {
         depth: u32,
         project_id: Option<&str>,
         entity_kind: Option<&str>,
+        max_tokens: Option<usize>,
     ) -> Result<Vec<SubgraphView>> {
         self.runtime.record_navigation_query();
         let cache_key = QueryCacheKey::Navigate {
@@ -436,6 +437,7 @@ impl AtheneumGraph {
             depth,
             project_id: project_id.map(str::to_string),
             entity_kind: entity_kind.map(str::to_string),
+            max_tokens,
         };
         if let Some(QueryCacheValue::SubgraphViews(views)) =
             self.runtime.cache_get(&cache_key, CacheDomain::Navigation)
@@ -453,6 +455,7 @@ impl AtheneumGraph {
             plan.k,
             project_id,
             plan.resolved_kind.as_deref(),
+            None,
         )?;
         if hits.is_empty() {
             return Ok(Vec::new());
@@ -461,6 +464,11 @@ impl AtheneumGraph {
         let mut views = Vec::with_capacity(hits.len());
         for hit in hits {
             let sg = self.get_subgraph_scoped(hit.id, depth, project_id)?;
+            let sg = if let Some(max_tokens) = max_tokens {
+                truncate_subgraph(sg, max_tokens)
+            } else {
+                sg
+            };
             views.push(sg);
         }
         self.runtime.cache_store(
@@ -500,7 +508,7 @@ impl AtheneumGraph {
             return Ok(views);
         }
 
-        let hits = self.lexical_search(query, k, project_id, None)?;
+        let hits = self.lexical_search(query, k, project_id, None, None)?;
         if hits.is_empty() {
             return Ok(Vec::new());
         }

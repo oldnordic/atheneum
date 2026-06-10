@@ -86,6 +86,36 @@ fn test_find_task_by_title_scoped_by_project() {
 }
 
 #[test]
+fn test_archive_task_status_transition() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    let id = graph
+        .create_task("Archive me", None, Some("envoy"))
+        .expect("create");
+
+    // Archive must update both graph entity and SQL row without CHECK error
+    graph
+        .update_task_status(id, KanbanStatus::Archived)
+        .expect("archive should succeed");
+
+    let archived = graph.get_entity(id).expect("retrieve");
+    assert_eq!(archived.data["status"], json!("ARCHIVED"));
+
+    // Archived tasks should not appear in default list_tasks
+    let visible = graph.list_tasks(Some("envoy")).expect("list");
+    assert!(
+        !visible.iter().any(|t| t.id == id),
+        "archived task should be hidden from default list"
+    );
+
+    // But list_tasks_by_status with ARCHIVED should find it
+    let found = graph
+        .list_tasks_by_status(KanbanStatus::Archived, Some("envoy"))
+        .expect("list archived");
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].id, id);
+}
+
+#[test]
 fn test_list_tasks_by_status() {
     let graph = AtheneumGraph::open_in_memory().expect("open");
     let _t1 = graph.create_task("T1", None, Some("envoy")).expect("t1"); // TODO

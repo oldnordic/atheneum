@@ -176,7 +176,7 @@ fn test_knowledge_scoped_by_project() {
         .expect("magellan discovery should store");
 
     let envoy_knowledge = graph
-        .query_knowledge_in_project("Message", Some("envoy"))
+        .query_knowledge_in_project("Message", Some("envoy"), None)
         .expect("envoy knowledge query");
     assert_eq!(
         envoy_knowledge["discovery_count"],
@@ -185,7 +185,7 @@ fn test_knowledge_scoped_by_project() {
     );
 
     let magellan_knowledge = graph
-        .query_knowledge_in_project("Message", Some("magellan"))
+        .query_knowledge_in_project("Message", Some("magellan"), None)
         .expect("magellan knowledge query");
     assert_eq!(
         magellan_knowledge["discovery_count"],
