@@ -6,6 +6,48 @@ for HTTP endpoints.
 
 ---
 
+## Configuration
+
+### `Config`
+
+Root configuration struct. Loaded from `~/.config/atheneum/config.toml` by default.
+
+```rust
+use atheneum::{Config, load_config, save_config, default_config_path};
+
+let cfg: Config = load_config()?;        // missing file returns defaults
+let db = cfg.db_path();                  // PathBuf with ~ expanded
+let meta = cfg.meta_db_path();
+
+save_config(&Config::default())?;        // writes default config to disk
+```
+
+### `load_config() -> Result<Config>`
+
+Load from `default_config_path()`. Missing file returns `Config::default()`; invalid file returns a parse error.
+
+### `load_config_from(path) -> Result<Config>`
+
+Load from an explicit path.
+
+### `save_config(&Config) -> Result<()`
+
+Save to `default_config_path()`.
+
+### `save_config_to(&Config, path) -> Result<()`
+
+Save to an explicit path.
+
+### `default_config_path() -> PathBuf`
+
+`~/.config/atheneum/config.toml` (or `$XDG_CONFIG_HOME/atheneum/config.toml`).
+
+### `expand_tilde(path: &str) -> PathBuf`
+
+Expand leading `~` to `$HOME`. Returns the original path unchanged if no leading tilde.
+
+---
+
 ## `AtheneumGraph`
 
 Main entry point. All methods take `&self` (shared reference with internal Mutex).
@@ -559,6 +601,10 @@ let views = graph.hopgraph_query(
 
 Search + subgraph walk. Like `hopgraph_query` but without token budgeting.
 
+**CLI:** `atheneum navigate <db> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N] [--concise]`
+
+`--concise` emits compact Markdown instead of JSON, optimized for language-model context windows.
+
 ### `preview_navigate_query(query, k, depth, project_id, entity_kind) -> Result<NavigateQueryPlan>`
 
 Validate and repair a navigation query before execution. Trims whitespace, resolves entity-kind aliases (`memory` -> `Memory`, `wiki` -> `WikiPage`), rejects unknown kinds.
@@ -687,7 +733,7 @@ Trace a causal chain from an event.
 
 ### `MetaRouter::open() -> Result<Self>`
 
-Open the default meta.db at `~/.local/share/atheneum/meta.db` (or `$XDG_DATA_HOME/atheneum/meta.db`). Creates parent directory and schema if needed.
+Open the default meta.db. Uses `atheneum.meta_db` from `~/.config/atheneum/config.toml` when present; otherwise falls back to `~/.local/share/atheneum/meta.db` (or `$XDG_DATA_HOME/atheneum/meta.db`). Creates parent directory and schema if needed.
 
 ### `MetaRouter::open_at(path) -> Result<Self>`
 
@@ -712,6 +758,54 @@ Look up a single project by name.
 ### `MetaRouter::disable_project(name) -> Result<()>`
 
 Soft-delete a project (sets `enabled = 0`).
+
+---
+
+## Cross-Project Router
+
+### `CrossRouter::open() -> Result<Self>`
+
+Open a cross-project router using the default `MetaRouter`. Maintains an LRU cache of attached magellan databases (default capacity 8).
+
+### `CrossRouter::with_capacity(max_attached: usize) -> Result<Self>`
+
+Open with a custom attached-database cache size. SQLite default limit is 10; the router clamps to 125 for safety.
+
+### `CrossRouter::cross_search(query, language, k) -> Result<Vec<CrossSearchResult>>`
+
+Search for symbols across all enabled projects. Lazily `ATTACH DATABASE` each magellan DB, query its `graph_entities` table, and rank exact name matches first. Projects with missing or unreadable databases are logged and skipped.
+
+```rust
+pub struct CrossSearchResult {
+    pub project: String,
+    pub id: i64,
+    pub kind: String,
+    pub name: String,
+    pub file_path: Option<String>,
+    pub data: Value,
+}
+```
+
+### `CrossRouter::cross_navigate(query, language, k, depth) -> Result<Vec<CrossSubgraph>>`
+
+Run `cross_search` for entry points, then BFS-walk each project's magellan graph up to `depth` hops. Returns one subgraph view per entry point.
+
+```rust
+pub struct CrossSubgraph {
+    pub project: String,
+    pub entry_id: i64,
+    pub entities: Vec<CrossSearchResult>,
+    pub edges: Vec<CrossEdge>,
+}
+
+pub struct CrossEdge {
+    pub id: i64,
+    pub kind: String,
+    pub from_id: i64,
+    pub to_id: i64,
+    pub data: Value,
+}
+```
 
 ---
 

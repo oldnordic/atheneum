@@ -9,6 +9,17 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
+use crate::config;
+
+fn default_meta_db_path() -> PathBuf {
+    std::env::var("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|_| std::env::var("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        .unwrap_or_else(|_| PathBuf::from(".atheneum"))
+        .join("atheneum")
+        .join("meta.db")
+}
+
 /// Information about a registered project.
 #[derive(Debug, Clone)]
 pub struct ProjectInfo {
@@ -31,17 +42,16 @@ pub struct MetaRouter {
 }
 
 impl MetaRouter {
-    /// Open the default meta.db at `~/.local/share/atheneum/meta.db`
+    /// Open the default meta.db.
+    ///
+    /// Uses the path from `~/.config/atheneum/config.toml` when present and
+    /// valid; otherwise falls back to `~/.local/share/atheneum/meta.db`
     /// (or `$XDG_DATA_HOME/atheneum/meta.db` if set).
     pub fn open() -> Result<Self> {
-        let dir = std::env::var("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .or_else(|_| std::env::var("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-            .unwrap_or_else(|_| PathBuf::from(".atheneum"))
-            .join("atheneum");
-        std::fs::create_dir_all(&dir)
-            .with_context(|| format!("Failed to create meta.db dir {}", dir.display()))?;
-        Self::open_at(dir.join("meta.db"))
+        let path = config::load()
+            .map(|cfg| cfg.meta_db_path())
+            .unwrap_or_else(|_| default_meta_db_path());
+        Self::open_at(path)
     }
 
     /// Open a meta.db at an explicit path.
@@ -247,6 +257,11 @@ impl MetaRouter {
     /// Path to the meta.db file.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Raw SQLite connection for cross-router attach/detach operations.
+    pub(crate) fn conn(&self) -> &Connection {
+        &self.conn
     }
 }
 

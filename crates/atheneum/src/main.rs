@@ -2,8 +2,8 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 use atheneum::{
-    AtheneumGraph, ClaudeTranscriptImportParams, EdgeType, GraphEdge, GraphEntity, MetaRouter,
-    SearchResult, WikiPage,
+    AtheneumGraph, ClaudeTranscriptImportParams, Config, CrossRouter, EdgeType, GraphEdge,
+    GraphEntity, MetaRouter, SearchResult, WikiPage,
 };
 use serde_json::json;
 
@@ -281,7 +281,7 @@ fn run() -> anyhow::Result<()> {
         "navigate" => {
             if args.len() < 4 {
                 eprintln!(
-                    "Usage: atheneum navigate <db-path> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N]"
+                    "Usage: atheneum navigate <db-path> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N] [--concise]"
                 );
                 std::process::exit(1);
             }
@@ -310,16 +310,20 @@ fn run() -> anyhow::Result<()> {
                 opts.kind.as_deref(),
                 max_tokens,
             )?;
-            print_json(json!({
-                "query": query,
-                "k": k,
-                "depth": depth,
-                "kind": opts.kind,
-                "project": opts.project,
-                "max_tokens": max_tokens,
-                "plan": plan,
-                "subgraphs": views.iter().map(subgraph_to_json).collect::<Vec<_>>(),
-            }))?;
+            if opts.concise {
+                print_navigate_concise(query, &views, max_tokens)?;
+            } else {
+                print_json(json!({
+                    "query": query,
+                    "k": k,
+                    "depth": depth,
+                    "kind": opts.kind,
+                    "project": opts.project,
+                    "max_tokens": max_tokens,
+                    "plan": plan,
+                    "subgraphs": views.iter().map(subgraph_to_json).collect::<Vec<_>>(),
+                }))?;
+            }
         }
         "graph-stats" => {
             if args.len() < 3 {
@@ -743,6 +747,37 @@ fn run() -> anyhow::Result<()> {
                 graph.wiki_dream_pass(mode, opts.project.as_deref(), &DreamConfig::default())?;
             print_json(serde_json::to_value(&report)?)?;
         }
+        "config" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum config <init|show> [args]");
+                std::process::exit(1);
+            }
+            match args[2].as_str() {
+                "init" => {
+                    let force = args.iter().any(|a| a == "--force" || a == "-f");
+                    let path = atheneum::default_config_path();
+                    if path.exists() && !force {
+                        stdoutln(format_args!(
+                            "Config already exists at {}. Use --force to overwrite.",
+                            path.display()
+                        ))?;
+                        return Ok(());
+                    }
+                    let cfg = Config::default();
+                    atheneum::save_config(&cfg)?;
+                    stdoutln(format_args!("Created default config at {}", path.display()))?;
+                }
+                "show" => {
+                    let cfg = atheneum::load_config()?;
+                    print_json(serde_json::to_value(&cfg)?)?;
+                }
+                other => {
+                    eprintln!("Unknown config subcommand: {}", other);
+                    eprintln!("Usage: atheneum config <init|show>");
+                    std::process::exit(1);
+                }
+            }
+        }
         "meta-register" => {
             if args.len() < 5 {
                 eprintln!("Usage: atheneum meta-register <name> <root-path> <magellan-db> [--atheneum-db PATH] [--language LANG]");
@@ -786,6 +821,46 @@ fn run() -> anyhow::Result<()> {
                     ))?;
                 }
             }
+        }
+        "cross-search" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum cross-search <query> [--language LANG] [--k N]");
+                std::process::exit(1);
+            }
+            let query = &args[2];
+            let opts = parse_options(&args[3..])?;
+            let k = parse_usize_option(opts.k.as_deref(), "k")?.unwrap_or(10);
+            let mut router = CrossRouter::open()?;
+            let hits = router.cross_search(query, opts.language.as_deref(), k)?;
+            print_json(json!({
+                "query": query,
+                "language": opts.language,
+                "k": k,
+                "count": hits.len(),
+                "results": hits.iter().map(cross_result_to_json).collect::<Vec<_>>(),
+            }))?;
+        }
+        "cross-navigate" => {
+            if args.len() < 3 {
+                eprintln!(
+                    "Usage: atheneum cross-navigate <query> [--language LANG] [--k N] [--depth N]"
+                );
+                std::process::exit(1);
+            }
+            let query = &args[2];
+            let opts = parse_options(&args[3..])?;
+            let k = parse_usize_option(opts.k.as_deref(), "k")?.unwrap_or(5);
+            let depth = parse_u32_option(opts.depth.as_deref(), "depth")?.unwrap_or(1);
+            let mut router = CrossRouter::open()?;
+            let views = router.cross_navigate(query, opts.language.as_deref(), k, depth)?;
+            print_json(json!({
+                "query": query,
+                "language": opts.language,
+                "k": k,
+                "depth": depth,
+                "count": views.len(),
+                "views": views.iter().map(cross_subgraph_to_json).collect::<Vec<_>>(),
+            }))?;
         }
         _ => {
             eprintln!("Unknown command: {}", args[1]);
@@ -891,7 +966,7 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     )?;
     writeln!(
         writer,
-        "  navigate <db-path> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N]  Search then walk graph subgraphs"
+        "  navigate <db-path> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N] [--concise]  Search then walk graph subgraphs"
     )?;
     writeln!(
         writer,
@@ -934,6 +1009,16 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
         "  graph-stats <db-path>                   Graph topology and runtime counters"
     )?;
     writeln!(writer)?;
+    writeln!(writer, "CONFIG:")?;
+    writeln!(
+        writer,
+        "  config init [--force]                   Create default ~/.config/atheneum/config.toml"
+    )?;
+    writeln!(
+        writer,
+        "  config show                             Print effective configuration as JSON"
+    )?;
+    writeln!(writer)?;
     writeln!(writer, "META (cross-project registry):")?;
     writeln!(
         writer,
@@ -946,6 +1031,16 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     writeln!(
         writer,
         "  meta-list [--language LANG]               List registered projects"
+    )?;
+    writeln!(writer)?;
+    writeln!(writer, "CROSS-PROJECT (via meta.db + lazy ATTACH):")?;
+    writeln!(
+        writer,
+        "  cross-search <query> [--language LANG] [--k N]  Search symbols across attached magellan DBs"
+    )?;
+    writeln!(
+        writer,
+        "  cross-navigate <query> [--language LANG] [--k N] [--depth N]  Search + BFS subgraph per project"
     )?;
     writeln!(writer)?;
     writeln!(writer, "MAINTENANCE:")?;
@@ -1041,6 +1136,7 @@ struct CliOptions {
     language: Option<String>,
     dry_run: bool,
     auto_merge: bool,
+    concise: bool,
 }
 
 fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
@@ -1052,6 +1148,9 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
             i += 1;
         } else if args[i] == "--auto-merge" {
             opts.auto_merge = true;
+            i += 1;
+        } else if args[i] == "--concise" {
+            opts.concise = true;
             i += 1;
         } else if args[i].starts_with('-') && args[i] != "--data" {
             let key = args[i].as_str();
@@ -1195,6 +1294,139 @@ fn subgraph_to_json(sg: &atheneum::graph::SubgraphView) -> serde_json::Value {
         "depth": sg.depth,
         "entities": sg.entities.iter().map(entity_to_json).collect::<Vec<_>>(),
         "edges": sg.edges.iter().map(edge_to_json).collect::<Vec<_>>(),
+    })
+}
+
+fn print_navigate_concise(
+    query: &str,
+    views: &[atheneum::graph::SubgraphView],
+    max_tokens: Option<usize>,
+) -> anyhow::Result<()> {
+    use std::collections::HashMap;
+    let mut out = String::new();
+    out.push_str(&format!("# navigate: {}\n\n", query));
+
+    let Some(view) = views.first() else {
+        out.push_str("_No matches found._\n");
+        stdoutln(format_args!("{}", out))?;
+        return Ok(());
+    };
+
+    let entry = &view.entry;
+    out.push_str(&format!(
+        "## {} `{}` ({})",
+        entry.kind, entry.name, entry.id
+    ));
+    if let Some(fp) = &entry.file_path {
+        out.push_str(&format!(" — `{}`", fp));
+    }
+    out.push('\n');
+
+    let mut outgoing: HashMap<String, Vec<String>> = HashMap::new();
+    let mut incoming: HashMap<String, Vec<String>> = HashMap::new();
+    for edge in &view.edges {
+        let label = format!(
+            "{} `{}`",
+            if edge.from_id == entry.id {
+                "→"
+            } else {
+                "←"
+            },
+            entity_name_in_view(
+                view,
+                if edge.from_id == entry.id {
+                    edge.to_id
+                } else {
+                    edge.from_id
+                }
+            )
+        );
+        if edge.from_id == entry.id {
+            outgoing
+                .entry(edge.edge_type.clone())
+                .or_default()
+                .push(label);
+        } else {
+            incoming
+                .entry(edge.edge_type.clone())
+                .or_default()
+                .push(label);
+        }
+    }
+
+    if !outgoing.is_empty() {
+        out.push_str("\n**outgoing**\n");
+        for (ty, items) in &outgoing {
+            out.push_str(&format!("- {}:\n", ty));
+            for item in items.iter().take(5) {
+                out.push_str(&format!("  {}\n", item));
+            }
+        }
+    }
+    if !incoming.is_empty() {
+        out.push_str("\n**incoming**\n");
+        for (ty, items) in &incoming {
+            out.push_str(&format!("- {}:\n", ty));
+            for item in items.iter().take(5) {
+                out.push_str(&format!("  {}\n", item));
+            }
+        }
+    }
+
+    if views.len() > 1 {
+        out.push_str(&format!(
+            "\n_{} additional subgraphs omitted._\n",
+            views.len() - 1
+        ));
+    }
+
+    if let Some(budget) = max_tokens {
+        let approx_chars = budget.saturating_mul(4);
+        if out.len() > approx_chars {
+            let trunc = &out[..approx_chars];
+            out = format!("{}\n\n_[truncated to ~{} tokens]_\n", trunc, budget);
+        }
+    }
+
+    stdoutln(format_args!("{}", out))?;
+    Ok(())
+}
+
+fn entity_name_in_view(view: &atheneum::graph::SubgraphView, id: i64) -> String {
+    view.entities
+        .iter()
+        .find(|e| e.id == id)
+        .map(|e| e.name.clone())
+        .unwrap_or_else(|| format!("entity:{}", id))
+}
+
+fn cross_result_to_json(hit: &atheneum::CrossSearchResult) -> serde_json::Value {
+    json!({
+        "project": hit.project,
+        "id": hit.id,
+        "kind": hit.kind,
+        "name": hit.name,
+        "file_path": hit.file_path,
+        "data": hit.data,
+    })
+}
+
+fn cross_edge_to_json(edge: &atheneum::CrossEdge) -> serde_json::Value {
+    json!({
+        "id": edge.id,
+        "kind": edge.kind,
+        "from_id": edge.from_id,
+        "to_id": edge.to_id,
+        "data": edge.data,
+    })
+}
+
+fn cross_subgraph_to_json(view: &atheneum::CrossSubgraph) -> serde_json::Value {
+    json!({
+        "project": view.project,
+        "entry_id": view.entry_id,
+        "entities": view.entities.iter().map(cross_result_to_json).collect::<Vec<_>>(),
+        "edges": view.edges.iter().map(cross_edge_to_json).collect::<Vec<_>>(),
     })
 }
 

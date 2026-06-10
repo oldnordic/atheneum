@@ -3,11 +3,21 @@
 //! A graph-based memory system for tracking multi-agent workflows,
 //! decisions, and their provenance.
 
+pub mod config;
+mod cross;
 pub(crate) mod db;
 pub mod graph;
 pub mod meta;
 
 pub use meta::{MetaRouter, ProjectInfo};
+
+pub use cross::{CrossEdge, CrossRouter, CrossSearchResult, CrossSubgraph};
+
+pub use config::{
+    default_config_path, expand_tilde, load as load_config, load_from as load_config_from,
+    save as save_config, save_to as save_config_to, Config, EmbedProvider, EmbeddingsConfig,
+    IntegrationConfig, IntegrationsConfig, LlmConfig, LlmProvider,
+};
 
 pub use graph::{
     AtheneumGraph, ClaudeTranscriptImportParams, ClaudeTranscriptImportSummary,

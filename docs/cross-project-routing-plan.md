@@ -350,22 +350,22 @@ This avoids the "false friends" problem (e.g., `Result` in Rust vs. TypeScript) 
 - [ ] Add batch write API (`bulk_store_discoveries`, `bulk_store_memories`)
 
 ### Milestone 3: Meta.db (Week 3)
-- [ ] Create `meta.db` schema and `MetaRouter` struct
-- [ ] Implement `meta-register`, `meta-list` CLI commands
-- [ ] Implement lazy `ATTACH` with LRU eviction
+- [x] Create `meta.db` schema and `MetaRouter` struct
+- [x] Implement `meta-register`, `meta-list` CLI commands
+- [x] Implement lazy `ATTACH` with LRU eviction
 
 ### Milestone 4: Cross-Project Query (Week 4)
-- [ ] Implement `cross-search` (lexical + union across attached dbs)
-- [ ] Implement `cross-navigate` (entry point search + per-db BFS)
-- [ ] Add language filtering
+- [x] Implement `cross-search` (lexical + union across attached dbs)
+- [x] Implement `cross-navigate` (entry point search + per-db BFS)
+- [x] Add language filtering
 
 ### Milestone 5: Integration (Week 5)
-- [ ] Add HTTP endpoints to envoy
+- [x] Add HTTP endpoints to envoy
 - [ ] Update grounded-coding skill with new CLI commands
 - [ ] End-to-end test: register 3 projects, run cross-search, verify results
 
 ### Milestone 6: Analytical Features (Week 6–8)
-- [ ] Port `concise` mode to atheneum navigate output
+- [x] Port `concise` mode to atheneum navigate output
 - [ ] Add `impact` / `affected` endpoints (blast radius analysis)
 - [ ] Add `doctor` endpoint (index health check)
 
@@ -383,7 +383,111 @@ This avoids the "false friends" problem (e.g., `Result` in Rust vs. TypeScript) 
 
 ---
 
-## 9. Open Questions
+## 9. Cross-Tool Configuration (`config.toml`)
+
+### Design Principles
+
+1. **Opt-in integration by default** — every tool works standalone out of the box.
+2. **Per-tool configs** — `~/.config/<tool>/config.toml`, XDG Base Directory compliant.
+3. **`[integrations]` section** — each tool declares which other tools it wants to talk to, with explicit paths/URLs.
+4. **Centralized paths** — DB paths live in config, not scattered across env vars.
+5. **Layering** — defaults → `config.toml` → env vars → CLI flags (last wins).
+
+### Atheneum Config (`~/.config/atheneum/config.toml`)
+
+```toml
+[atheneum]
+# Default DB paths. ~ expands to $HOME.
+db = "~/.local/share/atheneum/atheneum.db"
+meta_db = "~/.local/share/atheneum/meta.db"
+
+[llm]
+# Optional: atheneum can use magellan's LLM config if integrations.magellan is enabled.
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "codellama"
+api_key = ""
+
+[embeddings]
+provider = "hash"  # "hash" | "ollama" | "openai"
+dimension = 128
+base_url = "http://localhost:11434"
+model = "nomic-embed-text"
+
+[integrations]
+# Opt-in to pull/push data from other tools.
+magellan = { enabled = false, config = "~/.config/magellan/config.toml" }
+envoy = { enabled = false, url = "http://localhost:9876" }
+```
+
+### Envoy Config (`~/.config/envoy/config.toml`)
+
+```toml
+[envoy]
+port = 9876
+host = "127.0.0.1"
+db = "~/.local/share/envoy/server.db"
+
+[atheneum]
+enabled = true
+db = "~/.local/share/atheneum/atheneum.db"
+meta_db = "~/.local/share/atheneum/meta.db"
+
+[magellan]
+enabled = false
+config = "~/.config/magellan/config.toml"
+
+[monitoring]
+ci_monitor = ""   # "project,owner/repo,interval" or empty to disable
+doc_monitor = ""  # "project,repo_path,interval" or empty to disable
+
+[rate_limit]
+burst = 1000
+sustained = 5000
+```
+
+### Magellan Config Extension (`~/.config/magellan/config.toml`)
+
+Magellan already has `[llm]`, `[registry]`, and `[embeddings]`. We add:
+
+```toml
+[integrations]
+atheneum = { enabled = false, db = "~/.local/share/atheneum/atheneum.db", meta_db = "~/.local/share/atheneum/meta.db" }
+envoy = { enabled = false, url = "http://localhost:9876" }
+auto_export_discoveries = false
+```
+
+### CLI Commands
+
+Each tool gains:
+
+```bash
+# Create default config file
+atheneum config init [--force]
+magellan config init [--force]
+envoy config init [--force]
+
+# Show effective config (defaults + file + env overrides)
+atheneum config show
+magellan config show
+envoy config show
+```
+
+### Implementation Notes
+
+- Use `serde` + `toml` (magellan already does this).
+- Provide `Config::load()`, `Config::load_from(path)`, `Config::save()`, `default_config_path()`.
+- Expand `~` to `$HOME` when paths are read (helper: `expand_tilde`).
+- Missing config file → use defaults (no error).
+- Invalid config file → fail fast with a clear parse error.
+- Env var overrides follow `<TOOL>_<SECTION>_<KEY>` pattern, e.g.:
+  - `ATHENEUM_DB=...`
+  - `ATHENEUM_INTEGRATIONS_MAGELLAN_ENABLED=1`
+  - `ENVOY_PORT=9999`
+
+---
+
+## 10. Open Questions
 
 1. **Should atheneum write to magellan dbs?** Proposal: No — read-only attach preserves magellan's ownership of its data. Writes go through magellan's own APIs.
 2. **How do we handle magellan's HNSW index in atheneum?** Option A: Query magellan's HNSW via SQL (it stores vectors in SQLite tables). Option B: Skip HNSW for cross-project; use lexical + graph traversal only.

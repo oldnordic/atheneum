@@ -43,6 +43,69 @@ The database schema is auto-migrated on `open()`. No separate migration step req
 
 ---
 
+## Configuration
+
+Atheneum reads `~/.config/atheneum/config.toml` (or `$XDG_CONFIG_HOME/atheneum/config.toml`). A missing file is not an error — sensible defaults are used.
+
+### Default config file
+
+```toml
+[atheneum]
+db = "~/.local/share/atheneum/atheneum.db"
+meta_db = "~/.local/share/atheneum/meta.db"
+
+[llm]
+provider = "ollama"
+base_url = "http://localhost:11434"
+model = "codellama"
+api_key = ""
+
+[embeddings]
+provider = "hash"
+dimension = 128
+base_url = "http://localhost:11434"
+model = "nomic-embed-text"
+api_key = ""
+
+[integrations]
+# Cross-tool integration is opt-in. Each tool stays standalone by default.
+[integrations.magellan]
+enabled = false
+config = "~/.config/magellan/config.toml"
+
+[integrations.envoy]
+enabled = false
+url = "http://localhost:9876"
+```
+
+### CLI
+
+```bash
+# Create the default config file (idempotent; use --force to overwrite)
+atheneum config init
+
+# Print the currently effective configuration as JSON
+atheneum config show
+```
+
+### Library
+
+```rust
+use atheneum::{Config, load_config, save_config};
+
+let cfg = load_config()?;                         // from default location
+let path = cfg.db_path();                         // tilde-expanded PathBuf
+let meta = cfg.meta_db_path();
+
+save_config(&Config::default())?;                 // write defaults to disk
+```
+
+Environment overrides follow the convention `ATHENEUM_<SECTION>_<KEY>` where supported by callers. Paths may contain leading `~`, which is expanded via `$HOME`.
+
+The meta.db routing layer (`MetaRouter::open()`) honors `atheneum.meta_db` from this config and falls back to the XDG default if the config is missing or invalid.
+
+---
+
 ## Maintainer Checklist
 
 When changing Atheneum itself, keep the local docs and gates in sync:
@@ -651,7 +714,7 @@ Output is a JSON `DreamReport` with findings organized by phase (DEDUPLICATE, ST
 atheneum search <db-path> <query> [--k N] [--project P] [--max-tokens N]
 
 # Search then BFS-walk graph subgraphs
-atheneum navigate <db-path> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N]
+atheneum navigate <db-path> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N] [--concise]
 
 # Query a wiki page by path
 atheneum query-wiki <db-path> <path>
@@ -686,7 +749,7 @@ atheneum graph-stats <db-path>
 
 `search` uses the HNSW lexical index. It matches on shared tokens -- not semantic similarity. "car" will not match "automobile". Good for symbol and identifier search. Use `--max-tokens` to truncate the result list before it reaches your LLM context window.
 
-`navigate` performs a search, then expands each hit into a subgraph using BFS. The `--kind` flag filters by entity type (accepts aliases like `memory`, `memories`, `wiki`, `discoveries`). The output includes the validated query plan plus subgraph views. Use `--max-tokens` to truncate each subgraph view to a token budget (the entry entity is always kept; neighbors are dropped until the budget fits).
+`navigate` performs a search, then expands each hit into a subgraph using BFS. The `--kind` flag filters by entity type (accepts aliases like `memory`, `memories`, `wiki`, `discoveries`). The output includes the validated query plan plus subgraph views. Use `--max-tokens` to truncate each subgraph view to a token budget (the entry entity is always kept; neighbors are dropped until the budget fits). Use `--concise` to emit compact Markdown instead of JSON — designed for pasting into a language-model context window.
 
 `query-knowledge` aggregates discoveries and handoffs for a target. Use `--max-tokens` to limit the total response size; discoveries are dropped first, then handoffs, and `"truncated": true` is set when truncation occurs.
 
@@ -709,6 +772,40 @@ atheneum meta-list --language rust
 `meta-register` upserts a project into `~/.local/share/atheneum/meta.db` (or `$XDG_DATA_HOME/atheneum/meta.db`). Re-registering the same name updates all fields and re-enables the project.
 
 `meta-list` queries enabled projects from the registry. Use `--language` to filter by programming language.
+
+### Cross-Project Queries
+
+Atheneum can query across magellan-indexed codebases without importing their data. It uses `meta.db` as a routing registry and lazily `ATTACH DATABASE` each project's magellan DB on demand.
+
+```bash
+# Search for a symbol across all Rust projects
+atheneum cross-search "build_router" --language rust --k 10
+
+# Search across all registered projects (no language filter)
+atheneum cross-search "checkpoint" --k 20
+
+# Navigate: search + BFS subgraph walk per project
+atheneum cross-navigate "error handling" --language rust --k 5 --depth 2
+```
+
+Output is JSON. `cross-search` returns ranked symbol hits with project, name, kind, and file path. `cross-navigate` returns one subgraph view per entry point, including entities and edges from each attached magellan database.
+
+The router keeps an LRU cache of attached databases (default capacity 8). Missing or unreadable databases are skipped with a warning rather than aborting the whole query.
+
+### Config
+
+```bash
+# Create the default config file at ~/.config/atheneum/config.toml
+atheneum config init
+
+# Overwrite an existing config file
+atheneum config init --force
+
+# Print the effective configuration as JSON
+atheneum config show
+```
+
+`config init` writes the default TOML (XDG paths, local Ollama defaults, disabled cross-tool integrations). `config show` reads the file (or defaults if missing) and prints JSON, which is useful for debugging path expansion and integration flags.
 
 ### Maintenance
 

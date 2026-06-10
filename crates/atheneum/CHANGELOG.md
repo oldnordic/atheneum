@@ -36,6 +36,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `MetaRouter::get_project()` / `disable_project()` — single-project lookup and soft-delete.
   - CLI: `meta-register <name> <root-path> <magellan-db> [--atheneum-db PATH] [--language LANG]` and `meta-list [--language LANG]`.
   - Schema: `project_registry`, `symbol_index`, `symbol_analogies` tables with indexes.
+- **Concise mode for `navigate`** — `atheneum navigate ... --concise` emits compact Markdown instead of JSON.
+  - Shows the top subgraph entry entity, outgoing/incoming edge groups (top 5 per type), and omits additional subgraphs.
+  - Respects `--max-tokens` as an output budget (~4 chars/token approximation).
+  - Designed for direct paste into language-model context windows.
+- **Cross-project query router (`CrossRouter`)** — lazy SQLite `ATTACH`-based federation across magellan-indexed projects.
+  - `CrossRouter::open()` / `with_capacity()` — open with default or custom LRU cache size.
+  - `CrossRouter::cross_search(query, language, k)` — search symbols across attached magellan `graph_entities` tables.
+  - `CrossRouter::cross_navigate(query, language, k, depth)` — search entry points + BFS subgraph walk per project.
+  - LRU cache of attached databases (default capacity 8) with automatic `DETACH` on eviction.
+  - Missing/unreadable databases are skipped with a warning; the rest of the query continues.
+  - CLI: `cross-search <query> [--language LANG] [--k N]` and `cross-navigate <query> [--language LANG] [--k N] [--depth N]`.
+- **Per-tool configuration (`config.toml`)** — Atheneum now reads `~/.config/atheneum/config.toml` (XDG compliant) so the tool works standalone by default and opt-ins into cross-tool integration.
+  - New `config` module with `Config`, `AtheneumPaths`, `LlmConfig`, `LlmProvider`, `EmbeddingsConfig`, `EmbedProvider`, `IntegrationsConfig`, `IntegrationConfig`.
+  - `load_config()` / `load_config_from()` — parse config; missing file returns defaults, invalid file fails fast.
+  - `save_config()` / `save_config_to()` — write pretty-printed TOML, creating parent directories as needed.
+  - `default_config_path()` and `expand_tilde()` — XDG paths with `~` expansion.
+  - Default paths: `~/.local/share/atheneum/atheneum.db` and `~/.local/share/atheneum/meta.db`.
+  - `[integrations.magellan]` and `[integrations.envoy]` are opt-in; standalone behavior is preserved when disabled or absent.
+  - CLI: `config init [--force]` and `config show`.
+  - `MetaRouter::open()` now reads `atheneum.meta_db` from config when available, falling back to XDG defaults otherwise.
 
 ## [0.4.0] — 2026-06-09
 
