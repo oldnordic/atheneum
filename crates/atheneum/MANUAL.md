@@ -792,6 +792,119 @@ Output is JSON. `cross-search` returns ranked symbol hits with project, name, ki
 
 The router keeps an LRU cache of attached databases (default capacity 8). Missing or unreadable databases are skipped with a warning rather than aborting the whole query.
 
+#### End-to-End Example: Finding All HTTP Router Implementations
+
+Imagine you maintain three Rust projects — `envoy`, `magellan`, and `atheneum` — and you want to see how each one implements its HTTP router. Here is the complete workflow:
+
+**Step 1 — Index each project with magellan (one-time per project):**
+
+```bash
+cd ~/Projects/envoy
+magellan watch --root ./src --db ~/.magellan/envoy/envoy.db --scan-initial
+
+cd ~/Projects/magellan
+magellan watch --root ./src --db ~/.magellan/magellan/magellan.db --scan-initial
+
+cd ~/Projects/atheneum
+magellan watch --root ./src --db ~/.magellan/atheneum/atheneum.db --scan-initial
+```
+
+**Step 2 — Register each project in atheneum's meta.db (one-time per project):**
+
+```bash
+atheneum meta-register envoy ~/Projects/envoy \
+  ~/.magellan/envoy/envoy.db --language rust
+
+atheneum meta-register magellan ~/Projects/magellan \
+  ~/.magellan/magellan/magellan.db --language rust
+
+atheneum meta-register atheneum ~/Projects/atheneum \
+  ~/.magellan/atheneum/atheneum.db --language rust
+```
+
+**Step 3 — Search across all three projects for "build_router":**
+
+```bash
+atheneum cross-search "build_router" --language rust --k 10
+```
+
+Sample output:
+
+```json
+{
+  "results": [
+    {
+      "project": "envoy",
+      "name": "build_router",
+      "kind": "Function",
+      "file": "src/server.rs",
+      "line": 42,
+      "score": 1.0
+    },
+    {
+      "project": "magellan",
+      "name": "build_router",
+      "kind": "Function",
+      "file": "src/http/mod.rs",
+      "line": 88,
+      "score": 1.0
+    }
+  ]
+}
+```
+
+**Step 4 — Navigate deeper: see what each router calls and what calls it:**
+
+```bash
+atheneum cross-navigate "build_router" --language rust --k 3 --depth 2
+```
+
+This returns one subgraph per entry-point match. Each subgraph shows the function's callers, callees, and related symbols — directly from each project's magellan DB, without copying data into atheneum.
+
+**Step 5 — Use in a script or agent:**
+
+```rust
+use atheneum::CrossRouter;
+
+fn main() -> anyhow::Result<()> {
+    let mut router = CrossRouter::open()?;
+
+    // Find all Rust projects that have a "build_router" function
+    let hits = router.cross_search("build_router", Some("rust"), 10)?;
+    for hit in &hits {
+        println!("{}: {} in {}:{}",
+            hit.project, hit.name, hit.file, hit.line.unwrap_or(0));
+    }
+
+    // For each hit, expand 2 hops of graph context
+    let views = router.cross_navigate("build_router", Some("rust"), 3, 2)?;
+    for view in &views {
+        println!("project={} entities={} edges={}",
+            view.project, view.subgraph.entities.len(), view.subgraph.edges.len());
+    }
+
+    Ok(())
+}
+```
+
+**What happens under the hood:**
+
+1. `CrossRouter::open()` reads `~/.config/atheneum/config.toml` to find `meta_db` (or uses the XDG default).
+2. `cross_search` queries the `project_registry` table for enabled Rust projects, then `ATTACH DATABASE`es each magellan DB one at a time (or reuses cached attachments).
+3. Each attached DB is queried via a cross-schema `UNION ALL` over `graph_entities` and `graph_edges`.
+4. Results are ranked by exact-match score and returned as a single list.
+5. `cross_navigate` does the same search, then runs BFS per entry point per project, returning subgraph views with full entity/edge detail.
+
+**Cleaning up:**
+
+```bash
+# Remove a project from the registry (soft-disable)
+atheneum meta-register envoy ... --disable
+
+# Re-enable
+atheneum meta-register envoy ...  # omit --disable
+```
+
 ### Config
 
 ```bash

@@ -286,8 +286,11 @@ impl CrossRouter {
                     entities.push(row);
                 }
 
+                // Production magellan DBs use `edge_type` for the column name,
+                // while the test fixture uses `kind`.  Alias to `kind` so the
+                // row-mapping below works regardless of which schema we hit.
                 let edge_sql = format!(
-                    "SELECT id, kind, from_id, to_id, data FROM \"{}\".graph_edges
+                    "SELECT id, edge_type AS kind, from_id, to_id, data FROM \"{}\".graph_edges\n\
                      WHERE from_id = ?1 OR to_id = ?1",
                     schema
                 );
@@ -359,7 +362,7 @@ mod tests {
         conn.execute(
             "CREATE TABLE graph_edges (
                 id INTEGER PRIMARY KEY,
-                kind TEXT NOT NULL,
+                edge_type TEXT NOT NULL,
                 from_id INTEGER NOT NULL,
                 to_id INTEGER NOT NULL,
                 data TEXT NOT NULL DEFAULT '{}'
@@ -467,7 +470,7 @@ mod tests {
             )
             .unwrap();
             ca.execute(
-                "INSERT INTO graph_edges (id, kind, from_id, to_id, data) VALUES
+                "INSERT INTO graph_edges (id, edge_type, from_id, to_id, data) VALUES
                  (1, 'Calls', 1, 2, '{}')",
                 [],
             )
