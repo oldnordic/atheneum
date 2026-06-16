@@ -775,7 +775,9 @@ atheneum graph-stats <db-path>
 
 `search` uses the HNSW lexical index. It matches on shared tokens -- not semantic similarity. "car" will not match "automobile". Good for symbol and identifier search. Use `--max-tokens` to truncate the result list before it reaches your LLM context window.
 
-`search-wiki` uses the FTS5 index over `wiki_pages`. It returns ranked excerpts only; the full article body is never included in the output. Use `--limit` and `--offset` for pagination, and `--project` to scope the search.
+`search-wiki` uses the FTS5 index over `wiki_pages` (`title`, `body`, and `path`). It returns ranked excerpts only; the full article body is never included in the output. Prefix queries work automatically: searching `rout` matches `Router`, `Routes`, and path fragments like `wiki/router.md`. If FTS5 returns no hits, `search-wiki` falls back to a graph-entity name/path/title substring search so partial concept queries still find stored pages. Use `--limit` and `--offset` for pagination, and `--project` to scope the search.
+
+`list-pages` returns metadata for every wiki page (path, title, project, timestamps) without requiring a query. Use it to browse what is stored before searching, or to enumerate pages for export.
 
 `backfill-wiki` re-ingests every `wiki_pages` SQL row through `ingest_wiki_page`. Use it to repair pages that were written directly to the SQL table without creating a proper `WikiPage` graph entity or wikilink edges. It skips pages whose graph entity already has a body and is not marked as a stub.
 

@@ -659,13 +659,22 @@ fn fts5_query(input: &str) -> String {
     let tokens: Vec<String> = input
         .split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
-        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .map(|t| format!("\"{}\"*", t.replace('"', "\"\"")))
         .collect();
     if tokens.is_empty() {
         // Match nothing rather than returning arbitrary rows.
         return "\"\"".to_string();
     }
     tokens.join(" ")
+}
+
+fn tokens(input: &str) -> Vec<String> {
+    input
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 impl AtheneumGraph {
@@ -681,6 +690,20 @@ impl AtheneumGraph {
         limit: usize,
     ) -> Result<Vec<WikiSearchResult>> {
         self.runtime.record_wiki_query();
+        let mut hits = self.search_wiki_pages_fts(query, project_id, offset, limit)?;
+        if hits.is_empty() {
+            hits = self.search_wiki_pages_by_name(query, project_id, offset, limit)?;
+        }
+        Ok(hits)
+    }
+
+    fn search_wiki_pages_fts(
+        &self,
+        query: &str,
+        project_id: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<WikiSearchResult>> {
         let lim = limit as i64;
         let off = offset as i64;
         let fts_query = fts5_query(query);
@@ -721,6 +744,106 @@ impl AtheneumGraph {
                 out.push(wiki_search_row_to_result(row, query)?);
             }
             Ok(out)
+        })
+    }
+
+    /// Fallback search over graph entity names/paths and titles when FTS5
+    /// returns no hits. This catches partial path fragments (e.g. "kanban"
+    /// matching `/wiki/pages/kanban.md`) and concept words that don't appear
+    /// in the indexed body.
+    fn search_wiki_pages_by_name(
+        &self,
+        query: &str,
+        project_id: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<WikiSearchResult>> {
+        let ts = tokens(query);
+        if ts.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.with_raw_connection(|conn| {
+            let sql = if project_id.is_some() {
+                "SELECT wp.id, wp.path, wp.title, wp.body, wp.project_id, wp.created_at, wp.updated_at
+                 FROM graph_entities ge
+                 INNER JOIN wiki_pages wp ON ge.name = wp.path
+                 WHERE ge.kind = 'WikiPage'
+                   AND wp.project_id = ?1
+                   AND (wp.title LIKE ?2 OR wp.path LIKE ?2 OR wp.body LIKE ?2)
+                 ORDER BY wp.path"
+            } else {
+                "SELECT wp.id, wp.path, wp.title, wp.body, wp.project_id, wp.created_at, wp.updated_at
+                 FROM graph_entities ge
+                 INNER JOIN wiki_pages wp ON ge.name = wp.path
+                 WHERE ge.kind = 'WikiPage'
+                   AND (wp.title LIKE ?1 OR wp.path LIKE ?1 OR wp.body LIKE ?1)
+                 ORDER BY wp.path"
+            };
+
+            let mut candidate_ids: Option<std::collections::HashSet<i64>> = None;
+            let project_id_owned = project_id.map(|s| s.to_string());
+
+            for token in &ts {
+                let pattern = format!("%{}%", token);
+                let params: Vec<&dyn rusqlite::ToSql> = if let Some(ref pid) = project_id_owned {
+                    vec![pid as &dyn rusqlite::ToSql, &pattern as &dyn rusqlite::ToSql]
+                } else {
+                    vec![&pattern as &dyn rusqlite::ToSql]
+                };
+                let mut stmt = conn.prepare_cached(sql)?;
+                let rows = stmt.query_map(params.as_slice(), |r| r.get::<_, i64>(0))?;
+                let ids: std::collections::HashSet<i64> = rows.collect::<Result<_, _>>()?;
+                candidate_ids = Some(match candidate_ids {
+                    Some(prev) => prev.intersection(&ids).copied().collect(),
+                    None => ids,
+                });
+                if candidate_ids.as_ref().map(|s| s.is_empty()).unwrap_or(false) {
+                    return Ok(Vec::new());
+                }
+            }
+
+            let ids: Vec<i64> = candidate_ids.map(|s| s.into_iter().collect()).unwrap_or_default();
+            if ids.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            // Fetch full rows for the surviving ids, ordered by path, then paginate in Rust.
+            // Wiki page counts are modest; in-memory pagination is acceptable.
+            let placeholders = ids
+                .iter()
+                .map(|_| "?".to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let fetch_sql = format!(
+                "SELECT id, path, title, content_hash, body, wikilinks, project_id, metadata, created_at, updated_at
+                 FROM wiki_pages
+                 WHERE id IN ({placeholders})
+                 ORDER BY path"
+            );
+            let params: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+            let mut stmt = conn.prepare(&fetch_sql)?;
+            let rows = stmt.query_map(params.as_slice(), wiki_page_from_row)?;
+            let mut pages: Vec<WikiPage> = rows.collect::<Result<_, _>>()?;
+            let total = pages.len();
+            let start = offset.min(total);
+            let end = (offset + limit).min(total);
+            pages = pages.split_off(start);
+            pages.truncate(end - start);
+
+            Ok(pages
+                .into_iter()
+                .map(|p| WikiSearchResult {
+                    id: p.id,
+                    path: p.path.clone(),
+                    title: p.title,
+                    excerpt: excerpt_from_body(&p.body, &ts.join(" "), 240),
+                    score: 0.0,
+                    created_at: p.created_at,
+                    updated_at: p.updated_at,
+                    project_id: p.project_id,
+                })
+                .collect())
         })
     }
 

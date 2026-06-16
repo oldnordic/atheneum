@@ -46,6 +46,7 @@ const MIGRATIONS: &[(u32, &str, Migration)] = &[
         planning::migrate_v8_planning_archive_fix,
     ),
     (9, "wiki-fts", wiki_fts::migrate_v9_wiki_fts),
+    (10, "wiki-fts-path", wiki_fts::migrate_v10_wiki_fts_path),
 ];
 
 /// Apply any pending migrations to the connection. Idempotent — already-

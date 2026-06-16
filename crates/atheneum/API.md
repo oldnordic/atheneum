@@ -517,7 +517,9 @@ Get entities that link to a wiki page via `wikilink` edges.
 
 ### `search_wiki_pages(query, project_id, offset, limit) -> Result<Vec<WikiSearchResult>>`
 
-Full-text search over wiki pages using the FTS5 index. Results are ranked by BM25 and include an excerpt only — the full body is intentionally omitted.
+Full-text search over wiki pages using the FTS5 index (`title`, `body`, and `path`). Results are ranked by BM25 and include an excerpt only — the full body is intentionally omitted.
+
+If the FTS5 query returns no hits, `search_wiki_pages` automatically falls back to a graph-entity name/path/title substring search over all stored wiki pages. This catches partial path fragments (e.g. `session` matching `wiki/session-accountability.md`) and concept words that don't appear in the indexed body.
 
 ```rust
 pub struct WikiSearchResult {

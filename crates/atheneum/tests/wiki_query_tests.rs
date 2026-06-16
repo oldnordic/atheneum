@@ -326,8 +326,8 @@ fn test_backfill_wiki_pages_repairs_stub_entities() {
         )?;
         let entity_id = conn.last_insert_rowid();
         conn.execute(
-            "INSERT INTO wiki_pages_fts (rowid, title, body) VALUES (?1, ?2, ?3)",
-            rusqlite::params![wiki_id, Some("Stubbed Article"), "This article links to [[HTTP Router]]."],
+            "INSERT INTO wiki_pages_fts (rowid, title, body, path) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![wiki_id, Some("Stubbed Article"), "This article links to [[HTTP Router]].", "wiki/stubbed.md"],
         )?;
         Ok(entity_id)
     }).expect("seed stub");
@@ -393,8 +393,8 @@ fn test_backfill_wiki_pages_creates_missing_entities() {
         )?;
         let wiki_id = conn.last_insert_rowid();
         conn.execute(
-            "INSERT INTO wiki_pages_fts (rowid, title, body) VALUES (?1, ?2, ?3)",
-            rusqlite::params![wiki_id, Some("Orphan Article"), "Body with no graph entity yet."],
+            "INSERT INTO wiki_pages_fts (rowid, title, body, path) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![wiki_id, Some("Orphan Article"), "Body with no graph entity yet.", "wiki/orphan.md"],
         )?;
         Ok(())
     }).expect("seed orphan");
@@ -448,4 +448,57 @@ fn test_search_wiki_pages_does_not_return_full_body() {
         hits[0].excerpt.contains("target_token"),
         "excerpt should still include the matched token"
     );
+}
+
+#[test]
+fn test_search_wiki_pages_by_path_fragment() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    graph
+        .ingest_wiki_page(
+            "wiki/session-accountability.md",
+            "---\ntitle: Accountability Notes\n---\nSome notes about project governance.\n",
+            Some("proj"),
+        )
+        .expect("ingest");
+
+    // The body does NOT contain "session", but the path does.
+    let hits = graph
+        .search_wiki_pages("session", Some("proj"), 0, 10)
+        .expect("search");
+    assert_eq!(hits.len(), 1, "should match path fragment");
+    assert_eq!(hits[0].path, "wiki/session-accountability.md");
+}
+
+#[test]
+fn test_search_wiki_pages_prefix_wildcard() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    graph
+        .ingest_wiki_page(
+            "wiki/router.md",
+            "---\ntitle: HTTP Router\n---\nRoutes requests through the handler graph.\n",
+            Some("proj"),
+        )
+        .expect("ingest");
+
+    // "rout" is a prefix of "Routes" (body) and "Router" (title).
+    let hits = graph
+        .search_wiki_pages("rout", Some("proj"), 0, 10)
+        .expect("search");
+    assert!(
+        hits.iter().any(|h| h.path == "wiki/router.md"),
+        "prefix wildcard should match 'rout' against 'Routes' and 'Router'"
+    );
+}
+
+#[test]
+fn test_search_wiki_pages_no_results_for_gibberish() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    graph
+        .ingest_wiki_page("wiki/a.md", "---\ntitle: A\n---\nbody\n", Some("proj"))
+        .expect("ingest");
+
+    let hits = graph
+        .search_wiki_pages("xyz123nonsense", Some("proj"), 0, 10)
+        .expect("search");
+    assert!(hits.is_empty(), "gibberish query should return no results");
 }

@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Pending
+
+(nothing yet)
+
+## [0.6.1] — 2026-06-16
+
+### Added
+
+- **Path-aware wiki search.** The `wiki_pages_fts` FTS5 index now includes the `path` column, so `search-wiki` matches path fragments (e.g. `session` matches `wiki/session-accountability.md`).
+- **Prefix wildcard matching.** `search-wiki` automatically treats each query token as a prefix (`rout` matches `Routes`, `Router`, path fragments).
+- **Graph-entity fallback search.** If FTS5 returns no hits, `search_wiki_pages` falls back to a substring search over graph entity names/paths and wiki titles, so partial concept queries still find stored pages.
+- New tests cover path-fragment search, prefix wildcards, and the graph-name fallback.
+
+### Changed
+
+- `wiki_pages_fts` migration is now parameterised over columns. Migration v10 recreates the FTS5 table with `title, body, path` and updates triggers accordingly.
+
 ## [0.6.0] — 2026-06-16
 
 ### Added
@@ -21,12 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SQLite FTS5 version mismatch** — Migration v9 now drops and recreates the `wiki_pages_fts` virtual table during open so the index format always matches the SQLite version that is actually opening the connection. This fixes `database disk image is malformed` errors when a DB was touched by a newer system `sqlite3` than the SQLite bundled with the atheneum binary.
 - **Unicode-safe excerpt slicing** in `search_wiki_pages` no longer panics on multi-byte characters such as `→`.
 
-## [Unreleased] — Pending
-
-(nothing yet)
-
-
-### Added
+## [0.5.0] — 2026-06-09
 
 #### Cross-Project Queries — Query Magellan-Indexed Codebases Without Copying Data
 
