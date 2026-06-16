@@ -515,6 +515,27 @@ Get entities that a wiki page links to via `wikilink` edges.
 
 Get entities that link to a wiki page via `wikilink` edges.
 
+### `search_wiki_pages(query, project_id, offset, limit) -> Result<Vec<WikiSearchResult>>`
+
+Full-text search over wiki pages using the FTS5 index. Results are ranked by BM25 and include an excerpt only — the full body is intentionally omitted.
+
+```rust
+pub struct WikiSearchResult {
+    pub id: i64,
+    pub path: String,
+    pub title: Option<String>,
+    pub excerpt: String,
+    pub score: f64,
+    pub created_at: String,
+    pub updated_at: Option<String>,
+    pub project_id: Option<String>,
+}
+```
+
+### `backfill_wiki_pages_to_graph(project_id) -> Result<Vec<(i64, String)>>`
+
+Re-ingest every row in `wiki_pages` through `ingest_wiki_page` so pages that were written directly to the SQL table become real graph nodes with wikilink edges. Stubs (entities with `stub: true` or no `body`) are repaired. Returns the IDs and paths of pages that were fixed.
+
 ### `link_wiki_to_symbols(magellan_db_path, agent_name, project_id) -> Result<()>`
 
 Bridge wiki content to code symbols via magellan. For each wiki page's `[[wikilinks]]`, queries the magellan DB for matching code symbols, imports them as Discovery entities, and creates `Explains` edges. Idempotent.

@@ -267,6 +267,20 @@ pub struct SearchResult {
     pub data: Value,
 }
 
+/// A single matching wiki page from full-text search, with a short excerpt.
+/// The full body is intentionally omitted; callers must fetch it separately.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WikiSearchResult {
+    pub id: i64,
+    pub path: String,
+    pub title: Option<String>,
+    pub excerpt: String,
+    pub score: f64,
+    pub created_at: String,
+    pub updated_at: Option<String>,
+    pub project_id: Option<String>,
+}
+
 /// Result of entity disambiguation via vector similarity.
 ///
 /// When resolving a name to an existing graph entity, this struct captures

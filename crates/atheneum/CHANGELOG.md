@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — Pending
 
-(nothing yet)
+### Added
+
+- **FTS5 full-text search over wiki pages.** New `wiki_pages_fts` index backs `atheneum search-wiki` with paginated, ranked results and excerpts. The full article body is never returned by the search API.
+- **`backfill-wiki` CLI command** repairs wiki pages that were written directly to the `wiki_pages` SQL table without a proper `WikiPage` graph entity, restoring wikilink navigation and resolving stub targets.
+- **Library API additions:**
+  - `AtheneumGraph::search_wiki_pages(query, project_id, offset, limit) -> Result<Vec<WikiSearchResult>>`
+  - `AtheneumGraph::backfill_wiki_pages_to_graph(project_id) -> Result<Vec<(i64, String)>>`
+  - Re-exported `WikiSearchResult` from the crate root.
+
+### Fixed
+
+- **SQLite FTS5 version mismatch** — Migration v9 now drops and recreates the `wiki_pages_fts` virtual table during open so the index format always matches the SQLite version that is actually opening the connection. This fixes `database disk image is malformed` errors when a DB was touched by a newer system `sqlite3` than the SQLite bundled with the atheneum binary.
+- **Unicode-safe excerpt slicing** in `search_wiki_pages` no longer panics on multi-byte characters such as `→`.
 
 ## [0.5.0] — 2026-06-09
 

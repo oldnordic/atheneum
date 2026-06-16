@@ -44,7 +44,7 @@ pub use types::{
     QueryIntent, RecordEventParams, RelationEndpoint, RelationHint, RequirementStatus,
     ResolvedEntity, SearchResult, SessionParams, SessionProgressParams, SessionSummary,
     SubgraphView, TaskDetail, TestRunParams, ToolCallParams, ToolCallRecord, ToolCallTrace,
-    ONTOLOGY_CLASS_KIND, ONTOLOGY_PROPERTY_KIND,
+    WikiSearchResult, ONTOLOGY_CLASS_KIND, ONTOLOGY_PROPERTY_KIND,
 };
 pub use wiki::{
     content_hash, extract_kanban_updates, extract_wikilinks, parse_journal_sections,

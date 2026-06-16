@@ -433,6 +433,26 @@ let sections = graph.parse_journal_sections(journal)?;
 graph.ingest_journal_sections(&sections, Some("my-project"))?;
 ```
 
+### Searching Wiki Pages
+
+Atheneum uses an FTS5 index over `wiki_pages` for full-text search. Results are ranked by BM25 and include an excerpt only; the full body is never returned by the search API, so you can safely feed results into a context window without accidentally dumping entire articles.
+
+```rust
+let hits = graph.search_wiki_pages("session accountability", Some("my-project"), 0, 10)?;
+for hit in &hits {
+    println!("{} (score={}): {}", hit.path, hit.score, hit.excerpt);
+}
+```
+
+### Backfilling Wiki Pages
+
+If wiki pages were inserted directly into the `wiki_pages` SQL table (for example, by an older helper script), they may exist as rows but not as proper `WikiPage` graph entities with wikilink edges. `backfill_wiki_pages_to_graph` re-ingests each row through `ingest_wiki_page`, repairing stubs and restoring navigation.
+
+```rust
+let fixed = graph.backfill_wiki_pages_to_graph(Some("my-project"))?;
+println!("repaired {} pages", fixed.len());
+```
+
 ---
 
 ## HopGraph
@@ -719,6 +739,12 @@ atheneum navigate <db-path> <query> [--k N] [--depth N] [--project P] [--kind K]
 # Query a wiki page by path
 atheneum query-wiki <db-path> <path>
 
+# Full-text search over wiki pages (excerpts only; no full body)
+atheneum search-wiki <db-path> <query> [--limit N] [--offset N] [--project P]
+
+# Backfill wiki pages written directly to the SQL table into the graph
+atheneum backfill-wiki <db-path> [--project P]
+
 # Query journal sections by path
 atheneum query-journal <db-path> <path>
 
@@ -748,6 +774,10 @@ atheneum graph-stats <db-path>
 ```
 
 `search` uses the HNSW lexical index. It matches on shared tokens -- not semantic similarity. "car" will not match "automobile". Good for symbol and identifier search. Use `--max-tokens` to truncate the result list before it reaches your LLM context window.
+
+`search-wiki` uses the FTS5 index over `wiki_pages`. It returns ranked excerpts only; the full article body is never included in the output. Use `--limit` and `--offset` for pagination, and `--project` to scope the search.
+
+`backfill-wiki` re-ingests every `wiki_pages` SQL row through `ingest_wiki_page`. Use it to repair pages that were written directly to the SQL table without creating a proper `WikiPage` graph entity or wikilink edges. It skips pages whose graph entity already has a body and is not marked as a stub.
 
 `navigate` performs a search, then expands each hit into a subgraph using BFS. The `--kind` flag filters by entity type (accepts aliases like `memory`, `memories`, `wiki`, `discoveries`). The output includes the validated query plan plus subgraph views. Use `--max-tokens` to truncate each subgraph view to a token budget (the entry entity is always kept; neighbors are dropped until the budget fits). Use `--concise` to emit compact Markdown instead of JSON — designed for pasting into a language-model context window.
 

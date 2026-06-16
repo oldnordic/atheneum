@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 use super::cache::{CacheDomain, QueryCacheKey, QueryCacheValue};
 use super::hashing::sha256_hex;
 use super::planning::{KanbanStatus, KanbanUpdate};
-use super::types::EdgeType;
+use super::types::{EdgeType, WikiSearchResult};
 use super::AtheneumGraph;
 
 const WIKILINK_AUTOLINK_MIN_SCORE: f32 = 0.95;
@@ -653,6 +653,179 @@ fn is_wikilink_edge(edge_type: &str, data: &Value) -> bool {
     edge_type == EdgeType::Wikilink.as_str()
         || (edge_type == EdgeType::RelatedTo.as_str()
             && data.get("link_type").and_then(|v| v.as_str()) == Some("wikilink"))
+}
+
+fn fts5_query(input: &str) -> String {
+    let tokens: Vec<String> = input
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .collect();
+    if tokens.is_empty() {
+        // Match nothing rather than returning arbitrary rows.
+        return "\"\"".to_string();
+    }
+    tokens.join(" ")
+}
+
+impl AtheneumGraph {
+    /// Full-text search over wiki pages using the FTS5 index.
+    ///
+    /// Returns paginated results with excerpts only. The full body is never
+    /// returned here; callers can fetch it via `get_wiki_page(path)`.
+    pub fn search_wiki_pages(
+        &self,
+        query: &str,
+        project_id: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<WikiSearchResult>> {
+        self.runtime.record_wiki_query();
+        let lim = limit as i64;
+        let off = offset as i64;
+        let fts_query = fts5_query(query);
+        self.with_raw_connection(|conn| {
+            let sql = if project_id.is_some() {
+                "SELECT wp.id, wp.path, wp.title, wp.body, wp.project_id, wp.created_at, wp.updated_at,
+                        rank
+                 FROM wiki_pages_fts
+                 INNER JOIN wiki_pages wp ON wiki_pages_fts.rowid = wp.id
+                 WHERE wiki_pages_fts MATCH ?1
+                   AND wp.project_id = ?2
+                 ORDER BY rank
+                 LIMIT ?3 OFFSET ?4"
+            } else {
+                "SELECT wp.id, wp.path, wp.title, wp.body, wp.project_id, wp.created_at, wp.updated_at,
+                        rank
+                 FROM wiki_pages_fts
+                 INNER JOIN wiki_pages wp ON wiki_pages_fts.rowid = wp.id
+                 WHERE wiki_pages_fts MATCH ?1
+                 ORDER BY rank
+                 LIMIT ?2 OFFSET ?3"
+            };
+            let project_id_owned = project_id.map(|s| s.to_string());
+            let params: Vec<&dyn rusqlite::ToSql> = if let Some(ref pid) = project_id_owned {
+                vec![
+                    &fts_query as &dyn rusqlite::ToSql,
+                    pid as &dyn rusqlite::ToSql,
+                    &lim,
+                    &off,
+                ]
+            } else {
+                vec![&fts_query as &dyn rusqlite::ToSql, &lim, &off]
+            };
+            let mut stmt = conn.prepare_cached(sql)?;
+            let mut rows = stmt.query(params.as_slice())?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next()? {
+                out.push(wiki_search_row_to_result(row, query)?);
+            }
+            Ok(out)
+        })
+    }
+
+    /// Backfill any wiki_pages rows that are missing or stubbed in graph_entities.
+    ///
+    /// This repairs the "stub insanity": pages saved directly to the SQL table
+    /// without going through `ingest_wiki_page` become real graph nodes with
+    /// wikilink edges.
+    pub fn backfill_wiki_pages_to_graph(
+        &self,
+        project_id: Option<&str>,
+    ) -> Result<Vec<(i64, String)>> {
+        let pages = self.list_wiki_pages_page(project_id, 0, usize::MAX)?;
+        let mut fixed = Vec::new();
+        for page in pages {
+            let existing = self.find_wiki_page_entity_id(&page.path)?;
+            let needs_backfill = match existing {
+                Some(id) => {
+                    let entity = self.get_entity(id)?;
+                    entity.data.get("stub").and_then(|v| v.as_bool()) == Some(true)
+                        || entity.data.get("body").is_none()
+                }
+                None => true,
+            };
+            if !needs_backfill {
+                continue;
+            }
+            // Reconstruct the content in the format ingest_wiki_page expects,
+            // so frontmatter and wikilinks are parsed consistently.
+            let mut content = String::new();
+            if let Some(title) = &page.title {
+                content.push_str("---\n");
+                content.push_str(&format!("title: {}\n", title));
+                content.push_str("---\n");
+            }
+            content.push_str(&page.body);
+            let id = self.ingest_wiki_page(&page.path, &content, page.project_id.as_deref())?;
+            fixed.push((id, page.path));
+        }
+        Ok(fixed)
+    }
+}
+
+fn wiki_search_row_to_result(
+    r: &rusqlite::Row,
+    query: &str,
+) -> Result<WikiSearchResult, rusqlite::Error> {
+    let id: i64 = r.get(0)?;
+    let path: String = r.get(1)?;
+    let title: Option<String> = r.get(2)?;
+    let body: Option<String> = r.get(3)?;
+    let body_str = body.as_deref().unwrap_or("");
+    let score: f64 = r.get(7)?;
+    let excerpt = excerpt_from_body(body_str, query, 240);
+    Ok(WikiSearchResult {
+        id,
+        path,
+        title,
+        excerpt,
+        score,
+        created_at: r.get(5)?,
+        updated_at: r.get(6)?,
+        project_id: r.get(4)?,
+    })
+}
+
+fn excerpt_from_body(body: &str, query: &str, max_len: usize) -> String {
+    let query_lower = query.to_lowercase();
+    let first_token = query_lower
+        .split(|c: char| !c.is_alphanumeric())
+        .find(|t| !t.is_empty())
+        .map(String::from);
+
+    let (start, end) = if let Some(token) = first_token {
+        let body_lower = body.to_lowercase();
+        if let Some(pos) = body_lower.find(&token) {
+            let half = max_len / 2;
+            let s = snap_to_char_boundary(body, pos.saturating_sub(half));
+            let raw_end = (pos + token.len() + half).min(body.len());
+            let e = snap_to_char_boundary(body, raw_end);
+            (s, e)
+        } else {
+            (0, body.len().min(max_len))
+        }
+    } else {
+        (0, body.len().min(max_len))
+    };
+
+    let mut excerpt = String::new();
+    if start > 0 {
+        excerpt.push_str("...");
+    }
+    excerpt.push_str(&body[start..end].replace('\n', " "));
+    if end < body.len() {
+        excerpt.push_str("...");
+    }
+    excerpt
+}
+
+fn snap_to_char_boundary(s: &str, mut byte_idx: usize) -> usize {
+    byte_idx = byte_idx.min(s.len());
+    while byte_idx > 0 && !s.is_char_boundary(byte_idx) {
+        byte_idx -= 1;
+    }
+    byte_idx
 }
 
 fn wiki_page_from_row(r: &rusqlite::Row) -> Result<WikiPage, rusqlite::Error> {

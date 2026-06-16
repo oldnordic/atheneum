@@ -534,6 +534,42 @@ fn run() -> anyhow::Result<()> {
                 "results": hits.iter().map(search_result_to_json).collect::<Vec<_>>(),
             }))?;
         }
+        "search-wiki" => {
+            if args.len() < 4 {
+                eprintln!("Usage: atheneum search-wiki <db-path> <query> [--limit N] [--offset N] [--project P]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let query = &args[3];
+            let opts = parse_options(&args[4..])?;
+            let limit = parse_usize_option(opts.limit.as_deref(), "limit")?.unwrap_or(10);
+            let offset = parse_usize_option(opts.offset.as_deref(), "offset")?.unwrap_or(0);
+            let graph = AtheneumGraph::open(&db_path)?;
+            let hits = graph.search_wiki_pages(query, opts.project.as_deref(), offset, limit)?;
+            print_json(json!({
+                "query": query,
+                "offset": offset,
+                "limit": limit,
+                "project": opts.project,
+                "count": hits.len(),
+                "results": hits,
+            }))?;
+        }
+        "backfill-wiki" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum backfill-wiki <db-path> [--project P]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let opts = parse_options(&args[3..])?;
+            let graph = AtheneumGraph::open(&db_path)?;
+            let fixed = graph.backfill_wiki_pages_to_graph(opts.project.as_deref())?;
+            print_json(json!({
+                "project": opts.project,
+                "fixed": fixed.len(),
+                "pages": fixed.iter().map(|(id, path)| json!({"id": id, "path": path})).collect::<Vec<_>>(),
+            }))?;
+        }
         "query-knowledge" => {
             if args.len() < 4 {
                 eprintln!("Usage: atheneum query-knowledge <db-path> <target> [--project P] [--max-tokens N]");
