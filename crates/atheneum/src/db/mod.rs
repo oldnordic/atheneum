@@ -73,6 +73,7 @@ pub(crate) fn run_migrations(conn: &Connection) -> Result<()> {
         )?;
         tx.commit()?;
     }
+
     Ok(())
 }
 

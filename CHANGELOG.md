@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — Pending
 
-(nothing yet)
+### Fixed
+
+- **`atheneum reindex`** no longer crashes with "Execute returned results - did you mean to call query?". `Graph::checkpoint()` now uses `query_row` for `PRAGMA wal_checkpoint(TRUNCATE)`, because that PRAGMA returns a row.
+- **`wiki_pages_fts` self-heals on open** when the FTS5 shadow tables are left corrupt by an external SQLite writer. The recovery purges `sqlite_master` directly (bypassing the broken vtable), recreates the table and triggers on a fresh connection, then runs a full `delete-all` → repopulate → `rebuild` cycle on another fresh connection. This makes `sync-wiki`, `search-wiki`, and `backfill-wiki` robust against "database disk image is malformed" / "vtable constructor failed" corruption.
 
 ## [0.6.1] — 2026-06-16
 
@@ -15,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Path-aware wiki search.** The `wiki_pages_fts` FTS5 index now includes the `path` column, so `search-wiki` matches path fragments (e.g. `session` matches `wiki/session-accountability.md`).
 - **Prefix wildcard matching.** `search-wiki` automatically treats each query token as a prefix (`rout` matches `Routes`, `Router`, path fragments).
-- **Graph-entity fallback search.** If FTS5 returns no hits, `search_wiki_pages` falls back to a substring search over graph entity names/paths and wiki titles, so partial concept queries still find stored pages.
+- **Graph-entity fallback search.** If FTS5 returns no hits, `search_wiki_pages` falls back to a substring search over graph entity names/paths and wiki titles, so partial concept queries can find stored pages.
 
 ## [0.6.0] — 2026-06-16
 
@@ -30,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **SQLite FTS5 version mismatch** — Migration v9 now drops and recreates the `wiki_pages_fts` virtual table during open so the index format always matches the SQLite version that is actually opening the connection. This fixes `database disk image is malformed` errors when a DB was touched by a newer system `sqlite3` than the SQLite bundled with the atheneum binary.
+- **SQLite FTS5 version mismatch** — Migration v9 drops and recreates the `wiki_pages_fts` virtual table during open so the index format matches the SQLite version opening the connection. This addressed the original "database disk image is malformed" error when the DB was touched by a newer system `sqlite3`. The root cause was later generalized and hardened by the [Unreleased] `ensure_wiki_fts_healthy` per-open self-heal.
 - **Unicode-safe excerpt slicing** in `search_wiki_pages` no longer panics on multi-byte characters such as `→`.
 
 ## [0.5.0] — 2026-06-09

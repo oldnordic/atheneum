@@ -76,6 +76,12 @@ impl AtheneumGraph {
     }
 
     pub fn open(path: &std::path::Path) -> Result<Self> {
+        // Repair a corrupt wiki_pages_fts virtual table before the pool opens.
+        // External writers (system python3/sqlite3) can leave FTS5 shadow tables
+        // unreadable; once the pool loads the broken schema the connection is
+        // wedged for the whole process. See `db::wiki_fts::ensure_wiki_fts_healthy`.
+        crate::db::wiki_fts::ensure_wiki_fts_healthy(path)?;
+
         let cfg = SqliteConfig::new().with_pragma("busy_timeout", "5000");
         let inner = SqliteGraph::open_with_config(path, &cfg)?;
         let g = Self {
@@ -104,7 +110,11 @@ impl AtheneumGraph {
     /// Force a WAL checkpoint. Call after large write batches or before shutdown.
     pub fn checkpoint(&self) -> Result<()> {
         self.with_raw_connection(|conn| {
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)", [])?;
+            // PRAGMA wal_checkpoint returns a single row (busy, log,
+            // checkpointed), so it must go through query_row, not execute —
+            // execute() rejects row-returning statements with
+            // "Execute returned results - did you mean to call query?".
+            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
             Ok(())
         })
     }
