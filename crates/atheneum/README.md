@@ -247,6 +247,10 @@ command on the same append-only transcript imports only new lines.
 - [magellan](https://github.com/oldnordic/magellan) — code graph indexer
 - [sqlitegraph](https://crates.io/crates/sqlitegraph) — underlying SQLite graph engine
 
+## Resilience
+
+The `wiki_pages_fts` FTS5 index self-heals on open. If an external SQLite writer (system `sqlite3`, Python, another tool) leaves the FTS5 shadow tables in an inconsistent state, `AtheneumGraph::open()` detects the corruption, recreates the virtual table and triggers on fresh connections, and rebuilds the index from `wiki_pages`. This keeps `sync-wiki`, `search-wiki`, and `backfill-wiki` working without manual repair.
+
 ## License
 
 GPL-3.0-only — see [LICENSE](LICENSE).

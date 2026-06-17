@@ -453,6 +453,18 @@ let fixed = graph.backfill_wiki_pages_to_graph(Some("my-project"))?;
 println!("repaired {} pages", fixed.len());
 ```
 
+### FTS Index Resilience
+
+The `wiki_pages_fts` FTS5 virtual table can be left internally inconsistent when an external SQLite writer (system `sqlite3`, Python, another tool) touches the database between atheneum runs. `AtheneumGraph::open()` detects this on every open and self-heals before creating the connection pool:
+
+1. Probes `wiki_pages_fts` on a fresh connection.
+2. If the probe fails, purges the virtual-table entry and shadow tables directly from `sqlite_master` with `PRAGMA writable_schema=ON`.
+3. Recreates the table and triggers on another fresh connection.
+4. Runs `delete-all` → repopulate from `wiki_pages` → `rebuild` on a fourth fresh connection to finalize shadow-table invariants.
+5. Checkpoints WAL so the pool connections open onto a consistent DB.
+
+After healing, `sync-wiki`, `search-wiki`, and `backfill-wiki` work normally. The process is idempotent: a healthy index passes the probe and skips all destructive steps. You do not need to run any manual Python repair script.
+
 ---
 
 ## HopGraph
@@ -968,7 +980,7 @@ atheneum --version
 atheneum help
 ```
 
-`reindex` rebuilds the HNSW index over all entities and then runs a WAL checkpoint to reclaim disk space. Useful after bulk imports or if search results seem incomplete.
+`reindex` rebuilds the HNSW index over all entities and then runs a WAL checkpoint to reclaim disk space. Useful after bulk imports or if search results seem incomplete. (Prior to v0.6.2, the checkpoint call could panic with "Execute returned results"; it now uses `query_row` because `PRAGMA wal_checkpoint` returns a row.)
 
 `consolidate` merges all Discovery entities for a target (or all targets) into deduplicated Knowledge entities with `DerivedFrom` edges. Idempotent -- re-running returns the existing Knowledge entity.
 

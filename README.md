@@ -30,6 +30,10 @@ cargo install atheneum
 - [API Reference](./crates/atheneum/API.md)
 - [CHANGELOG](./crates/atheneum/CHANGELOG.md)
 
+## Resilience
+
+`AtheneumGraph::open()` automatically repairs a corrupt `wiki_pages_fts` FTS5 index if an external SQLite writer left the shadow tables inconsistent, so `sync-wiki`, `search-wiki`, and `backfill-wiki` keep working without manual intervention.
+
 ## License
 
 GPL-3.0-only — see [LICENSE](./LICENSE).
