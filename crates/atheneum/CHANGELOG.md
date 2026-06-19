@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-06-19
+
+### Added
+
+- **Read-bridge to magellan's canonical project registry** (`meta.rs`): atheneum no longer maintains its own duplicate copy of the project list. `MetaRouter` now ATTACHes magellan's canonical `~/.magellan/meta.db` (daemon-maintained by `magellan.service`) as a read-only source of project names, roots, and database paths, then overlays its own enrichment data (language, atheneum-db path) on top. This is one source of truth with zero coupling: atheneum works standalone — if magellan is not installed, the bridge simply finds an empty registry and atheneum falls back to overlay-only operation. `meta-list` now reflects everything magellan knows about (e.g. all 25 indexed databases) without any manual registration.
+
+### Changed
+
+- **`project_registry` table renamed to `project_overlay`.** Atheneum's local table is now an *enrichment overlay* on top of magellan's canonical registry, not a competing copy of it. A one-time migration (`ensure_schema`) copies any enrichment rows from the legacy `project_registry` into `project_overlay` and then drops the old table, so no user data is lost.
+- **`cross-search` / `cross-navigate` are resilient to partial registries.** Because the bridge can surface projects whose databases are missing or not yet fully indexed (missing `graph_entities` table), the per-project query loop now skips unattachable or schema-incompatible projects with a warning instead of aborting the whole search. Previously a single incompatible project would fail the entire cross-search.
+
 ## [0.6.2] — 2026-06-17
 
 ### Fixed

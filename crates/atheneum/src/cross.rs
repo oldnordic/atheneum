@@ -170,18 +170,27 @@ impl CrossRouter {
                 }
             };
 
+            // Query this project's graph. Skip projects whose DB schema is
+            // incompatible (not fully indexed, different table layout) rather
+            // than failing the entire cross-search.
             let sql = format!(
                 "SELECT id, kind, name, file_path, data FROM \"{}\".graph_entities
                  WHERE name LIKE ?1
                  LIMIT ?2",
                 schema
             );
-            let mut stmt = self
-                .meta
-                .conn()
-                .prepare(&sql)
-                .with_context(|| format!("prepare cross_search for {}", project.name))?;
-            let rows = stmt.query_map(rusqlite::params![&pattern, k as i64], |row| {
+            let mut stmt = match self.meta.conn().prepare(&sql) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(
+                        "Skipping project {} (schema incompatible): {}",
+                        project.name,
+                        e
+                    );
+                    continue;
+                }
+            };
+            let rows = match stmt.query_map(rusqlite::params![&pattern, k as i64], |row| {
                 Ok(CrossSearchResult {
                     project: project.name.clone(),
                     id: row.get(0)?,
@@ -190,9 +199,18 @@ impl CrossRouter {
                     file_path: row.get(3)?,
                     data: parse_json_column(row.get(4)?),
                 })
-            })?;
+            }) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("Skipping project {} (query failed): {}", project.name, e);
+                    continue;
+                }
+            };
             for row in rows {
-                results.push(row?);
+                match row {
+                    Ok(r) => results.push(r),
+                    Err(e) => tracing::warn!("Malformed row in {}: {}", project.name, e),
+                }
             }
         }
 

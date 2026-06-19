@@ -799,27 +799,47 @@ atheneum graph-stats <db-path>
 
 ### Cross-Project Registry (Meta)
 
-```bash
-# Register a project in the meta.db routing layer
-atheneum meta-register envoy /home/feanor/Projects/envoy \
-  /home/feanor/Projects/envoy/.magellan/magellan.db \
-  --atheneum-db /home/feanor/Projects/envoy/atheneum.db \
-  --language rust
+How does atheneum know which projects exist? It **reads magellan's canonical
+project registry directly** (`~/.magellan/meta.db`, maintained automatically by
+`magellan.service`). This means every project magellan indexes is visible to
+atheneum with zero manual setup — you do not have to register each project by
+hand. Atheneum attaches magellan's registry as a read-only source and layers
+its own small *overlay* on top for enrichment data that magellan does not store
+(such as programming language or an atheneum-specific database path).
 
-# List all registered projects
+```bash
+# List all known projects (auto-discovered from magellan's registry
+# plus any enrichment in atheneum's overlay)
 atheneum meta-list
 
 # List projects filtered by language
 atheneum meta-list --language rust
 ```
 
-`meta-register` upserts a project into `~/.local/share/atheneum/meta.db` (or `$XDG_DATA_HOME/atheneum/meta.db`). Re-registering the same name updates all fields and re-enables the project.
+`meta-list` shows every enabled project — typically the full set of magellan
+indexes (e.g. all 25 indexed databases on this machine). Use `--language` to
+filter to one programming language.
 
-`meta-list` queries enabled projects from the registry. Use `--language` to filter by programming language.
+**Optional enrichment with `meta-register`.** In most cases you do not need
+this, because magellan's registry already supplies the project name, root, and
+database path. `meta-register` is for adding the extra fields magellan does not
+own — the language tag and an atheneum-specific database path. It writes into
+atheneum's overlay (`~/.local/share/atheneum/meta.db`, i.e.
+`$XDG_DATA_HOME/atheneum/meta.db`); re-registering the same name updates those
+fields. If magellan is not installed at all, the overlay becomes the full
+registry, so atheneum keeps working standalone.
+
+```bash
+# Optional: add enrichment (language, atheneum-db) to a project
+atheneum meta-register envoy /home/feanor/Projects/envoy \
+  /home/feanor/Projects/envoy/.magellan/magellan.db \
+  --atheneum-db /home/feanor/Projects/envoy/atheneum.db \
+  --language rust
+```
 
 ### Cross-Project Queries
 
-Atheneum can query across magellan-indexed codebases without importing their data. It uses `meta.db` as a routing registry and lazily `ATTACH DATABASE` each project's magellan DB on demand.
+Atheneum can query across magellan-indexed codebases without importing their data. It uses the project list from magellan's canonical registry (plus its own overlay) as a routing table, and lazily `ATTACH DATABASE` each project's magellan DB on demand.
 
 ```bash
 # Search for a symbol across all Rust projects
@@ -834,7 +854,7 @@ atheneum cross-navigate "error handling" --language rust --k 5 --depth 2
 
 Output is JSON. `cross-search` returns ranked symbol hits with project, name, kind, and file path. `cross-navigate` returns one subgraph view per entry point, including entities and edges from each attached magellan database.
 
-The router keeps an LRU cache of attached databases (default capacity 8). Missing or unreadable databases are skipped with a warning rather than aborting the whole query.
+The router keeps an LRU cache of attached databases (default capacity 8). Projects whose database is missing, unreadable, or has an incompatible schema (e.g. not yet fully indexed, so its `graph_entities` table is absent) are skipped with a warning rather than aborting the whole query. This lets cross-search run cleanly across a registry that mixes mature and freshly-registered projects.
 
 #### End-to-End Example: Finding All HTTP Router Implementations
 
@@ -853,9 +873,15 @@ cd ~/Projects/atheneum
 magellan watch --root ./src --db ~/.magellan/atheneum/atheneum.db --scan-initial
 ```
 
-**Step 2 — Register each project in atheneum's meta.db (one-time per project):**
+**Step 2 — Atheneum sees them automatically (no registration needed):**
+
+Because atheneum reads magellan's canonical registry, every project you indexed
+in Step 1 is already visible — run `atheneum meta-list` to confirm. You only
+need `meta-register` if you want to tag a project's language or point it at an
+atheneum-specific database (optional enrichment):
 
 ```bash
+# Optional: tag languages so --language filters work
 atheneum meta-register envoy ~/Projects/envoy \
   ~/.magellan/envoy/envoy.db --language rust
 

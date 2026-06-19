@@ -1,8 +1,20 @@
 //! Cross-project meta-database routing layer.
 //!
-//! `MetaRouter` maintains a separate SQLite database (`meta.db`) that tracks
-//! all registered projects, their magellan/atheneum database paths, languages,
-//! and indexing status. This is the "front door" for cross-project queries.
+//! `MetaRouter` is the "front door" for cross-project queries. It maintains a
+//! small SQLite database (`meta.db`) of atheneum-owned enrichment data
+//! (language, atheneum-db path, symbol index, symbol analogies) and — when the
+//! magellan indexer is installed — reads the *canonical* project registry from
+//! magellan's `~/.magellan/meta.db`, overlaying the enrichment on top.
+//!
+//! ## One source of truth, zero coupling
+//!
+//! Magellan owns the project registry. Atheneum never maintains a competing
+//! copy. When magellan is present (`MetaRouter::open`), project existence and
+//! root/db paths come from `mg.project_registry`; atheneum's `project_overlay`
+//! contributes only the fields magellan does not track (`language`,
+//! `atheneum_db`) and a disable veto. When magellan is absent
+//! (`MetaRouter::open_at`, or `open` with no magellan DB), the overlay table
+//! alone acts as the registry — so atheneum works standalone.
 
 use std::path::{Path, PathBuf};
 
@@ -18,6 +30,19 @@ fn default_meta_db_path() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(".atheneum"))
         .join("atheneum")
         .join("meta.db")
+}
+
+/// Path to magellan's canonical project registry.
+///
+/// Resolved as: `$MAGELLAN_META_DB` > `$HOME/.magellan/meta.db`.
+fn magellan_meta_db_path() -> PathBuf {
+    if let Ok(p) = std::env::var("MAGELLAN_META_DB") {
+        return PathBuf::from(p);
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home).join(".magellan").join("meta.db");
+    }
+    PathBuf::from(".magellan/meta.db")
 }
 
 /// Information about a registered project.
@@ -39,10 +64,13 @@ pub struct ProjectInfo {
 pub struct MetaRouter {
     conn: Connection,
     path: PathBuf,
+    /// `true` when magellan's canonical `meta.db` was attached as schema `mg`.
+    magellan_attached: bool,
 }
 
 impl MetaRouter {
-    /// Open the default meta.db.
+    /// Open the default meta.db and (if present) attach magellan's canonical
+    /// project registry.
     ///
     /// Uses the path from `~/.config/atheneum/config.toml` when present and
     /// valid; otherwise falls back to `~/.local/share/atheneum/meta.db`
@@ -51,10 +79,40 @@ impl MetaRouter {
         let path = config::load()
             .map(|cfg| cfg.meta_db_path())
             .unwrap_or_else(|_| default_meta_db_path());
-        Self::open_at(path)
+        Self::open_with_magellan(path)
     }
 
-    /// Open a meta.db at an explicit path.
+    /// Open a meta.db at an explicit path and attach magellan's canonical
+    /// registry when it exists on disk.
+    pub fn open_with_magellan<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let mut router = Self::open_at(path)?;
+        let mg_path = magellan_meta_db_path();
+        if mg_path.exists() {
+            let res = router.conn.execute(
+                "ATTACH DATABASE ?1 AS mg",
+                rusqlite::params![mg_path.to_string_lossy()],
+            );
+            match res {
+                Ok(_) => router.magellan_attached = true,
+                Err(e) => {
+                    // Non-fatal: degrade to overlay-only. Magellan stays the
+                    // sole owner of its registry; atheneum simply can't see it.
+                    eprintln!(
+                        "atheneum: could not attach magellan registry at {}: {e} \
+                         (continuing with local overlay only)",
+                        mg_path.display()
+                    );
+                    router.magellan_attached = false;
+                }
+            }
+        }
+        Ok(router)
+    }
+
+    /// Open a meta.db at an explicit path WITHOUT attaching magellan.
+    ///
+    /// Intended for tests and explicit-path tooling where the overlay table
+    /// alone is the registry.
     pub fn open_at<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
@@ -63,21 +121,27 @@ impl MetaRouter {
         }
         let conn = Connection::open(&path)
             .with_context(|| format!("Failed to open meta.db at {}", path.display()))?;
-        let mut router = Self { conn, path };
+        let mut router = Self {
+            conn,
+            path,
+            magellan_attached: false,
+        };
         router.ensure_schema()?;
         Ok(router)
     }
 
     fn ensure_schema(&mut self) -> Result<()> {
+        // Atheneum-owned enrichment + standalone registry overlay. Magellan
+        // supplies canonical root/db_path in production; the overlay carries
+        // those fields too so it can stand alone (tests, no magellan).
         self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS project_registry (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                name        TEXT NOT NULL UNIQUE,
-                root_path   TEXT NOT NULL,
-                magellan_db TEXT NOT NULL,
-                atheneum_db TEXT,
-                language    TEXT,
-                enabled     INTEGER NOT NULL DEFAULT 1,
+            "CREATE TABLE IF NOT EXISTS project_overlay (
+                name         TEXT PRIMARY KEY,
+                root_path    TEXT,
+                magellan_db  TEXT,
+                atheneum_db  TEXT,
+                language     TEXT,
+                enabled      INTEGER NOT NULL DEFAULT 1,
                 last_indexed TIMESTAMP,
                 file_count   INTEGER DEFAULT 0,
                 symbol_count INTEGER DEFAULT 0,
@@ -86,19 +150,21 @@ impl MetaRouter {
             [],
         )?;
         self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_project_registry_enabled
-             ON project_registry (enabled)",
+            "CREATE INDEX IF NOT EXISTS idx_project_overlay_enabled
+             ON project_overlay (enabled)",
             [],
         )?;
         self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_project_registry_lang
-             ON project_registry (language) WHERE enabled = 1",
+            "CREATE INDEX IF NOT EXISTS idx_project_overlay_lang
+             ON project_overlay (language) WHERE enabled = 1",
             [],
         )?;
+        // No FK to the registry: project names can originate from magellan's
+        // canonical table, which is not always attached.
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS symbol_index (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                project     TEXT NOT NULL REFERENCES project_registry(name),
+                project     TEXT NOT NULL,
                 symbol_name TEXT NOT NULL,
                 kind        TEXT,
                 file_path   TEXT,
@@ -114,9 +180,9 @@ impl MetaRouter {
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS symbol_analogies (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                from_project    TEXT NOT NULL REFERENCES project_registry(name),
+                from_project    TEXT NOT NULL,
                 from_symbol     TEXT NOT NULL,
-                to_project      TEXT NOT NULL REFERENCES project_registry(name),
+                to_project      TEXT NOT NULL,
                 to_symbol       TEXT NOT NULL,
                 similarity_score REAL NOT NULL,
                 created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -128,10 +194,91 @@ impl MetaRouter {
              ON symbol_analogies (from_project, from_symbol)",
             [],
         )?;
+        // One-time migration from the legacy `project_registry` table
+        // (pre-bridge duplicate of magellan's registry) into `project_overlay`.
+        // Copies only rows whose enrichment isn't already represented in the
+        // overlay, then drops the legacy table so it can never rot again.
+        self.migrate_legacy_registry()?;
         Ok(())
     }
 
-    /// Register (or update) a project in the meta.db.
+    fn migrate_legacy_registry(&self) -> Result<()> {
+        // Only act if the legacy table still exists.
+        let has_legacy: bool = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='project_registry'",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        if !has_legacy {
+            return Ok(());
+        }
+        // Port enrichment (language, atheneum_db, root, magellan_db) for any
+        // project not yet in the overlay. Existing overlay rows win.
+        self.conn.execute(
+            "INSERT OR IGNORE INTO project_overlay
+                (name, root_path, magellan_db, atheneum_db, language, enabled, last_indexed)
+             SELECT name, root_path, magellan_db, atheneum_db, language, enabled, last_indexed
+             FROM project_registry",
+            [],
+        )?;
+        // Drop the legacy table — the bridge reads magellan's canonical
+        // registry, and the overlay is now the sole atheneum-owned copy.
+        let _ = self.conn.execute("DROP TABLE project_registry", []);
+        tracing::info!("migrated legacy project_registry into project_overlay");
+        Ok(())
+    }
+
+    /// Build the project SELECT (column projection + FROM clause) for the
+    /// active topology: magellan-canonical UNION overlay, or overlay-only.
+    ///
+    /// Columns are ordered to match [`ProjectInfo`] field order:
+    /// `name, root_path, magellan_db, atheneum_db, language, enabled,
+    ///  last_indexed, file_count, symbol_count, created_at`.
+    fn projects_source(&self) -> String {
+        if self.magellan_attached {
+            // Magellan canonical (root, db_path, counts) enriched with the
+            // overlay's language/atheneum_db and honouring an overlay disable
+            // veto (`COALESCE(ov.enabled,1)=1`); plus overlay-only projects.
+            "SELECT name, root_path, magellan_db, atheneum_db, language, enabled,
+                    last_indexed, file_count, symbol_count, created_at FROM (
+                SELECT mg.name AS name,
+                       mg.root AS root_path,
+                       mg.db_path AS magellan_db,
+                       ov.atheneum_db AS atheneum_db,
+                       ov.language AS language,
+                       mg.enabled AS enabled,
+                       CAST(mg.last_reindexed AS TEXT) AS last_indexed,
+                       COALESCE(mg.file_count, 0) AS file_count,
+                       COALESCE(mg.symbol_count, 0) AS symbol_count,
+                       COALESCE(ov.created_at, CURRENT_TIMESTAMP) AS created_at
+                FROM mg.project_registry AS mg
+                LEFT JOIN project_overlay AS ov ON mg.name = ov.name
+                WHERE mg.enabled = 1 AND COALESCE(ov.enabled, 1) = 1
+                UNION ALL
+                SELECT name, root_path, magellan_db, atheneum_db, language, enabled,
+                       last_indexed, file_count, symbol_count, created_at
+                FROM project_overlay
+                WHERE enabled = 1
+                  AND name NOT IN (SELECT name FROM mg.project_registry)
+            ) AS merged"
+                .to_string()
+        } else {
+            "SELECT name, root_path, magellan_db, atheneum_db, language, enabled,
+                    last_indexed, file_count, symbol_count, created_at
+             FROM project_overlay"
+                .to_string()
+        }
+    }
+
+    /// Register (or update) a project's atheneum-side data in the overlay.
+    ///
+    /// In production this records enrichment (language, atheneum_db) for a
+    /// project whose existence/root paths are owned by magellan. When magellan
+    /// is absent it also seeds root_path/magellan_db so the overlay can stand
+    /// alone as the registry.
     pub fn register_project(
         &mut self,
         name: &str,
@@ -141,7 +288,7 @@ impl MetaRouter {
         language: Option<&str>,
     ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO project_registry
+            "INSERT INTO project_overlay
              (name, root_path, magellan_db, atheneum_db, language, enabled, last_indexed)
              VALUES (?1, ?2, ?3, ?4, ?5, 1, CURRENT_TIMESTAMP)
              ON CONFLICT(name) DO UPDATE SET
@@ -156,105 +303,48 @@ impl MetaRouter {
         Ok(())
     }
 
-    /// List all enabled projects.
+    /// List all enabled projects (magellan-canonical ∪ overlay).
     pub fn list_projects(&self) -> Result<Vec<ProjectInfo>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT name, root_path, magellan_db, atheneum_db, language,
-                    enabled, last_indexed, file_count, symbol_count, created_at
-             FROM project_registry
-             WHERE enabled = 1
-             ORDER BY name",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(ProjectInfo {
-                name: row.get(0)?,
-                root_path: row.get(1)?,
-                magellan_db: row.get(2)?,
-                atheneum_db: row.get(3)?,
-                language: row.get(4)?,
-                enabled: row.get::<_, i64>(5)? != 0,
-                last_indexed: row.get(6)?,
-                file_count: row.get(7)?,
-                symbol_count: row.get(8)?,
-                created_at: row.get(9)?,
-            })
-        })?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
-        Ok(out)
+        let sql = format!("{} WHERE enabled = 1 ORDER BY name", self.projects_source());
+        self.query_projects(&sql, [])
     }
 
-    /// List projects filtered by language.
+    /// List enabled projects filtered by language.
     pub fn list_projects_by_language(&self, language: &str) -> Result<Vec<ProjectInfo>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT name, root_path, magellan_db, atheneum_db, language,
-                    enabled, last_indexed, file_count, symbol_count, created_at
-             FROM project_registry
-             WHERE enabled = 1 AND language = ?1
-             ORDER BY name",
-        )?;
-        let rows = stmt.query_map([language], |row| {
-            Ok(ProjectInfo {
-                name: row.get(0)?,
-                root_path: row.get(1)?,
-                magellan_db: row.get(2)?,
-                atheneum_db: row.get(3)?,
-                language: row.get(4)?,
-                enabled: row.get::<_, i64>(5)? != 0,
-                last_indexed: row.get(6)?,
-                file_count: row.get(7)?,
-                symbol_count: row.get(8)?,
-                created_at: row.get(9)?,
-            })
-        })?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
-        Ok(out)
+        let sql = format!(
+            "{} WHERE enabled = 1 AND language = ?1 ORDER BY name",
+            self.projects_source()
+        );
+        self.query_projects(&sql, [language])
     }
 
-    /// Get a single project by name.
+    /// Get a single project by name (any enabled state).
     pub fn get_project(&self, name: &str) -> Result<Option<ProjectInfo>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT name, root_path, magellan_db, atheneum_db, language,
-                    enabled, last_indexed, file_count, symbol_count, created_at
-             FROM project_registry
-             WHERE name = ?1",
-        )?;
-        let row = stmt.query_row([name], |row| {
-            Ok(ProjectInfo {
-                name: row.get(0)?,
-                root_path: row.get(1)?,
-                magellan_db: row.get(2)?,
-                atheneum_db: row.get(3)?,
-                language: row.get(4)?,
-                enabled: row.get::<_, i64>(5)? != 0,
-                last_indexed: row.get(6)?,
-                file_count: row.get(7)?,
-                symbol_count: row.get(8)?,
-                created_at: row.get(9)?,
-            })
-        });
-        match row {
-            Ok(p) => Ok(Some(p)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        let sql = format!("{} WHERE name = ?1", self.projects_source());
+        let mut out = self.query_projects(&sql, [name])?;
+        Ok(out.pop())
     }
 
-    /// Disable a project (soft delete).
+    /// Disable a project (soft delete / veto).
+    ///
+    /// Writes an `enabled = 0` overlay row. For overlay-only projects this
+    /// removes them from listings; for magellan-canonical projects it acts as a
+    /// veto (the canonical row is suppressed via `COALESCE(ov.enabled,1)=1`).
     pub fn disable_project(&mut self, name: &str) -> Result<()> {
         self.conn.execute(
-            "UPDATE project_registry SET enabled = 0 WHERE name = ?1",
+            "INSERT INTO project_overlay (name, enabled) VALUES (?1, 0)
+             ON CONFLICT(name) DO UPDATE SET enabled = 0",
             [name],
         )?;
         Ok(())
     }
 
-    /// Path to the meta.db file.
+    /// Whether magellan's canonical registry is attached.
+    pub fn magellan_attached(&self) -> bool {
+        self.magellan_attached
+    }
+
+    /// Path to the atheneum meta.db file.
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -262,6 +352,33 @@ impl MetaRouter {
     /// Raw SQLite connection for cross-router attach/detach operations.
     pub(crate) fn conn(&self) -> &Connection {
         &self.conn
+    }
+
+    /// Run a project query and map rows into [`ProjectInfo`].
+    fn query_projects<P>(&self, sql: &str, params: P) -> Result<Vec<ProjectInfo>>
+    where
+        P: rusqlite::Params,
+    {
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map(params, |row| {
+            Ok(ProjectInfo {
+                name: row.get(0)?,
+                root_path: row.get(1)?,
+                magellan_db: row.get(2)?,
+                atheneum_db: row.get(3)?,
+                language: row.get(4)?,
+                enabled: row.get::<_, i64>(5)? != 0,
+                last_indexed: row.get(6)?,
+                file_count: row.get(7)?,
+                symbol_count: row.get(8)?,
+                created_at: row.get(9)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     }
 }
 
