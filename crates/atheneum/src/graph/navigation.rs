@@ -547,6 +547,89 @@ impl AtheneumGraph {
         Ok(views)
     }
 
+    /// Thread navigation — semantic match on `ReasoningLog` + `Discovery`
+    /// entities, then BFS outward along `caused_by`/`led_to` chain edges only,
+    /// bounded to `max_tokens`.
+    ///
+    /// This is the Phase 2 wrapper over the existing scoped BFS
+    /// (`get_subgraph_filtered`): it restricts entry points to decision
+    /// entities and restricts the walk to thread edges, so each returned
+    /// subgraph is a chronological decision chain rather than the full
+    /// neighborhood `navigate` would return.
+    ///
+    /// `k` controls how many entry points are expanded; `depth` how far each
+    /// chain is followed. ReasoningLogs are included as entry points (search
+    /// targets) even though `store_discovery` never auto-links them — a thread
+    /// may be anchored on a reasoning turn and then walk into linked
+    /// discoveries. Per Open Decision #2 (ReasoningLog has no decision-tag
+    /// field), only discoveries ever emit chain edges; reasoning turns surface
+    /// only when they themselves are the query match.
+    pub fn thread_query(
+        &self,
+        query: &str,
+        k: usize,
+        depth: u32,
+        project_id: Option<&str>,
+        max_tokens: usize,
+    ) -> Result<Vec<SubgraphView>> {
+        self.runtime.record_navigation_query();
+        let cache_key = QueryCacheKey::Hopgraph {
+            query: query.to_string(),
+            k,
+            depth,
+            allowed_types_key: "thread:caused_by,led_to".to_string(),
+            max_tokens,
+            project_id: project_id.map(str::to_string),
+        };
+        if let Some(QueryCacheValue::SubgraphViews(views)) =
+            self.runtime.cache_get(&cache_key, CacheDomain::Navigation)
+        {
+            return Ok(views);
+        }
+
+        // Entry points: ReasoningLog + Discovery matches, merged by score,
+        // deduped by id, capped to k. Two searches because lexical_search
+        // takes a single entity_kind filter.
+        let mut hits = self.lexical_search(query, k, project_id, Some("ReasoningLog"), None)?;
+        hits.extend(self.lexical_search(query, k, project_id, Some("Discovery"), None)?);
+        hits.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        hits.dedup_by(|a, b| a.id == b.id);
+        hits.truncate(k);
+        if hits.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let allowed = [EdgeType::CausedBy, EdgeType::LedTo];
+        let mut budget = max_tokens;
+        let mut views = Vec::new();
+        for hit in hits {
+            let full_sg = self.get_subgraph_filtered(hit.id, depth, &allowed)?;
+            let sg = truncate_subgraph(full_sg, budget);
+            let used = estimate_entity_tokens(&sg.entry)
+                + sg.entities
+                    .iter()
+                    .map(estimate_entity_tokens)
+                    .sum::<usize>();
+            if used > 0 {
+                budget = budget.saturating_sub(used);
+                views.push(sg);
+            }
+            if budget == 0 {
+                break;
+            }
+        }
+        self.runtime.cache_store(
+            cache_key,
+            CacheDomain::Navigation,
+            QueryCacheValue::SubgraphViews(views.clone()),
+        );
+        Ok(views)
+    }
+
     /// Fast topological stats (entity + edge counts by kind / type).
     pub fn graph_stats(&self) -> Result<GraphStats> {
         let entity_counts = self.count_entities_by_kind()?;

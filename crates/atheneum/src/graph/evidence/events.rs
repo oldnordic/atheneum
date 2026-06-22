@@ -1,5 +1,6 @@
 use anyhow::Result;
 use chrono::Utc;
+use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
 
 use super::super::cache::{CacheDomain, QueryCacheKey, QueryCacheValue};
@@ -20,6 +21,64 @@ fn event_row_from_rusqlite(row: &rusqlite::Row<'_>) -> Result<serde_json::Value,
 }
 
 impl AtheneumGraph {
+    pub fn query_session_by_id(&self, session_id: &str) -> Result<Option<SessionSummary>> {
+        let session_id = session_id.to_string();
+
+        self.with_raw_connection(move |conn| {
+            let mut stmt = conn.prepare_cached(
+                "SELECT s.session_id, s.project, s.git_branch, s.trigger,
+                        s.started_at, s.ended_at, s.exit_status,
+                        COALESCE(s.tool_call_count, 0),
+                        COALESCE(s.file_write_count, 0),
+                        COALESCE(s.commit_count, 0),
+                        s.parent_session_id,
+                        (SELECT json_extract(el.payload, '$.tool_name')
+                         FROM event_log el
+                         WHERE el.session_id = s.session_id AND el.event_type = 'tool_call'
+                         ORDER BY el.event_id DESC LIMIT 1),
+                        (SELECT json_extract(el.payload, '$.input_summary')
+                         FROM event_log el
+                         WHERE el.session_id = s.session_id AND el.event_type = 'tool_call'
+                         ORDER BY el.event_id DESC LIMIT 1),
+                        COALESCE(s.total_input_tokens, 0),
+                        COALESCE(s.total_output_tokens, 0),
+                        COALESCE(s.total_cost_usd, 0.0),
+                        COALESCE(s.tool, '')
+                 FROM sessions s
+                 WHERE s.session_id = ?1
+                 LIMIT 1",
+            )?;
+
+            let row = stmt
+                .query_row(rusqlite::params![session_id], |row| {
+                    Ok(SessionSummary {
+                        session_id: row.get(0)?,
+                        project: row.get(1)?,
+                        git_branch: row.get(2)?,
+                        trigger: row
+                            .get::<_, Option<String>>(3)?
+                            .unwrap_or_else(|| "cli".into()),
+                        started_at: row.get(4)?,
+                        ended_at: row.get(5)?,
+                        exit_status: row.get(6)?,
+                        tool_call_count: row.get(7)?,
+                        file_write_count: row.get(8)?,
+                        commit_count: row.get(9)?,
+                        parent_session_id: row.get(10)?,
+                        last_tool: row.get(11)?,
+                        last_tool_summary: row.get(12)?,
+                        total_input_tokens: row.get(13)?,
+                        total_output_tokens: row.get(14)?,
+                        total_cost_usd: row.get(15)?,
+                        tool: row.get(16)?,
+                    })
+                })
+                .optional()?;
+
+            Ok(row)
+        })
+    }
+
     /// Query events with pagination.
     ///
     /// This is the primary implementation; `query_events` is a compatibility
@@ -134,7 +193,8 @@ impl AtheneumGraph {
                          ORDER BY el.event_id DESC LIMIT 1),
                         COALESCE(s.total_input_tokens, 0),
                         COALESCE(s.total_output_tokens, 0),
-                        COALESCE(s.total_cost_usd, 0.0)
+                        COALESCE(s.total_cost_usd, 0.0),
+                        COALESCE(s.tool, '')
                  FROM sessions s
                  WHERE 1=1",
             );
@@ -167,6 +227,7 @@ impl AtheneumGraph {
                     total_input_tokens: row.get(13)?,
                     total_output_tokens: row.get(14)?,
                     total_cost_usd: row.get(15)?,
+                    tool: row.get(16)?,
                 })
             };
 
@@ -214,6 +275,87 @@ impl AtheneumGraph {
             QueryCacheValue::Sessions(sessions.clone()),
         );
         Ok(sessions)
+    }
+
+    /// Query recent sessions with optional project and agent filtering.
+    pub fn query_sessions_recent(
+        &self,
+        project: Option<&str>,
+        agent: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<SessionSummary>> {
+        let project = project.map(|s| s.to_string());
+        let agent = agent.map(|s| s.to_string());
+
+        self.with_raw_connection(move |conn| {
+            let mut sql = String::from(
+                "SELECT s.session_id, s.project, s.git_branch, s.trigger,
+                        s.started_at, s.ended_at, s.exit_status,
+                        COALESCE(s.tool_call_count, 0),
+                        COALESCE(s.file_write_count, 0),
+                        COALESCE(s.commit_count, 0),
+                        s.parent_session_id,
+                        (SELECT json_extract(el.payload, '$.tool_name')
+                         FROM event_log el
+                         WHERE el.session_id = s.session_id AND el.event_type = 'tool_call'
+                         ORDER BY el.event_id DESC LIMIT 1),
+                        (SELECT json_extract(el.payload, '$.input_summary')
+                         FROM event_log el
+                         WHERE el.session_id = s.session_id AND el.event_type = 'tool_call'
+                         ORDER BY el.event_id DESC LIMIT 1),
+                        COALESCE(s.total_input_tokens, 0),
+                        COALESCE(s.total_output_tokens, 0),
+                        COALESCE(s.total_cost_usd, 0.0),
+                        COALESCE(s.tool, '')
+                 FROM sessions s
+                 LEFT JOIN agents a ON s.agent_id = a.id
+                 WHERE 1=1",
+            );
+            if project.is_some() {
+                sql.push_str(" AND s.project = ?");
+            }
+            if agent.is_some() {
+                sql.push_str(" AND a.name = ?");
+            }
+            sql.push_str(" ORDER BY s.started_at DESC LIMIT ?");
+
+            let mut stmt = conn.prepare_cached(&sql)?;
+            let row_fn = |row: &rusqlite::Row<'_>| {
+                Ok(SessionSummary {
+                    session_id: row.get(0)?,
+                    project: row.get(1)?,
+                    git_branch: row.get(2)?,
+                    trigger: row
+                        .get::<_, Option<String>>(3)?
+                        .unwrap_or_else(|| "cli".into()),
+                    started_at: row.get(4)?,
+                    ended_at: row.get(5)?,
+                    exit_status: row.get(6)?,
+                    tool_call_count: row.get(7)?,
+                    file_write_count: row.get(8)?,
+                    commit_count: row.get(9)?,
+                    parent_session_id: row.get(10)?,
+                    last_tool: row.get(11)?,
+                    last_tool_summary: row.get(12)?,
+                    total_input_tokens: row.get(13)?,
+                    total_output_tokens: row.get(14)?,
+                    total_cost_usd: row.get(15)?,
+                    tool: row.get(16)?,
+                })
+            };
+
+            let rows = match (&project, &agent) {
+                (Some(p), Some(a)) => stmt.query_map(rusqlite::params![p, a, limit], row_fn)?,
+                (Some(p), None) => stmt.query_map(rusqlite::params![p, limit], row_fn)?,
+                (None, Some(a)) => stmt.query_map(rusqlite::params![a, limit], row_fn)?,
+                (None, None) => stmt.query_map(rusqlite::params![limit], row_fn)?,
+            };
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
     }
 
     /// Record a generic event into the event_log.

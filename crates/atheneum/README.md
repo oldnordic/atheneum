@@ -84,7 +84,7 @@ graph.ingest_wiki_page("my-note.md", content, None)?;
 | Ontology | class/property schemas for typed entity reasoning |
 | Memory | keyed memories with scope, confidence, project scoping |
 | Dream | reflective consolidation pass over memories (merge, deduplicate, promote) |
-| Search index | FTS5 full-text + HNSW lexical index (hash-projected tokens, not neural) |
+| Search index | FTS5 full-text + bag-of-tokens lexical scan (HNSW vector index optional via `semantic-search` feature) |
 
 ## HTTP Access
 
@@ -105,6 +105,39 @@ curl "http://127.0.0.1:9876/atheneum/context?project=my-project&limit=6"
 ```
 
 See [envoy's API.md](https://github.com/oldnordic/envoy/blob/master/API.md) for the full HTTP reference.
+
+## Operator Queries
+
+The CLI has direct observability commands for the read paths that operators use most:
+
+```bash
+# One session: summary + recent events + recent tool calls
+atheneum session-trace ./atheneum.db --session sess-1 --limit 10
+
+# Aggregate tool usage for that session
+atheneum tool-usage ./atheneum.db --session sess-1 --limit 20
+
+# Recent activity across the project
+atheneum discoveries-recent ./atheneum.db --project envoy --limit 10
+atheneum handoffs-recent ./atheneum.db --agent claude4 --limit 10
+atheneum events-recent ./atheneum.db --type tool_call --limit 10
+atheneum sessions-recent ./atheneum.db --project envoy --limit 10
+```
+
+All of these return JSON and are designed to replace routine direct SQLite reads.
+
+### Session Digest
+
+`session-digest` emits a bounded, ranked plain-text bootstrap packet (tool
+calls, file writes, top files, decisions, open tasks, thread anchors) so a
+new session can ground on what prior sessions in the same project did. It
+computes activity from `event_log` (the `sessions` ledger columns are usually
+zero), falls back across all projects when the `--project` filter is empty,
+and truncates to a token budget. `--json` emits the structured report.
+
+```bash
+atheneum session-digest ./atheneum.db --project envoy --last 3 --tokens 500
+```
 
 ## HopGraph
 
@@ -172,8 +205,8 @@ graph.link_wiki_to_symbols(
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `default` | ✓ | Core graph, wiki, sessions, planning, search |
-| `semantic-search` | ✓ | HNSW vector index for `search` (disable for pure lexical/graph traversal) |
+| `default` | ✓ | Core graph, wiki, sessions, planning, search, thread — lexical (bag-of-tokens) search + BFS graph navigation |
+| `semantic-search` | — | HNSW vector index for `search` (opt-in; heavy — index + embedder). Off by default; lexical fallback + graph traversal suffice for `search`/`navigate`/`thread` |
 | `neural-embed` | — | Ollama neural embeddings (requires `ureq`, ollama + nomic-embed-text) |
 | `web` | — | Web dashboard (axum + askama templates) |
 | `cli` | — | `atheneum` CLI binary |
@@ -207,13 +240,21 @@ DREAM:
   dream <db> [--scope S] [--project P] [--dry-run|--auto-merge]  Reflective memory consolidation
 
 QUERY & NAVIGATION:
-  search <db> <query> [--k N] [--project P] [--max-tokens N]         HNSW/lexical search
+  search <db> <query> [--k N] [--project P] [--max-tokens N]         Lexical search (HNSW with --features semantic-search)
   navigate <db> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N]  Search then walk subgraphs
+  thread <db> <query> [--k N] [--depth D=3] [--tokens T=1500] [--project P] [--json]  Walk a decision chain (caused_by/led_to edges)
   query-wiki <db> <path>                            Query a wiki page by path
   query-journal <db> <path>                         Query journal sections by path
   query-knowledge <db> <target> [--project P] [--max-tokens N]       Aggregated knowledge
   query-sessions <db> [--project P] [--offset N] [--limit N]  Session history
   query-events <db> [--session <id>] [--type <t>] [--offset N] [--limit N]  Event log
+  session-digest <db> [--project P] [--last N] [--tokens T] [--json]  Bounded bootstrap digest
+  session-trace <db> --session <id> [--limit N]     Session summary plus recent events
+  tool-usage <db> --session <id> [--limit N]        Tool breakdown for one session
+  discoveries-recent <db> [--project P] [--agent A] [--limit N]  Recent discoveries
+  handoffs-recent <db> [--project P] [--agent A] [--limit N]     Recent handoffs
+  events-recent <db> [--session ID] [--type T] [--limit N]       Recent events
+  sessions-recent <db> [--project P] [--agent A] [--limit N]     Recent sessions
   list-pages <db> [--project P] [--offset N] [--limit N]  List wiki pages (default limit 1000)
   entity <db> <id>                                  Print entity as JSON
   edge <db> <id>                                    Print edge as JSON

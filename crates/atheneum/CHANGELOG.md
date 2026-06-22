@@ -5,6 +5,126 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+_No unreleased changes._
+
+## [0.8.0] — 2026-06-22
+
+Consolidates the session-digest plan Phases 1–2 (session-digest composer,
+thread decision-chain navigation). 0.7.1 was prepared but never published; its
+contents ship here as 0.8.0 because Phase 2 removed `semantic-search` from
+default features — a breaking change for consumers who relied on HNSW-backed
+`search`/`navigate` by default. Phase 3 (SessionStart hook injection) lives in
+the envoy repo + user hooks, not this crate; see the root CHANGELOG.
+
+### Added
+
+- **`thread` command + `thread_query`** (`graph::navigation`): decision-chain
+  navigation. Lexical match on `ReasoningLog` + `Discovery` entry points, then
+  BFS outward along `caused_by`/`led_to` chain edges only, bounded to a token
+  budget. CLI: `atheneum thread <db> <query> [--tokens T=1500] [--depth D=3]
+  [--k N=3] [--project P] [--json]`. Plain-text renderer orders the chain by
+  entity id (chronological — `caused_by` links to a lower id, `led_to` to a
+  higher one) and shows a content snippet per decision. This is the Phase 2
+  wrapper over the existing scoped BFS (`get_subgraph_filtered`); `navigate`
+  is unchanged.
+- **`LedTo` edge type**: the forward thread edge — a prior decision led to
+  this one. Inverse of `CausedBy`, stored explicitly for cheap outward walks.
+  Added to the `EdgeType` enum (`as_str`/`from_label`/`all`) and the standard
+  ontology seed (domain `ANY`, range `ANY`).
+- **`store_discovery` thread auto-linking**: on store, if `session_id` is
+  present in the metadata, the discovery is linked into its session thread —
+  `observed_in → Session` (most-recent Session entity with matching
+  `data.session_id`), plus `caused_by → prior` and `led_to` inverse to the
+  most-recent earlier same-session `Discovery`/`ReasoningLog` (by entity id,
+  which is `AUTOINCREMENT` and reflects insert/chronological order;
+  `graph_entities` has no `created_at` column). If no prior exists the
+  discovery is a thread root. Best-effort: missing Session entity or no prior
+  is not an error. Per Open Decision #2, only discoveries emit chain edges —
+  ReasoningLogs have no decision-tag field, so they are chain *search targets*
+  but never auto-linked from `store_discovery`.
+
+### Changed
+
+- **`semantic-search` (HNSW) is now opt-in.** Removed from `default` features.
+  The HNSW vector index + embedder are heavy and unnecessary for
+  graph-navigation workflows: `search`, `navigate`, and `thread` fall back to
+  a bag-of-tokens lexical scan over `graph_entities` plus BFS over graph
+  edges. Enable with `--features semantic-search` when vector similarity is
+  required. `build_search_index` and `add_entity_to_search_index` are no-ops
+  without the feature. **Breaking:** consumers who relied on HNSW-backed
+  similarity by default must now enable the feature explicitly.
+
+### Fixed
+
+- **ReasoningLog content is now searchable.** `embed_text_for_entity` now
+  includes `content_summary` (transcript-sync schema) and `content`
+  (`insert_reasoning_log` audit schema) in the searchable text. Previously the
+  fixed key set excluded both, so ReasoningLog entities — whose `name` is a
+  `<session_id>:<sequence>` identifier with no content tokens — were
+  effectively unsearchable by their text. This makes `thread` and `search`
+  surface reasoning turns by content.
+- **`hnsw_counters_track_hits_and_fallbacks` test** is now
+  `#[cfg(feature = "semantic-search")]`-gated. It asserts HNSW-only runtime
+  counters (`hnsw_hits`/`hnsw_fallbacks`) and failed without the feature,
+  where those counters never increment.
+
+### Added — Phase 1 (session-digest composer, v11 attribution)
+
+- **`session-digest` composer** (`graph::digest`): bounded, ranked bootstrap
+  packet so a new session can ground on what prior sessions in the same
+  project actually did — decisions made, files touched, open tasks — without
+  re-discovering from scratch. CLI: `atheneum session-digest <db>
+  [--project P] [--last N=3] [--tokens T=500] [--json]`. Plain-text default
+  (LLM-dense, extractive — no model call); `--json` emits the structured
+  `DigestReport`. Activity (tool calls, file writes, top files) is computed
+  from `event_log` rather than trusted from the `sessions` ledger columns,
+  which the session recorder leaves at zero. Falls back to the most recent
+  sessions across all projects (with a notice line) when the `--project`
+  filter matches nothing, so the digest stays useful while project tagging is
+  sparse. Emits thread-anchor ReasoningLog entity ids for `atheneum navigate`
+  follow-up.
+- **`discoveries.session_id` attribution** (migration v11,
+  `discoveries-session-id`): new nullable `session_id` column on `discoveries`
+  so findings can be attributed to the session that produced them. Indexed via
+  `discoveries_session_idx`. Backfilled from `metadata.session_id` for legacy
+  rows. `store-discovery` accepts `--session <id>` (and `--project <id>`) on
+  the CLI; `store_discovery` reads `session_id` from the metadata JSON.
+- **`SessionSummary::tool`**: the session's driving tool (e.g. `claude-code`),
+  populated from `sessions.tool`, distinct from `last_tool` (the most recent
+  tool *call*). Surfaced in the digest header.
+
+### Fixed — Phase 1
+
+- **Digest file-write count** now counts both ingest paths: `file_write`
+  events (from `record_evidence_file_write`) and `file_access` events with
+  `access_type = "write"` (the transcript-sync path). Previously it queried a
+  `file_write` event type that the transcript path never emits, so writes were
+  always reported as 0 on real databases.
+- **Digest top-files** now read `payload.file_path` (the field both event
+  types carry) instead of the non-existent `payload.path`, and merge rows by
+  basename so distinct files sharing a basename (several projects' `SKILL.md`)
+  are summed instead of listed repeatedly.
+- **Digest ReasoningLog join** now matches the Session entity by
+  `data.session_id` instead of `name = session_id`. Session entities are named
+  `<tool>:<session_id>`, so the old match never hit and decisions never
+  surfaced. The reasoning text coalesces `content_summary` (transcript-sync)
+  and `content` (`insert_reasoning_log`) so decisions from either recorder
+  appear.
+- **Digest activity line** omits zero file-write / commit counts instead of
+  printing `0 file writes, 0 commits` noise.
+
+- **CLI Observability Commands**:
+  - `session-trace` returns a specific session's summary plus its associated events and tool calls.
+  - `tool-usage` aggregates tool call counts for a specific session.
+  - `discoveries-recent` returns a list of recent discoveries, with optional project and agent filtering.
+  - `handoffs-recent` returns a list of recent handoffs, with optional project and agent filtering.
+  - `events-recent` retrieves recent events, allowing filtering by session ID and event type.
+  - `sessions-recent` retrieves recent sessions, with optional project and agent filtering.
+- **Graph Queries**:
+  - Added the `query_sessions_recent` method to graph events to support recent session retrieval by project/agent.
+
 ## [0.7.0] — 2026-06-19
 
 ### Added

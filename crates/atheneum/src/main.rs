@@ -325,6 +325,34 @@ fn run() -> anyhow::Result<()> {
                 }))?;
             }
         }
+        "thread" => {
+            if args.len() < 4 {
+                eprintln!(
+                    "Usage: atheneum thread <db-path> <query> [--tokens T] [--depth D] [--k N] [--project P] [--json]"
+                );
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let query = &args[3];
+            let opts = parse_options(&args[4..])?;
+            let k = parse_usize_option(opts.k.as_deref(), "k")?.unwrap_or(3);
+            let depth = parse_u32_option(opts.depth.as_deref(), "depth")?.unwrap_or(3);
+            let tokens = parse_usize_option(opts.tokens.as_deref(), "tokens")?.unwrap_or(1500);
+            let graph = AtheneumGraph::open(&db_path)?;
+            let views = graph.thread_query(query, k, depth, opts.project.as_deref(), tokens)?;
+            if opts.json {
+                print_json(json!({
+                    "query": query,
+                    "k": k,
+                    "depth": depth,
+                    "project": opts.project,
+                    "tokens": tokens,
+                    "subgraphs": views.iter().map(subgraph_to_json).collect::<Vec<_>>(),
+                }))?;
+            } else {
+                print_thread(query, &views, tokens)?;
+            }
+        }
         "graph-stats" => {
             if args.len() < 3 {
                 eprintln!("Usage: atheneum graph-stats <db-path>");
@@ -375,14 +403,16 @@ fn run() -> anyhow::Result<()> {
         }
         "store-discovery" => {
             if args.len() < 6 {
-                eprintln!("Usage: atheneum store-discovery <db-path> <agent> <type> <target> [metadata.json]");
+                eprintln!("Usage: atheneum store-discovery <db-path> <agent> <type> <target> [metadata.json] [--session <id>] [--project <id>]");
                 std::process::exit(1);
             }
             let db_path = PathBuf::from(&args[2]);
             let agent = &args[3];
             let discovery_type = &args[4];
             let target = &args[5];
-            let metadata = if let Some(meta_path) = args.get(6) {
+            // Positional metadata file is args[6] only if it isn't a flag.
+            let metadata_path = args.get(6).filter(|s| !s.starts_with('-'));
+            let mut metadata: serde_json::Value = if let Some(meta_path) = metadata_path {
                 let content = std::fs::read_to_string(meta_path)
                     .map_err(|e| anyhow::anyhow!("read metadata file: {}", e))?;
                 serde_json::from_str(&content)
@@ -390,6 +420,31 @@ fn run() -> anyhow::Result<()> {
             } else {
                 json!({})
             };
+            // Optional flags after the positional args.
+            let mut i = if metadata_path.is_some() { 7 } else { 6 };
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--session" => {
+                        let sid = args
+                            .get(i + 1)
+                            .ok_or_else(|| anyhow::anyhow!("--session requires a value"))?;
+                        if let Some(obj) = metadata.as_object_mut() {
+                            obj.insert("session_id".to_string(), json!(sid));
+                        }
+                        i += 2;
+                    }
+                    "--project" => {
+                        let pid = args
+                            .get(i + 1)
+                            .ok_or_else(|| anyhow::anyhow!("--project requires a value"))?;
+                        if let Some(obj) = metadata.as_object_mut() {
+                            obj.insert("project_id".to_string(), json!(pid));
+                        }
+                        i += 2;
+                    }
+                    other => anyhow::bail!("unknown store-discovery option: {}", other),
+                }
+            }
             let graph = AtheneumGraph::open(&db_path)?;
             let id = graph.store_discovery(agent, discovery_type, target, metadata)?;
             print_json(
@@ -677,6 +732,169 @@ fn run() -> anyhow::Result<()> {
                 "events": events,
             }))?;
         }
+        "session-digest" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum session-digest <db-path> [--project P] [--last N] [--tokens T] [--json]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let opts = parse_options(&args[3..])?;
+            let last = parse_i64_option(opts.last.as_deref(), "last")?.unwrap_or(3);
+            let tokens = parse_usize_option(opts.tokens.as_deref(), "tokens")?.unwrap_or(500);
+            let graph = AtheneumGraph::open(&db_path)?;
+            if opts.json {
+                let value = graph.compose_digest_json(opts.project.as_deref(), last)?;
+                print_json(value)?;
+            } else {
+                let text = graph.compose_digest(opts.project.as_deref(), last, tokens)?;
+                stdoutln(format_args!("{}", text))?;
+            }
+        }
+        "session-trace" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum session-trace <db-path> --session <id> [--limit N]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let opts = parse_options(&args[3..])?;
+            let session_id = opts
+                .session
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("--session is required"))?;
+            let limit = parse_usize_option(opts.limit.as_deref(), "limit")?.unwrap_or(50);
+            let graph = AtheneumGraph::open(&db_path)?;
+            let session = graph.query_session_by_id(&session_id)?;
+            let events = graph.query_events_page(Some(&session_id), None, 0, limit)?;
+            let tool_calls: Vec<serde_json::Value> = events
+                .iter()
+                .filter(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("tool_call"))
+                .cloned()
+                .collect();
+            let tool_call_count = tool_calls.len();
+            print_json(json!({
+                "session": session,
+                "event_count": events.len(),
+                "tool_call_count": tool_call_count,
+                "tool_calls": tool_calls,
+                "events": events,
+            }))?;
+        }
+        "tool-usage" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum tool-usage <db-path> --session <id> [--limit N]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let opts = parse_options(&args[3..])?;
+            let session_id = opts
+                .session
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("--session is required"))?;
+            let limit = parse_usize_option(opts.limit.as_deref(), "limit")?.unwrap_or(100);
+            let graph = AtheneumGraph::open(&db_path)?;
+            let events = graph.query_events_page(Some(&session_id), Some("tool_call"), 0, limit)?;
+            let mut counts = std::collections::BTreeMap::<String, usize>::new();
+            for event in &events {
+                if let Some(tool_name) = event
+                    .get("payload")
+                    .and_then(|payload| payload.get("tool_name"))
+                    .and_then(|value| value.as_str())
+                {
+                    *counts.entry(tool_name.to_string()).or_insert(0) += 1;
+                }
+            }
+            let usage = counts
+                .into_iter()
+                .map(|(tool_name, count)| json!({"tool_name": tool_name, "count": count}))
+                .collect::<Vec<_>>();
+            print_json(json!({
+                "session_id": session_id,
+                "count": events.len(),
+                "usage": usage,
+                "events": events,
+            }))?;
+        }
+        "discoveries-recent" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum discoveries-recent <db-path> [--project P] [--agent A] [--limit N]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let opts = parse_options(&args[3..])?;
+            let limit = parse_i64_option(opts.limit.as_deref(), "limit")?.unwrap_or(20);
+            let graph = AtheneumGraph::open(&db_path)?;
+            let discoveries =
+                graph.recent_discoveries(opts.project.as_deref(), opts.agent.as_deref(), limit)?;
+            print_json(json!({
+                "count": discoveries.len(),
+                "project": opts.project,
+                "agent": opts.agent,
+                "discoveries": discoveries.iter().map(entity_to_json).collect::<Vec<_>>(),
+            }))?;
+        }
+        "handoffs-recent" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum handoffs-recent <db-path> [--project P] [--agent A] [--limit N]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let opts = parse_options(&args[3..])?;
+            let limit = parse_i64_option(opts.limit.as_deref(), "limit")?.unwrap_or(20);
+            let graph = AtheneumGraph::open(&db_path)?;
+            let handoffs =
+                graph.recent_handoffs(opts.project.as_deref(), opts.agent.as_deref(), limit)?;
+            print_json(json!({
+                "count": handoffs.len(),
+                "project": opts.project,
+                "agent": opts.agent,
+                "handoffs": handoffs.iter().map(entity_to_json).collect::<Vec<_>>(),
+            }))?;
+        }
+        "events-recent" => {
+            if args.len() < 3 {
+                eprintln!(
+                    "Usage: atheneum events-recent <db-path> [--session ID] [--type T] [--limit N]"
+                );
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let opts = parse_options(&args[3..])?;
+            let limit = parse_usize_option(opts.limit.as_deref(), "limit")?.unwrap_or(50);
+            let graph = AtheneumGraph::open(&db_path)?;
+            let events = graph.query_events_page(
+                opts.session.as_deref(),
+                opts.event_type.as_deref(),
+                0,
+                limit,
+            )?;
+            print_json(json!({
+                "count": events.len(),
+                "session": opts.session,
+                "event_type": opts.event_type,
+                "events": events,
+            }))?;
+        }
+        "sessions-recent" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum sessions-recent <db-path> [--project P] [--agent A] [--limit N]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let opts = parse_options(&args[3..])?;
+            let limit = parse_i64_option(opts.limit.as_deref(), "limit")?.unwrap_or(20);
+            let graph = AtheneumGraph::open(&db_path)?;
+            let sessions = graph.query_sessions_recent(
+                opts.project.as_deref(),
+                opts.agent.as_deref(),
+                limit,
+            )?;
+            print_json(json!({
+                "count": sessions.len(),
+                "project": opts.project,
+                "agent": opts.agent,
+                "sessions": sessions,
+            }))?;
+        }
         "memory-store" => {
             if args.len() < 5 {
                 eprintln!("Usage: atheneum memory-store <db-path> <key> <content> [--scope S] [--confidence N] [--project P]");
@@ -950,6 +1168,10 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     )?;
     writeln!(
         writer,
+        "    [--session <id>] [--project <id>]  Attribute discovery to a session/project"
+    )?;
+    writeln!(
+        writer,
         "  add-edge <db> <from-id> <to-id> <edge-type> [data.json]  Create a relation"
     )?;
     writeln!(writer)?;
@@ -1022,7 +1244,39 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     )?;
     writeln!(
         writer,
+        "  session-digest <db-path> [--project P] [--last N] [--tokens T] [--json]  Bounded bootstrap digest"
+    )?;
+    writeln!(
+        writer,
+        "  thread <db-path> <query> [--tokens T] [--depth D] [--k N] [--project P] [--json]  Walk a decision chain (caused_by/led_to)"
+    )?;
+    writeln!(
+        writer,
         "  query-events <db-path> [--session <id>] [--type <t>] [--offset N] [--limit N]  Event log"
+    )?;
+    writeln!(
+        writer,
+        "  session-trace <db-path> --session <id> [--limit N]  Session summary plus recent events"
+    )?;
+    writeln!(
+        writer,
+        "  tool-usage <db-path> --session <id> [--limit N]  Tool-call breakdown for one session"
+    )?;
+    writeln!(
+        writer,
+        "  discoveries-recent <db-path> [--project P] [--agent A] [--limit N]  Recent discoveries"
+    )?;
+    writeln!(
+        writer,
+        "  handoffs-recent <db-path> [--project P] [--agent A] [--limit N]  Recent handoffs"
+    )?;
+    writeln!(
+        writer,
+        "  events-recent <db-path> [--session ID] [--type T] [--limit N]  Recent events"
+    )?;
+    writeln!(
+        writer,
+        "  sessions-recent <db-path> [--project P] [--agent A] [--limit N]  Recent sessions"
     )?;
     writeln!(
         writer,
@@ -1113,6 +1367,18 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
         writer,
         "  atheneum store-discovery ./atheneum.db claude Bug http_handler bug.json"
     )?;
+    writeln!(
+        writer,
+        "  atheneum store-discovery ./atheneum.db claude Decision gemv_q4_0 --session c663d1ff --project rocmforge"
+    )?;
+    writeln!(
+        writer,
+        "  atheneum session-digest ./atheneum.db --project rocmforge --last 3 --tokens 500"
+    )?;
+    writeln!(
+        writer,
+        "  atheneum thread ./atheneum.db \"gemv q4_0 dispatch\" --tokens 1500 --depth 3"
+    )?;
     writeln!(writer, "  atheneum add-edge ./atheneum.db 1 2 explains")?;
     writeln!(
         writer,
@@ -1156,6 +1422,7 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
 
 #[derive(Default)]
 struct CliOptions {
+    agent: Option<String>,
     k: Option<String>,
     depth: Option<String>,
     kind: Option<String>,
@@ -1170,9 +1437,12 @@ struct CliOptions {
     max_tokens: Option<String>,
     atheneum_db: Option<String>,
     language: Option<String>,
+    tokens: Option<String>,
+    last: Option<String>,
     dry_run: bool,
     auto_merge: bool,
     concise: bool,
+    json: bool,
 }
 
 fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
@@ -1188,6 +1458,9 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
         } else if args[i] == "--concise" {
             opts.concise = true;
             i += 1;
+        } else if args[i] == "--json" {
+            opts.json = true;
+            i += 1;
         } else if args[i].starts_with('-') && args[i] != "--data" {
             let key = args[i].as_str();
             let value = args
@@ -1195,6 +1468,7 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
                 .ok_or_else(|| anyhow::anyhow!("missing value for {}", key))?
                 .clone();
             match key {
+                "--agent" => opts.agent = Some(value),
                 "--k" => opts.k = Some(value),
                 "--depth" => opts.depth = Some(value),
                 "--kind" => opts.kind = Some(value),
@@ -1209,6 +1483,8 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
                 "--max-tokens" => opts.max_tokens = Some(value),
                 "--atheneum-db" => opts.atheneum_db = Some(value),
                 "--language" => opts.language = Some(value),
+                "--tokens" => opts.tokens = Some(value),
+                "--last" => opts.last = Some(value),
                 other => anyhow::bail!("unknown option: {}", other),
             }
             i += 2;
@@ -1436,6 +1712,96 @@ fn entity_name_in_view(view: &atheneum::graph::SubgraphView, id: i64) -> String 
         .unwrap_or_else(|| format!("entity:{}", id))
 }
 
+/// Extract a one-line content snippet for a thread entity.
+///
+/// ReasoningLog entities carry `content_summary` (transcript-sync) or
+/// `content` (the `insert_reasoning_log` audit path); Discovery entities carry
+/// `target` and optionally a `summary`/`file` in their metadata. Try each in
+/// priority order and return the first non-empty string value.
+fn entity_snippet(entity: &GraphEntity) -> Option<String> {
+    let obj = entity.data.as_object()?;
+    for key in ["content_summary", "content", "summary", "target"] {
+        if let Some(serde_json::Value::String(s)) = obj.get(key) {
+            if !s.is_empty() {
+                return Some(s.clone());
+            }
+        }
+    }
+    None
+}
+
+fn truncate_snippet(s: &str, max_chars: usize) -> String {
+    let s = s.trim();
+    if s.chars().count() <= max_chars {
+        return s.replace('\n', " ");
+    }
+    let mut out: String = s.chars().take(max_chars.saturating_sub(1)).collect();
+    out.push('…');
+    out.replace('\n', " ")
+}
+
+fn print_thread(
+    query: &str,
+    views: &[atheneum::graph::SubgraphView],
+    max_tokens: usize,
+) -> anyhow::Result<()> {
+    let mut out = String::new();
+    out.push_str(&format!("# thread: {}\n\n", query));
+    if views.is_empty() {
+        out.push_str("_No decision-chain matches found._\n");
+        stdoutln(format_args!("{}", out))?;
+        return Ok(());
+    }
+
+    for (vi, view) in views.iter().enumerate() {
+        if vi > 0 {
+            out.push_str("\n---\n\n");
+        }
+        out.push_str(&format!(
+            "## chain entry: {} `{}` ({})\n",
+            view.entry.kind, view.entry.name, view.entry.id
+        ));
+
+        // Build the display list from the entry plus its chain neighbors,
+        // ordered by id ascending. caused_by links to a lower id and led_to to
+        // a higher id, so id order is the chronological chain order. The entry
+        // is included so its snippet shows even when no chain edges exist yet.
+        let entry_id = view.entry.id;
+        let mut ents: Vec<GraphEntity> = std::iter::once(view.entry.clone())
+            .chain(view.entities.iter().cloned())
+            .collect();
+        ents.sort_by_key(|e| e.id);
+        ents.dedup_by_key(|e| e.id);
+        for e in &ents {
+            let marker = if e.id == entry_id { "★" } else { " " };
+            out.push_str(&format!(
+                "{}- [{}] **{}**: `{}`",
+                marker, e.id, e.kind, e.name
+            ));
+            if let Some(s) = entity_snippet(e) {
+                out.push_str(&format!(" — {}", truncate_snippet(&s, 160)));
+            }
+            out.push('\n');
+        }
+
+        if !view.edges.is_empty() {
+            out.push_str(&format!(
+                "\n_{} chain edge(s): caused_by / led_to_\n",
+                view.edges.len()
+            ));
+        }
+    }
+
+    let approx_chars = max_tokens.saturating_mul(4);
+    if out.len() > approx_chars {
+        let trunc = &out[..approx_chars];
+        out = format!("{}\n\n_[truncated to ~{} tokens]_\n", trunc, max_tokens);
+    }
+
+    stdoutln(format_args!("{}", out))?;
+    Ok(())
+}
+
 fn cross_result_to_json(hit: &atheneum::CrossSearchResult) -> serde_json::Value {
     json!({
         "project": hit.project,
@@ -1547,5 +1913,18 @@ mod tests {
     fn write_usage_returns_broken_pipe_error() {
         let err = write_usage(BrokenPipeWriter).expect_err("broken pipe expected");
         assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    #[test]
+    fn write_usage_mentions_observability_commands() {
+        let mut buf = Vec::new();
+        write_usage(&mut buf).expect("usage should render");
+        let text = String::from_utf8(buf).expect("usage should be utf8");
+        assert!(text.contains("session-trace <db-path> --session <id>"));
+        assert!(text.contains("tool-usage <db-path> --session <id>"));
+        assert!(text.contains("discoveries-recent <db-path>"));
+        assert!(text.contains("handoffs-recent <db-path>"));
+        assert!(text.contains("events-recent <db-path>"));
+        assert!(text.contains("sessions-recent <db-path>"));
     }
 }

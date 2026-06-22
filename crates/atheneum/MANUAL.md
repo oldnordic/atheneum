@@ -207,6 +207,67 @@ Current cached reads:
 
 Writes invalidate the relevant cache domain automatically after successful mutation.
 
+### CLI Observability Shortcuts
+
+For operator workflows, you do not need to open SQLite directly:
+
+```bash
+atheneum session-trace <db-path> --session <id> [--limit N]
+atheneum tool-usage <db-path> --session <id> [--limit N]
+atheneum discoveries-recent <db-path> [--project P] [--agent A] [--limit N]
+atheneum handoffs-recent <db-path> [--project P] [--agent A] [--limit N]
+atheneum events-recent <db-path> [--session ID] [--type T] [--limit N]
+atheneum sessions-recent <db-path> [--project P] [--agent A] [--limit N]
+```
+
+These commands all return JSON so they can be consumed by local agents and shell tooling without a separate adapter layer.
+
+### Session Digest (Bootstrap Grounding)
+
+`session-digest` composes a bounded, ranked plain-text packet so a new
+session can ground on what prior sessions in the same project actually did —
+decisions made, files touched, open tasks — instead of re-discovering from
+scratch. It is extractive (no model call): it composes real rows from
+`sessions`, `event_log`, `graph_entities` (ReasoningLog / Memory) and
+`discoveries` into a compact packet, ranked by recency and truncated to a
+token budget.
+
+```bash
+# Plain-text digest (default), bounded to ~500 tokens
+atheneum session-digest <db-path> --project my-project --last 3 --tokens 500
+
+# Structured JSON for programmatic consumption
+atheneum session-digest <db-path> --project my-project --last 3 --json
+```
+
+Activity (tool calls, file writes, top files) is **computed from `event_log`**
+rather than trusted from the `sessions` ledger columns, which the session
+recorder leaves at zero. If the `--project` filter matches nothing (project
+tagging is sparse — many sessions are tagged `tmp`), the digest falls back to
+the most recent sessions across all projects and prints a notice line. The
+packet ends with thread-anchor ReasoningLog entity ids that you can follow
+with `atheneum navigate <db> <query> --kind ReasoningLog --depth N` to walk a
+decision thread. Discoveries stored with `--session` are also linked into a
+`caused_by`/`led_to` chain per session (most-recent earlier same-session
+decision), so `atheneum thread <db> <query> [--depth N] [--tokens T]` walks
+the chain directly — lexical match on `ReasoningLog` + `Discovery` entry
+points, then BFS along those edges only, bounded to a token budget.
+
+Attribute a discovery to a session so it appears in that session's digest
+block:
+
+```bash
+atheneum store-discovery <db-path> claude Decision gemv_q4_0 meta.json \
+  --session c663d1ff --project rocmforge
+```
+
+Library usage:
+
+```rust
+let text = graph.compose_digest(Some("my-project"), 3, 500)?;
+let value = graph.compose_digest_json(Some("my-project"), 3)?;
+```
+
 ### Tool Call Evidence
 
 ```rust
@@ -566,7 +627,8 @@ For each wiki page's `[[wikilinks]]`, queries the magellan DB for matching code 
 // Full-text search
 let results = graph.full_text_search("query_sessions")?;
 
-// Lexical search via HNSW hash-projected index.
+// Lexical search. Default build: bag-of-tokens scan over graph_entities.
+// With --features semantic-search: HNSW hash-projected index + lexical fallback.
 // Matches on shared tokens — not neural/semantic. "car" won't match "automobile".
 let results = graph.lexical_search("SQL parameter ordering bug", 5, Some("atheneum"), None, None)?;
 
@@ -742,11 +804,14 @@ Output is a JSON `DreamReport` with findings organized by phase (DEDUPLICATE, ST
 ### Query and Navigation
 
 ```bash
-# HNSW/lexical search over all entities
+# Lexical search over all entities (HNSW with --features semantic-search)
 atheneum search <db-path> <query> [--k N] [--project P] [--max-tokens N]
 
 # Search then BFS-walk graph subgraphs
 atheneum navigate <db-path> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N] [--concise]
+
+# Walk a decision chain — discoveries linked by caused_by/led_to per session
+atheneum thread <db-path> <query> [--k N=3] [--depth D=3] [--tokens T=1500] [--project P] [--json]
 
 # Query a wiki page by path
 atheneum query-wiki <db-path> <path>
@@ -769,6 +834,24 @@ atheneum query-sessions <db-path> [--project P] [--offset N] [--limit N]
 # Event log
 atheneum query-events <db-path> [--session <id>] [--type <type>] [--offset N] [--limit N]
 
+# Session summary plus recent events
+atheneum session-trace <db-path> --session <id> [--limit N]
+
+# Tool-call breakdown for one session
+atheneum tool-usage <db-path> --session <id> [--limit N]
+
+# Recent discoveries
+atheneum discoveries-recent <db-path> [--project P] [--agent A] [--limit N]
+
+# Recent handoffs
+atheneum handoffs-recent <db-path> [--project P] [--agent A] [--limit N]
+
+# Recent events
+atheneum events-recent <db-path> [--session ID] [--type T] [--limit N]
+
+# Recent sessions
+atheneum sessions-recent <db-path> [--project P] [--agent A] [--limit N]
+
 # List wiki pages (default limit 1000)
 atheneum list-pages <db-path> [--project P] [--offset N] [--limit N]
 
@@ -785,7 +868,7 @@ atheneum neighbors <db-path> <entity-id> [--depth N]
 atheneum graph-stats <db-path>
 ```
 
-`search` uses the HNSW lexical index. It matches on shared tokens -- not semantic similarity. "car" will not match "automobile". Good for symbol and identifier search. Use `--max-tokens` to truncate the result list before it reaches your LLM context window.
+`search` matches on shared tokens -- not semantic similarity. "car" will not match "automobile". Good for symbol and identifier search. Use `--max-tokens` to truncate the result list before it reaches your LLM context window. The default build scans `graph_entities` with a bag-of-tokens scorer; the optional `semantic-search` feature swaps in an HNSW vector index (with a lexical fallback when the index is unavailable or returns too few hits).
 
 `search-wiki` uses the FTS5 index over `wiki_pages` (`title`, `body`, and `path`). It returns ranked excerpts only; the full article body is never included in the output. Prefix queries work automatically: searching `rout` matches `Router`, `Routes`, and path fragments like `wiki/router.md`. If FTS5 returns no hits, `search-wiki` falls back to a graph-entity name/path/title substring search so partial concept queries still find stored pages. Use `--limit` and `--offset` for pagination, and `--project` to scope the search.
 
@@ -796,6 +879,17 @@ atheneum graph-stats <db-path>
 `navigate` performs a search, then expands each hit into a subgraph using BFS. The `--kind` flag filters by entity type (accepts aliases like `memory`, `memories`, `wiki`, `discoveries`). The output includes the validated query plan plus subgraph views. Use `--max-tokens` to truncate each subgraph view to a token budget (the entry entity is always kept; neighbors are dropped until the budget fits). Use `--concise` to emit compact Markdown instead of JSON — designed for pasting into a language-model context window.
 
 `query-knowledge` aggregates discoveries and handoffs for a target. Use `--max-tokens` to limit the total response size; discoveries are dropped first, then handoffs, and `"truncated": true` is set when truncation occurs.
+
+### Observability Commands
+
+The following commands are available for querying and inspecting session, tool, discovery, and handoff activity without running raw SQL queries:
+
+- `session-trace` returns a specific session's summary plus its associated events and tool calls, showing a timeline of agent activity.
+- `tool-usage` aggregates tool call counts for a specific session, providing a breakdown of tool invocations.
+- `discoveries-recent` returns a list of recent discoveries, with optional filtering by project and agent.
+- `handoffs-recent` returns a list of recent handoffs, with optional filtering by project and agent.
+- `events-recent` retrieves recent events, allowing filtering by session ID and event type.
+- `sessions-recent` retrieves recent sessions, with optional project and agent filtering.
 
 ### Cross-Project Registry (Meta)
 
@@ -993,7 +1087,7 @@ atheneum config show
 ### Maintenance
 
 ```bash
-# Rebuild HNSW search index
+# Rebuild HNSW search index (requires --features semantic-search; no-op otherwise)
 atheneum reindex <db-path>
 
 # Merge discoveries into Knowledge entities
@@ -1006,7 +1100,7 @@ atheneum --version
 atheneum help
 ```
 
-`reindex` rebuilds the HNSW index over all entities and then runs a WAL checkpoint to reclaim disk space. Useful after bulk imports or if search results seem incomplete. (Prior to v0.6.2, the checkpoint call could panic with "Execute returned results"; it now uses `query_row` because `PRAGMA wal_checkpoint` returns a row.)
+`reindex` rebuilds the HNSW index over all entities and then runs a WAL checkpoint to reclaim disk space. Useful after bulk imports or if search results seem incomplete. No-op when the `semantic-search` feature is disabled (the default build has no HNSW index to rebuild). (Prior to v0.6.2, the checkpoint call could panic with "Execute returned results"; it now uses `query_row` because `PRAGMA wal_checkpoint` returns a row.)
 
 `consolidate` merges all Discovery entities for a target (or all targets) into deduplicated Knowledge entities with `DerivedFrom` edges. Idempotent -- re-running returns the existing Knowledge entity.
 
@@ -1016,7 +1110,8 @@ atheneum help
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `default` | yes | Core graph, wiki, sessions, planning, search |
+| `default` | yes | Core graph, wiki, sessions, planning, search, thread — lexical (bag-of-tokens) search + BFS graph navigation |
+| `semantic-search` | no | HNSW vector index for `search` (opt-in; heavy — index + embedder). Off by default; `search`/`navigate`/`thread` fall back to a lexical scan + graph traversal |
 | `neural-embed` | no | Ollama neural embeddings (requires `ureq`, ollama + nomic-embed-text) |
 | `web` | no | Web dashboard (axum + askama templates) |
 | `cli` | no | `atheneum` CLI binary |

@@ -96,6 +96,9 @@ pub enum EdgeType {
     Modified,
     VerifiedBy,
     CausedBy,
+    /// Thread chain: a prior decision (ReasoningLog/Discovery) led to this
+    /// one. Inverse of `CausedBy`; stored explicitly for cheap outward walks.
+    LedTo,
     Created,
     RelatedTo,
     Mentions,
@@ -129,6 +132,7 @@ impl EdgeType {
             EdgeType::Modified => "modified",
             EdgeType::VerifiedBy => "verified_by",
             EdgeType::CausedBy => "caused_by",
+            EdgeType::LedTo => "led_to",
             EdgeType::Created => "created",
             EdgeType::RelatedTo => "related_to",
             EdgeType::Mentions => "mentions",
@@ -160,6 +164,7 @@ impl EdgeType {
             "modified" => EdgeType::Modified,
             "verified_by" => EdgeType::VerifiedBy,
             "caused_by" => EdgeType::CausedBy,
+            "led_to" => EdgeType::LedTo,
             "created" => EdgeType::Created,
             "related_to" => EdgeType::RelatedTo,
             "mentions" => EdgeType::Mentions,
@@ -192,6 +197,7 @@ impl EdgeType {
             EdgeType::Modified,
             EdgeType::VerifiedBy,
             EdgeType::CausedBy,
+            EdgeType::LedTo,
             EdgeType::Created,
             EdgeType::RelatedTo,
             EdgeType::Mentions,
@@ -514,6 +520,9 @@ pub struct SessionSummary {
     pub project: String,
     pub git_branch: Option<String>,
     pub trigger: String,
+    /// The tool that drove the session (e.g. `claude-code`), from `sessions.tool`.
+    /// Distinct from `last_tool`, which is the most recent tool *call* (e.g. `Write`).
+    pub tool: String,
     pub started_at: String,
     pub ended_at: Option<String>,
     pub exit_status: Option<String>,

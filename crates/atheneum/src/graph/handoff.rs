@@ -266,6 +266,74 @@ impl AtheneumGraph {
         })
     }
 
+    pub fn recent_handoffs(
+        &self,
+        project_id: Option<&str>,
+        agent: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<GraphEntity>> {
+        let project_id = project_id.map(|s| s.to_string());
+        let agent = agent.map(|s| s.to_string());
+
+        super::with_graph_conn(&self.inner, move |conn| {
+            let mut sql = String::from(
+                "SELECT id, kind, name, file_path, data FROM graph_entities
+                 WHERE kind = ?1",
+            );
+            if project_id.is_some() {
+                sql.push_str(" AND json_extract(data, '$.project_id') = ?2");
+            }
+            if agent.is_some() {
+                let idx = if project_id.is_some() { 3 } else { 2 };
+                sql.push_str(&format!(
+                    " AND (json_extract(data, '$.from_agent') = ?{idx}
+                           OR json_extract(data, '$.to_agent') = ?{idx})"
+                ));
+            }
+            let limit_idx = match (project_id.is_some(), agent.is_some()) {
+                (false, false) => 2,
+                (true, false) | (false, true) => 3,
+                (true, true) => 4,
+            };
+            sql.push_str(&format!(" ORDER BY id DESC LIMIT ?{limit_idx}"));
+
+            let mut stmt = conn.prepare_cached(&sql)?;
+            let row_fn = |row: &rusqlite::Row<'_>| {
+                Ok(GraphEntity {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    name: row.get(2)?,
+                    file_path: row.get(3)?,
+                    data: serde_json::from_str(row.get_ref(4)?.as_str()?)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
+                })
+            };
+
+            let rows = match (&project_id, &agent) {
+                (Some(project), Some(agent)) => stmt.query_map(
+                    params![EntityType::Handoff.as_str(), project, agent, limit],
+                    row_fn,
+                )?,
+                (Some(project), None) => stmt.query_map(
+                    params![EntityType::Handoff.as_str(), project, limit],
+                    row_fn,
+                )?,
+                (None, Some(agent)) => {
+                    stmt.query_map(params![EntityType::Handoff.as_str(), agent, limit], row_fn)?
+                }
+                (None, None) => {
+                    stmt.query_map(params![EntityType::Handoff.as_str(), limit], row_fn)?
+                }
+            };
+
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+    }
+
     fn query_handoffs_between(
         &self,
         from_agent: &str,

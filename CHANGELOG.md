@@ -5,6 +5,89 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+_No unreleased changes._
+
+## [0.8.0] — 2026-06-22
+
+Consolidates the session-digest plan Phases 1–3 (session-digest composer,
+thread decision-chain navigation, SessionStart hook injection). 0.7.1 was
+prepared but never published; its contents ship here as 0.8.0 because Phase 2
+removed `semantic-search` from default features — a breaking change for
+crates.io consumers who relied on HNSW-backed `search`/`navigate` by default.
+
+### Added
+
+- **`thread` command — decision-chain navigation**: `atheneum thread <db>
+  <query> [--tokens T=1500] [--depth D=3] [--k N=3] [--project P] [--json]`.
+  Lexical match on `ReasoningLog` + `Discovery` entry points, then BFS outward
+  along `caused_by`/`led_to` chain edges only, bounded to a token budget. Phase
+  2 of the session-digest plan. Plain-text renderer orders the chain by entity
+  id (chronological) and shows a content snippet per decision.
+- **`LedTo` edge type** — the forward thread edge (inverse of `CausedBy`),
+  stored explicitly for cheap outward chain walks. Seeded in the standard
+  ontology (domain/range `ANY`).
+- **`store_discovery` thread auto-linking** — on store, a discovery with
+  `session_id` is linked `observed_in → Session` plus `caused_by → prior` and
+  `led_to` inverse to the most-recent earlier same-session decision (by entity
+  id = insert/chronological order). No prior ⇒ thread root. Best-effort.
+
+### Changed
+
+- **`semantic-search` (HNSW) is now opt-in.** Removed from `default` features.
+  `search`/`navigate`/`thread` fall back to a bag-of-tokens lexical scan plus
+  BFS graph traversal — graph navigation suffices for the workflow, HNSW + an
+  embedder are heavy and unnecessary by default. Enable with `--features
+  semantic-search` for vector similarity. **Breaking:** consumers who relied on
+  HNSW-backed similarity by default must now enable the feature explicitly.
+
+### Fixed
+
+- **ReasoningLog content is now searchable.** `embed_text_for_entity` now
+  includes `content_summary` and `content`, so ReasoningLog entities (whose
+  `name` is a `<session_id>:<sequence>` id with no content tokens) match by
+  text in `search`/`thread`.
+- **`hnsw_counters_track_hits_and_fallbacks` test** is now
+  `#[cfg(feature = "semantic-search")]`-gated; it asserts HNSW-only counters.
+
+### Integration (Phase 3 — envoy/hook plumbing)
+
+- **`session-digest` now auto-fires at SessionStart.** The
+  `session-bootstrap.fish` Claude Code hook injects
+  `atheneum session-digest ~/.magellan/atheneum/atheneum.db --project <repo> --last N --tokens 500`
+  into startup context after the `hist:` block, so every new session grounds on
+  prior sessions' decisions, files, and open tasks without a manual CLI call.
+  Reads the DB directly via the CLI (no envoy dependency — works when envoy is
+  down). Subagents (`CLAUDE_PARENT_SESSION_ID` set) get `--last 1` for a lighter
+  digest. Project resolves to the git toplevel basename (matches session
+  tagging) with a cwd-basename fallback. Gracefully skipped when the atheneum
+  binary or DB is absent.
+- **Session project tagging fixed.** `session-stop-sync.fish` (the Stop hook
+  that runs `atheneum sync-claude-transcript`) and `envoy`'s
+  `cmd_session_start` now resolve the project to the git toplevel basename
+  instead of `basename $PWD`, so worktree/subdir launches tag sessions with the
+  repository name rather than `tmp` or a subdirectory. The `session-digest`
+  `--project` filter now matches newly-recorded sessions.
+
+### Added — Phase 1 (session-digest composer, observability CLI)
+
+- **`session-digest` composer** — bounded, ranked plain-text bootstrap packet
+  (`atheneum session-digest <db> [--project P] [--last N] [--tokens T] [--json]`)
+  so a new session grounds on prior sessions' decisions, files, and open tasks.
+  Computes activity from `event_log` (not the zero `sessions` ledger columns),
+  falls back across all projects when `--project` is empty, emits thread anchors
+  for `navigate` follow-up. `discoveries.session_id` migration (v11) attributes
+  findings to sessions; `store-discovery --session <id>` writes it.
+- **Operator-facing observability CLI** for sessions, tool usage, discoveries, handoffs, events, and recent sessions:
+  - `session-trace <db> --session <id> [--limit N]`
+  - `tool-usage <db> --session <id> [--limit N]`
+  - `discoveries-recent <db> [--project P] [--agent A] [--limit N]`
+  - `handoffs-recent <db> [--project P] [--agent A] [--limit N]`
+  - `events-recent <db> [--session ID] [--type T] [--limit N]`
+  - `sessions-recent <db> [--project P] [--agent A] [--limit N]`
+- **Recent session and handoff query helpers** in the graph layer, so operator workflows no longer need ad hoc SQLite for these common read paths.
+
 ## [0.7.0] — 2026-06-19
 
 ### Added

@@ -1,6 +1,6 @@
 [package]
 name = "atheneum"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 license = "GPL-3.0-only"
 description = "Agent coordination graph database - episodic and semantic memory for multi-agent workflows"
@@ -25,7 +25,7 @@ uuid = { version = "1", features = ["v7"] }
 thiserror = "2.0"
 tracing = "0.1"
 parking_lot = "0.12"
-sqlitegraph = "3.2.5"
+sqlitegraph = "3.3.1"
 toml = "0.8"
 
 ureq = { version = "2", default-features = false, features = ["json"], optional = true }
@@ -44,7 +44,12 @@ tempfile = "3.19"
 walkdir = "2.5"
 
 [features]
-default = ["semantic-search"]
+# HNSW vector index is opt-in: it is heavy (in-process index, embedder) and
+# unnecessary for graph-navigation workflows — `search`/`navigate`/`thread`
+# fall back to a bag-of-tokens lexical scan + BFS over graph edges when this
+# is disabled. Enable with `--features semantic-search` when vector similarity
+# is required.
+default = []
 web-ui = ["dep:axum", "dep:tower-http", "dep:askama"]
 async = ["tokio", "tracing-subscriber"]
 neural-embed = ["dep:ureq"]

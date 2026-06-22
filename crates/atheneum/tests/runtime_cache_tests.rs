@@ -336,6 +336,7 @@ fn hopgraph_query_uses_cache() {
     assert_eq!(stats_after_second.cache_misses, 2);
 }
 
+#[cfg(feature = "semantic-search")]
 #[test]
 fn hnsw_counters_track_hits_and_fallbacks() {
     let graph = AtheneumGraph::open_in_memory().expect("open");

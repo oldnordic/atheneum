@@ -27,6 +27,8 @@ fn embed_text_for_entity(entity: &GraphEntity) -> String {
         "path",
         "body",
         "kind",
+        "content_summary",
+        "content",
     ] {
         if let Some(value) = entity.data.get(key).and_then(|v| v.as_str()) {
             parts.push(value.to_string());

@@ -12,6 +12,7 @@ use embed::HashEmbedder;
 pub mod audit;
 mod cache;
 pub mod claude;
+pub mod digest;
 pub mod discovery;
 pub mod dream;
 pub mod embed;

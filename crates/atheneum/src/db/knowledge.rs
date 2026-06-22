@@ -68,6 +68,53 @@ pub fn migrate_v3_knowledge(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
+/// v11: add `session_id` to `discoveries` so findings can be attributed to
+/// the session that produced them (used by `session-digest`). The column is
+/// nullable — legacy rows and discoveries stored without a session keep
+/// `NULL`. Existing rows that already carry `session_id` inside their
+/// `metadata` JSON are backfilled so no data is lost.
+///
+/// SQLite has no `ADD COLUMN IF NOT EXISTS`, so the column presence is
+/// checked via `PRAGMA table_info` before the `ALTER TABLE`. This makes the
+/// migration safe to re-run on a partially-applied DB.
+pub fn migrate_v11_discoveries_session(tx: &Transaction<'_>) -> Result<()> {
+    let has_column: bool = {
+        let mut stmt = tx.prepare("PRAGMA table_info(discoveries)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        let mut found = false;
+        for row in rows {
+            if row? == "session_id" {
+                found = true;
+            }
+        }
+        found
+    };
+
+    if !has_column {
+        tx.execute_batch(
+            "ALTER TABLE discoveries ADD COLUMN session_id TEXT;
+             CREATE INDEX IF NOT EXISTS discoveries_session_idx ON discoveries(session_id);",
+        )?;
+    } else {
+        // Index may still be missing if a prior run added the column but
+        // crashed before the index. CREATE IF NOT EXISTS makes this safe.
+        tx.execute_batch(
+            "CREATE INDEX IF NOT EXISTS discoveries_session_idx ON discoveries(session_id);",
+        )?;
+    }
+
+    // Backfill from metadata JSON for rows that already recorded a session.
+    tx.execute(
+        "UPDATE discoveries
+         SET session_id = json_extract(metadata, '$.session_id')
+         WHERE session_id IS NULL
+           AND json_extract(metadata, '$.session_id') IS NOT NULL",
+        [],
+    )?;
+
+    Ok(())
+}
+
 fn backfill_discoveries(tx: &Transaction<'_>) -> Result<()> {
     let mut stmt = tx.prepare(
         "SELECT id, data FROM graph_entities

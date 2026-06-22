@@ -206,6 +206,12 @@ impl AtheneumGraph {
                 "Entity or event was caused by another entity",
             ),
             (
+                EdgeType::LedTo,
+                "ANY",
+                "ANY",
+                "A prior decision (ReasoningLog or Discovery) led to this one; inverse of caused_by, stored for cheap outward thread walks",
+            ),
+            (
                 EdgeType::Created,
                 "ANY",
                 "ANY",
