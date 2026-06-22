@@ -19,6 +19,7 @@ pub(crate) fn json_to_string(v: &Value) -> Result<String> {
     serde_json::to_string(v).map_err(|e| anyhow::anyhow!("JSON serialization failed: {}", e))
 }
 
+pub mod chat;
 pub mod evidence;
 pub mod execution;
 pub mod hook_compat;
@@ -52,6 +53,7 @@ const MIGRATIONS: &[(u32, &str, Migration)] = &[
         "discoveries-session-id",
         knowledge::migrate_v11_discoveries_session,
     ),
+    (12, "chat-columns-fts", chat::migrate_v12_chat_columns_fts),
 ];
 
 /// Apply any pending migrations to the connection. Idempotent — already-
