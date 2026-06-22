@@ -4,6 +4,28 @@ Embedded graph database for agent coordination — episodic memory, knowledge pe
 
 Part of the **grounded-coding ecosystem**.
 
+## Technical Architecture
+
+**Role** — persistence layer for coding agents: what was discovered, what sessions did, what tasks exist, what knowledge is worth keeping.
+
+**Data model**
+- Episodic memory — sessions, events (tool calls), discoveries, tasks, handoffs
+- Evidence + decision chains via `caused_by` / `led_to` links
+- FTS5 wiki page index (search, sync, backfill, auto-repair)
+
+**Coordination surface**
+- Session accountability — `session-trace`, `tool-usage`, `sessions-recent`
+- Cross-agent activity — `discoveries-recent`, `handoffs-recent`, `events-recent`
+- Token-bounded session digests (bootstrap packets for new sessions)
+- Decision-chain walks — `thread` with depth + token budget
+
+**Interfaces**
+- Rust library (`AtheneumGraph`) + CLI
+- MCP server (`atheneum-mcp`)
+- Exposed via [agent-envoy](https://crates.io/crates/agent-envoy) HTTP endpoints
+
+**Keyword index:** episodic memory · knowledge graph · agent coordination · session accountability · decision chains · handoff protocol · token-bounded digests · MCP · FTS5 · SQLiteGraph · Rust
+
 ## Crates
 
 | Crate | Description | Version |
