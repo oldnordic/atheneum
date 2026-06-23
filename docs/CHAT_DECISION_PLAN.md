@@ -1,8 +1,9 @@
 # Chat Navigation + Decision Capture Plan
 
-**Status:** Implemented 2026-06-23 — Phases 1, 2, 3, 4, 6 complete (Phase 5
-cooperative-skill optional/skipped). Ships in atheneum 0.9.0. Builds on the
-session-digest plan (Phases 1–3 complete in atheneum 0.8.0 / envoy 0.3.1).
+**Status:** Implemented 2026-06-23 — Phases 1, 2, 3, 4, 5, 6 complete. Ships
+in atheneum 0.9.0 (Phase 5 ships as the `plugin/atheneum-decisions/` companion
+plugin). Builds on the session-digest plan (Phases 1–3 complete in atheneum
+0.8.0 / envoy 0.3.1).
 
 **Goal:** make the Claude Code chat transcript queryable as a graph —
 token-budgeted, directional, SQL-filtered, paginated — and capture real
@@ -400,7 +401,47 @@ time, dedup holds, tests green.
 
 ---
 
-## Phase 5 — cooperative skill capture (A) — NOT STARTED, optional
+## Phase 5 — cooperative skill capture (A) — ✅ DONE (this branch)
+
+**Implementation notes (deviation from plan, correctness fix):** the plan
+specified the skill-layer dedup key as `session_id`+`sequence`+`target`+`source`
+(same as Phase 3/4). That key is correct for the transcript watcher, where turns
+have a stable order, but a re-fired skill decision has *no* stable sequence —
+so a sequence key would let the duplicate through. The skill/manual layer
+therefore dedups on `(session_id, target, source, chosen)` via the new
+`AtheneumGraph::decision_exists_chosen`, which is what "the same choice was
+already recorded" means for that layer. The CLI `store-discovery` gained
+`--dedup` (opt-in) + `--force` (bypass) so the skill and `/decision` can guard
+their own inserts. Cross-layer doubles (different `source`) remain an accepted
+tradeoff, unchanged. The watcher's sequence-keyed `decision_exists` is
+untouched.
+
+**Files (atheneum repo `plugin/atheneum-decisions/`):**
+- `.claude-plugin/plugin.json` — name, skills + commands + hooks.
+- `skills/record-decision/SKILL.md` — triggers on choosing between approaches
+  / architectural tradeoff; writes `metadata.json`, calls
+  `atheneum store-discovery ... --session $CLAUDE_CODE_SESSION_ID --dedup`,
+  `source = "skill"`.
+- `commands/decision.md` — `/decision <target> <chosen> [rationale]` manual
+  fallback (same store path + `--dedup`).
+- `hooks/hooks.json` + `hooks/decision-gate.fish` — Stop hook, non-blocking:
+  warns if the session made tool calls but recorded zero Decision rows.
+
+**Verified:**
+- `decision_exists_chosen_keys_on_session_target_source_chosen` (lib unit test):
+  exact repeat = duplicate; different source / chosen / target / session =
+  distinct. Pass.
+- CLI `--dedup` E2E on a temp DB: first store inserts, repeat → `deduped: true`
+  + `discovery_id: null`, `--force` bypasses, different `chosen` inserts fresh.
+  3 Decision rows after 4 calls. Pass.
+- Gate hook (temp DB): tool-calls + 0 decisions → warns; +1 decision → silent;
+  idle session (no tool calls) → silent; missing DB → silent exit 0. Pass.
+- `/decision` path = the same `store-discovery --dedup` call, verified above.
+- `cargo fmt --all -- --check`, `cargo clippy --all-features -- -D warnings`,
+  `cargo test --all-features` green.
+- Skill auto-trigger requires a live Claude Code session with the plugin
+  loaded; not simulated non-interactively. Install with the local marketplace
+  command in MANUAL.md to exercise it.
 
 **Scope:** highest-fidelity capture — the model records a decision as it makes
 one, via a Claude Code plugin skill that auto-triggers on choice-shaped moments.
@@ -477,7 +518,7 @@ Phase 3 (backfill B)                 ── independent of 1/2; feeds --only-dec
    │
 Phase 4 (watcher C)                  ── independent; real-time structured decisions
    │
-Phase 5 (skill A)                    ── optional; cooperative high-fidelity
+Phase 5 (skill A)                    ── ✅ DONE; cooperative high-fidelity
    │
 Phase 6 (integration + docs)         ── after 1+2+3+4 (5 optional); ship
 ```

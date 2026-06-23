@@ -173,6 +173,15 @@ atheneum chat ./atheneum.db <session_id> --only-decisions
 atheneum discoveries-recent ./atheneum.db --session <session_id> --type Decision --limit 50
 ```
 
+A fourth, highest-fidelity layer ships as the `plugin/atheneum-decisions/`
+Claude Code companion plugin: a `record-decision` skill that records a
+decision *as the model makes it* (`source = "skill"`), a
+`/decision <target> <chosen> [rationale]` manual fallback, and a non-blocking
+Stop-gate that reminds you to record decisions. The skill/command layer
+dedups on `(session_id, target, source, chosen)` via `store-discovery --dedup`
+(it has no stable transcript `sequence`); see MANUAL.md for the install
+command.
+
 `extract-decisions` (a `~/.local/bin` operator script, not an `atheneum`
 subcommand) is the one-shot LLM backfiller for decisions that lack a Tier-1
 structured signal — it shells out to `atheneum store-discovery`, so each

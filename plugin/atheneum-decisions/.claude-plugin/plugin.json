@@ -1,0 +1,14 @@
+{
+  "name": "atheneum-decisions",
+  "version": "0.1.0",
+  "description": "Cooperative decision capture for atheneum — a skill that records architectural choices as Decision rows, a /decision manual fallback, and a non-blocking Stop-gate that reminds you to record decisions. Highest-fidelity layer on top of the transcript watcher and LLM backfiller.",
+  "author": {
+    "name": "oldnordic",
+    "url": "https://github.com/oldnordic"
+  },
+  "license": "GPL-3.0",
+  "keywords": ["atheneum", "decisions", "grounded-coding", "knowledge-graph", "session-accountability"],
+  "skills": "./skills/",
+  "commands": "./commands/",
+  "hooks": "./hooks/hooks.json"
+}

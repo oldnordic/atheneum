@@ -1,0 +1,13 @@
+{
+  "Stop": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "fish \"${CLAUDE_PLUGIN_ROOT}/hooks/decision-gate.fish\"",
+          "timeout": 10
+        }
+      ]
+    }
+  ]
+}

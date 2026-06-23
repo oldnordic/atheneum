@@ -453,7 +453,7 @@ fn run() -> anyhow::Result<()> {
         }
         "store-discovery" => {
             if args.len() < 6 {
-                eprintln!("Usage: atheneum store-discovery <db-path> <agent> <type> <target> [metadata.json] [--session <id>] [--project <id>]");
+                eprintln!("Usage: atheneum store-discovery <db-path> <agent> <type> <target> [metadata.json] [--session <id>] [--project <id>] [--dedup] [--force]");
                 std::process::exit(1);
             }
             let db_path = PathBuf::from(&args[2]);
@@ -471,6 +471,8 @@ fn run() -> anyhow::Result<()> {
                 json!({})
             };
             // Optional flags after the positional args.
+            let mut dedup = false;
+            let mut force = false;
             let mut i = if metadata_path.is_some() { 7 } else { 6 };
             while i < args.len() {
                 match args[i].as_str() {
@@ -492,10 +494,46 @@ fn run() -> anyhow::Result<()> {
                         }
                         i += 2;
                     }
+                    "--dedup" => {
+                        dedup = true;
+                        i += 1;
+                    }
+                    "--force" => {
+                        force = true;
+                        i += 1;
+                    }
                     other => anyhow::bail!("unknown store-discovery option: {}", other),
                 }
             }
             let graph = AtheneumGraph::open(&db_path)?;
+            // Phase 5 dedup guard for the cooperative-skill / manual `/decision`
+            // capture paths. The live watcher (Phase 4) and the post-hoc
+            // extractor (Phase 3) dedup in-process before calling store_discovery;
+            // the CLI is the store path for skill/command capture, so it must
+            // guard itself. `--dedup` opts in; `--force` bypasses. The key is
+            // (session_id, target, source, chosen) — see
+            // [`AtheneumGraph::decision_exists_chosen`]. Only Decisions are
+            // deduped; other discovery types insert unconditionally.
+            if dedup && !force && discovery_type == "Decision" {
+                let sid = metadata.get("session_id").and_then(|v| v.as_str());
+                let source = metadata.get("source").and_then(|v| v.as_str());
+                let chosen = metadata.get("chosen").and_then(|v| v.as_str());
+                if let (Some(sid), Some(source), Some(chosen)) = (sid, source, chosen) {
+                    if graph.decision_exists_chosen(sid, target, source, chosen)? {
+                        print_json(json!({
+                            "discovery_id": null,
+                            "deduped": true,
+                            "agent": agent,
+                            "type": discovery_type,
+                            "target": target,
+                            "session_id": sid,
+                            "source": source,
+                            "chosen": chosen,
+                        }))?;
+                        return Ok(());
+                    }
+                }
+            }
             let id = graph.store_discovery(agent, discovery_type, target, metadata)?;
             print_json(
                 json!({"discovery_id": id, "agent": agent, "type": discovery_type, "target": target}),
@@ -1297,7 +1335,7 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     )?;
     writeln!(
         writer,
-        "  store-discovery <db> <agent> <type> <target> [meta.json]  Store a discovery"
+        "  store-discovery <db> <agent> <type> <target> [meta.json] [--session ID] [--project P] [--dedup] [--force]  Store a discovery (--dedup skips a duplicate Decision on session+target+source+chosen; --force bypasses)"
     )?;
     writeln!(
         writer,
@@ -1507,6 +1545,10 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     writeln!(
         writer,
         "  atheneum store-discovery ./atheneum.db claude Decision gemv_q4_0 --session c663d1ff --project rocmforge"
+    )?;
+    writeln!(
+        writer,
+        "  atheneum store-discovery ./atheneum.db claude Decision storage-engine dec.json --session $CLAUDE_CODE_SESSION_ID --dedup"
     )?;
     writeln!(
         writer,

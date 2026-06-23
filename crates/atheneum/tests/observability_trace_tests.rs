@@ -775,3 +775,72 @@ fn thread_query_walks_discovery_chain_in_order() {
     ordered.sort();
     assert_eq!(ordered, vec![d1, d2, d3], "d3-view chain order by id");
 }
+
+#[test]
+fn decision_exists_chosen_keys_on_session_target_source_chosen() {
+    // Phase 5 dedup guard for the skill / manual `/decision` layer. Unlike
+    // `decision_exists` (sequence-keyed, for the transcript watcher), this
+    // keys on `(session_id, target, source, chosen)` because a re-fired skill
+    // decision has no stable sequence. A repeat of the exact same quadruple
+    // is a duplicate; any field differing is a distinct decision. Cross-layer
+    // doubles (different `source`) are intentionally NOT collapsed here.
+    let dir = tempdir().expect("tempdir");
+    let db_path = dir.path().join("atheneum.db");
+    let graph = AtheneumGraph::open(&db_path).expect("open graph");
+
+    graph
+        .store_discovery(
+            "claude",
+            "Decision",
+            "storage-engine",
+            json!({
+                "session_id": "sess-skill",
+                "source": "skill",
+                "chosen": "csr-adjacency",
+                "alternatives": ["btree", "skip-list"],
+                "rationale": "scan-heavy read path favors CSR",
+            }),
+        )
+        .expect("store skill decision");
+
+    // Exact repeat → duplicate.
+    assert!(
+        graph
+            .decision_exists_chosen("sess-skill", "storage-engine", "skill", "csr-adjacency")
+            .expect("exists check"),
+        "exact (session,target,source,chosen) must be a duplicate"
+    );
+
+    // Same decision captured by a different layer (source=askuser) is NOT
+    // collapsed — the plan's documented cross-layer tradeoff.
+    assert!(
+        !graph
+            .decision_exists_chosen("sess-skill", "storage-engine", "askuser", "csr-adjacency")
+            .expect("exists check askuser"),
+        "different source is a different layer, not a duplicate"
+    );
+
+    // Different chosen option for the same target → distinct decision.
+    assert!(
+        !graph
+            .decision_exists_chosen("sess-skill", "storage-engine", "skill", "btree")
+            .expect("exists check btree"),
+        "a different chosen is a distinct decision, not a duplicate"
+    );
+
+    // Different target → distinct decision.
+    assert!(
+        !graph
+            .decision_exists_chosen("sess-skill", "auth-strategy", "skill", "csr-adjacency")
+            .expect("exists check other target"),
+        "a different target is a distinct decision"
+    );
+
+    // Different session → distinct decision (session-scoped).
+    assert!(
+        !graph
+            .decision_exists_chosen("sess-other", "storage-engine", "skill", "csr-adjacency")
+            .expect("exists check other session"),
+        "a different session is a distinct decision"
+    );
+}

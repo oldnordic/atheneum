@@ -67,6 +67,18 @@ bump.
   `discovery_type = 'Decision'`, limited to 5) labeled with the capture
   `source`. The existing `discoveries` block is preserved — the decisions
   block is additive.
+- **`decision_exists_chosen` graph method** (`graph::discovery`): dedup guard
+  for the cooperative-skill / manual `/decision` capture paths (Phase 5),
+  keyed on `(session_id, target, source, chosen)` — the skill layer has no
+  stable transcript `sequence`, so a sequence key (as `decision_exists` uses)
+  would let a re-fired duplicate through. The two layers use different
+  `source` values, so cross-layer doubles are intentionally not collapsed.
+- **`store-discovery --dedup` / `--force`** (`main`): opt-in dedup for the
+  skill/command store path. When `--dedup` is set and the discovery type is
+  `Decision` with `session_id` + `source` + `chosen` in the metadata, a
+  matching existing row skips the insert and prints `deduped: true`;
+  `--force` bypasses. Only Decisions are deduped; other types insert
+  unconditionally.
 
 ### Fixed
 

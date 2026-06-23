@@ -462,6 +462,56 @@ impl AtheneumGraph {
         })
     }
 
+    /// Dedup guard for the cooperative-skill and manual `/decision` capture
+    /// paths (Phase 5), which have no stable transcript `sequence` to key on.
+    /// Returns true iff a Decision row already exists for this exact
+    /// `(session_id, target, source, chosen)` quadruple — the dedup key that
+    /// means "the same choice was already recorded" when the capturing layer
+    /// is a Claude Code skill or a manual command rather than a transcript
+    /// scan.
+    ///
+    /// This is intentionally a *different* key from [`Self::decision_exists`]:
+    /// the live watcher (Phase 4) and post-hoc extractor (Phase 3) key on
+    /// `sequence` because transcript turns have a stable order; a skill that
+    /// re-fires on the same architectural choice has no stable sequence, so a
+    /// sequence key would let the duplicate through. Keying on `chosen` makes
+    /// "re-fire the same decision" collapse correctly within the skill layer.
+    /// The two layers use different `source` values (`"skill"` vs
+    /// `"askuser"`/`"exitplan"`/`"taskcreate"`/`"todowrite"`/`"llm-extract"`),
+    /// so a decision captured live and again via the skill is intentionally
+    /// not collapsed here — that cross-layer double is the plan's documented
+    /// tradeoff, not a bug.
+    ///
+    /// Queries the indexed `discoveries` table (`session_id`, `target`,
+    /// `discovery_type` columns); `source` and `chosen` live in the metadata
+    /// JSON, so those two predicates are `json_extract` scans over the
+    /// already-session/target-filtered rows (bounded by the index).
+    pub fn decision_exists_chosen(
+        &self,
+        session_id: &str,
+        target: &str,
+        source: &str,
+        chosen: &str,
+    ) -> Result<bool> {
+        let session_id = session_id.to_string();
+        let target = target.to_string();
+        let source = source.to_string();
+        let chosen = chosen.to_string();
+        super::with_graph_conn(&self.inner, move |conn| {
+            let mut stmt = conn.prepare_cached(
+                "SELECT 1 FROM discoveries
+                 WHERE session_id = ?
+                   AND target = ?
+                   AND discovery_type = 'Decision'
+                   AND json_extract(metadata, '$.source') = ?
+                   AND json_extract(metadata, '$.chosen') = ?
+                 LIMIT 1",
+            )?;
+            let exists = stmt.exists(params![session_id, target, source, chosen])?;
+            Ok(exists)
+        })
+    }
+
     pub fn query_discoveries_in_project(
         &self,
         target: &str,

@@ -79,6 +79,26 @@ bump; no insert-path changes and no breaking API removal.
   `llm-extract`, or `manual`), so decisions from every layer appear
   together. The existing `discoveries` block (recent discoveries of any
   type) is preserved — the decisions block is additive.
+- **Phase 5 cooperative-skill capture — `plugin/atheneum-decisions/`.** A
+  Claude Code companion plugin that records architectural choices as `Decision`
+  rows as the model makes them (`source = "skill"`), the highest-fidelity layer
+  on top of the transcript watcher and LLM backfiller. Contains:
+  - `skills/record-decision` — auto-triggers on choosing between approaches /
+    an architectural tradeoff; writes `metadata.json` and calls
+    `atheneum store-discovery ... --session $CLAUDE_CODE_SESSION_ID --dedup`.
+  - `commands/decision.md` — `/decision <target> <chosen> [rationale]` manual
+    fallback (same store path + `--dedup`).
+  - `hooks/decision-gate.fish` — non-blocking Stop hook that warns when a
+    session made tool calls but recorded zero Decision rows.
+- **`decision_exists_chosen` graph method + `store-discovery --dedup`.** The
+  skill / manual layer has no stable transcript `sequence`, so it dedups on
+  `(session_id, target, source, chosen)` — what "the same choice was already
+  recorded" means for that layer — via the new
+  `AtheneumGraph::decision_exists_chosen`. `atheneum store-discovery` gains
+  `--dedup` (opt-in; skips a duplicate Decision insert and prints
+  `deduped: true`) and `--force` (bypass). The watcher's sequence-keyed
+  `decision_exists` is unchanged; cross-layer doubles remain an accepted
+  tradeoff.
 
 ### Fixed
 

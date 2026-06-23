@@ -552,6 +552,48 @@ section filters on `discovery_type = 'Decision'` and labels each with its
 `source`, so live-watcher, backfiller, and manual `store_discovery` rows
 appear together.
 
+### Cooperative skill capture (Phase 5)
+
+The highest-fidelity layer is a Claude Code companion plugin,
+`plugin/atheneum-decisions/` (shipped in this repo), that records a decision
+*as the model makes it* — `source = "skill"`. Three components:
+
+- **`record-decision` skill** — auto-triggers on choosing between approaches /
+  an architectural tradeoff, writes a `metadata.json` (`chosen` /
+  `alternatives` / `rationale` / `target`), and calls
+  `atheneum store-discovery <db> claude Decision <target> /tmp/dec.json
+  --session $CLAUDE_CODE_SESSION_ID --dedup`.
+- **`/decision <target> <chosen> [rationale]` command** — manual fallback
+  using the same store path.
+- **`decision-gate` Stop hook** — non-blocking; warns when a session made
+  tool calls but recorded zero Decision rows.
+
+The skill/command layer has no stable transcript `sequence`, so it dedups on
+`(session_id, target, source, chosen)` via `AtheneumGraph::decision_exists_chosen`,
+surfaced in the CLI as `store-discovery --dedup` (skip a duplicate Decision
+insert; print `deduped: true`) and `--force` (bypass). The watcher's
+sequence-keyed dedup is unchanged; cross-layer doubles (different `source`)
+are an accepted tradeoff, not a bug.
+
+```bash
+# Same store path the skill uses — opt-in dedup
+atheneum store-discovery ./atheneum.db claude Decision storage-engine dec.json \
+  --session $CLAUDE_CODE_SESSION_ID --dedup
+# → {"discovery_id": 1, ...} on first call
+# → {"deduped": true, "discovery_id": null, ...} on a repeat of the same choice
+```
+
+**Install the plugin (local marketplace):**
+
+```bash
+# From the atheneum repo root — register a local marketplace and install
+claude plugin marketplace add /home/feanor/Projects/atheneum/plugin
+claude plugin install atheneum-decisions@atheneum-decisions
+```
+
+Then `/decision` and the `record-decision` skill are active; the Stop-gate
+warns on sessions with work but no recorded decisions.
+
 ---
 
 ## Knowledge Graph
