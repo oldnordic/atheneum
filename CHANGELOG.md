@@ -24,6 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `llm-extract` Decision). The Python script remains the default fallback
   (no special build needed); enable the subcommand with `--features extract`
   (or `--all-features`).
+- **`extract-decisions` heuristic backend** — `--heuristic` (or `--mode
+  heuristic`, or `ATHENEUM_EXTRACT_MODE=heuristic`) switches the subcommand to a
+  rule-based extractor with no LLM and no network. It catches decision-shaped
+  sentences that carry an explicit rationale clause (`because`/`since`/`so
+  that`), reuses the same hallucination guard + store/dedup plumbing as the LLM
+  path, and writes `source = "heuristic"` so the two backends are separately
+  resumable and distinguishable in the graph. Lower recall + some false
+  positives vs the LLM; zero deps. The default backend remains the Ollama LLM
+  (`--mode llm`).
 
 ## [0.9.0] — 2026-06-23
 

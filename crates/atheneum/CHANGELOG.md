@@ -23,9 +23,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`extract-decisions` CLI subcommand** (feature `extract`): exposes
   `run_extract` as `atheneum extract-decisions <db> [--all | <session-id>]
   [--dry-run] [--force] [--verbose] [--project P] [--agent A] [--model M]
-  [--transcripts-dir D] [--max-chars N] [--ollama-url U]`. The Python script
-  remains the default fallback; enable the subcommand with `--features extract`
-  (or `--all-features`).
+  [--transcripts-dir D] [--max-chars N] [--ollama-url U] [--heuristic |
+  --mode llm|heuristic]`. The Python script remains the default fallback;
+  enable the subcommand with `--features extract` (or `--all-features`).
+- **`graph::extract_decisions::ExtractMode` + heuristic backend** (feature
+  `extract`): `ExtractMode::{Llm, Heuristic}` picks the extraction backend per
+  run. `Heuristic` is a rule-based extractor (no LLM, no network) that catches
+  decision-shaped sentences with an explicit rationale clause, reuses the
+  hallucination guard + store/dedup plumbing, and writes `source = "heuristic"`
+  (distinct from `llm-extract`, so the two backends are separately resumable).
+  Selected via `--heuristic` / `--mode heuristic` / `ATHENEUM_EXTRACT_MODE=heuristic`.
+  Lower recall + some false positives vs the LLM; zero deps. Default stays `Llm`.
 
 ## [0.9.0] — 2026-06-23
 

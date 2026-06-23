@@ -517,12 +517,40 @@ sequence recovery, and `--all` resumability, and stores `Decision` rows via
 `store-discovery`. The operator script remains the default (no special build
 needed); use the subcommand when you want one binary and no Python dep.
 
+**Backend choice — LLM or heuristic:** the subcommand has two extraction
+backends and the user picks one per run, so the tradeoff is explicit:
+
+```bash
+# Default: local Ollama LLM (qwen3.5). Higher precision on prose decisions.
+atheneum extract-decisions <db> <sid> --transcripts-dir <dir>
+atheneum extract-decisions <db> <sid> --mode llm        # explicit
+
+# Heuristic: rule-based, no LLM, no network. Zero deps.
+atheneum extract-decisions <db> <sid> --transcripts-dir <dir> --heuristic
+atheneum extract-decisions <db> <sid> --mode heuristic
+
+# Or set it once for the shell:
+set -x ATHENEUM_EXTRACT_MODE heuristic
+```
+
+The heuristic backend catches decision-shaped sentences that carry an explicit
+rationale clause (`because` / `since` / `so that`), reuses the same
+hallucination guard + store/dedup plumbing, and writes `source = "heuristic"`
+(distinct from `llm-extract`, so the two backends are separately resumable and
+distinguishable in the graph). It is deterministic, so re-runs dedup exactly on
+`(target, chosen)`. **Tradeoff:** lower recall + some false positives vs the
+LLM — a trigger phrase without a rationale clause is dropped (precision
+filter), and a real decision phrased without a trigger word is missed. Use it
+when Ollama is unavailable or you want a deterministic, offline pass; run
+`--dry-run` first to review what it would store.
+
 **Hallucination guard:** a decision is accepted only if `target`, `chosen`,
 and `rationale` each contain a real alphabetic token (≥3 chars), rejecting
-placeholder fill. **Idempotency:** extraction is non-deterministic, so a
-store-mode run skips any session that already has an `llm-extract` Decision
-(pre-scan via `atheneum discoveries-recent --session <sid>`); re-running is a
-no-op and `--all` is resumable. Run `--dry-run` before `--all`.
+placeholder fill. **Idempotency:** LLM extraction is non-deterministic, so a
+store-mode run skips any session that already has a Decision from the *same*
+backend's `source` tag (pre-scan via `atheneum discoveries-recent --session
+<sid>`); re-running the same backend is a no-op and `--all` is resumable.
+Run `--dry-run` before `--all`.
 
 ### `watch-decisions` — live capture
 
@@ -1291,7 +1319,7 @@ atheneum help
 | `default` | yes | Core graph, wiki, sessions, planning, search, thread — lexical (bag-of-tokens) search + BFS graph navigation |
 | `semantic-search` | no | HNSW vector index for `search` (opt-in; heavy — index + embedder). Off by default; `search`/`navigate`/`thread` fall back to a lexical scan + graph traversal |
 | `neural-embed` | no | Ollama neural embeddings (requires `ureq`, ollama + nomic-embed-text) |
-| `extract` | no | Native `atheneum extract-decisions` subcommand — Rust port of the `~/.local/bin/extract-decisions` script (requires `ureq`, ollama + an LLM model, default `qwen3.5`) |
+| `extract` | no | Native `atheneum extract-decisions` subcommand — Rust port of the `~/.local/bin/extract-decisions` script (LLM backend requires `ureq` + ollama, default `qwen3.5`; `--heuristic` backend needs no LLM/network) |
 | `web` | no | Web dashboard (axum + askama templates) |
 | `cli` | no | `atheneum` CLI binary |
 | `async` | no | Async runtime support |

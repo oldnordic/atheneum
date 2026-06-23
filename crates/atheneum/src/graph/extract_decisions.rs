@@ -1,26 +1,44 @@
 //! Native Rust port of the `extract-decisions` Phase 3 backfiller.
 //!
-//! Runs a local LLM (Ollama, `qwen3.5` by default) over Claude Code session
-//! transcript JSONLs, extracts decision-shaped turns, and stores each as an
-//! atheneum `Decision` discovery *in-process* via
+//! Runs over Claude Code session transcript JSONLs, extracts decision-shaped
+//! turns, and stores each as an atheneum `Decision` discovery *in-process* via
 //! [`AtheneumGraph::store_discovery`] (which auto-links the
 //! `caused_by` / `led_to` thread edges). This is the native equivalent of the
 //! `~/.local/bin/extract-decisions` Python operator script — same prompt, same
 //! chunking, same hallucination guard, same dedup semantics — without shelling
 //! out to the CLI.
 //!
-//! Gated behind the `extract` feature (it needs the `ureq` HTTP client for the
-//! Ollama call). Off by default; the Python script is the default fallback.
+//! ## Backends — user's choice
+//!
+//! Two extraction backends, picked per run via `--heuristic` / `--mode` or the
+//! `ATHENEUM_EXTRACT_MODE` env var (default `llm`):
+//!
+//! - [`ExtractMode::Llm`] — a local Ollama LLM (`qwen3.5` by default) reads the
+//!   transcript prose and emits structured decisions. Higher precision on
+//!   prose decisions; requires a running local Ollama.
+//! - [`ExtractMode::Heuristic`] — rule-based, no LLM, no network. Catches
+//!   decision-shaped sentences with an explicit rationale clause. Lower
+//!   recall + some false positives; zero deps. Use when Ollama is unavailable
+//!   or you want a deterministic, offline pass.
+//!
+//! Each backend writes a distinct `source` tag (`llm-extract` vs `heuristic`),
+//! so the two are separately resumable and distinguishable in the graph.
+//!
+//! Gated behind the `extract` feature (the LLM path needs the `ureq` HTTP
+//! client; the heuristic path needs nothing extra but shares the feature
+//! gate). Off by default; the Python script is the default fallback.
 //! Built + tested under `--all-features`.
 //!
 //! ## Idempotency
 //!
-//! Extraction is non-deterministic (the LLM phrases `target`/`chosen` differently
-//! across runs), so per-decision exact dedup cannot prevent cross-run duplicates.
-//! Instead a store-mode run skips any session that already has an
-//! `llm-extract` Decision — re-running is a true no-op and `--all` is resumable.
-//! `--force` re-extracts (exact-dedupe safety net only; near-duplicate phrasings
-//! may add rows). `--dry-run` always extracts for review.
+//! LLM extraction is non-deterministic (the model phrases `target`/`chosen`
+//! differently across runs), so per-decision exact dedup cannot prevent
+//! cross-run duplicates. Instead a store-mode run skips any session that
+//! already has a Decision from the *same* backend's `source` tag — re-running
+//! the same backend is a true no-op and `--all` is resumable. `--force`
+//! re-extracts (exact-dedupe safety net only; near-duplicate phrasings may add
+//! rows). `--dry-run` always extracts for review. The heuristic backend is
+//! deterministic, so its re-runs dedup exactly on `(target, chosen)`.
 
 #![cfg(feature = "extract")]
 
@@ -34,7 +52,6 @@ use serde_json::{json, Value};
 
 use super::AtheneumGraph;
 
-const SOURCE_TAG: &str = "llm-extract";
 const DEFAULT_MODEL: &str = "qwen3.5";
 const DEFAULT_MAX_CHARS: usize = 20000;
 const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434/api/generate";
@@ -86,6 +103,32 @@ const PLACEHOLDER_WORDS: &[&str] = &[
     ".",
 ];
 
+/// Extraction backend. The user picks this per run — see `--heuristic` /
+/// `ATHENEUM_EXTRACT_MODE` — so the tradeoff (LLM precision vs no-dependency
+/// heuristics) is explicit, not buried in code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtractMode {
+    /// Ollama LLM (`qwen3.5` by default). Higher precision on prose decisions;
+    /// requires a running local Ollama.
+    Llm,
+    /// Rule-based, no LLM, no network. Catches decision-shaped sentences with
+    /// an explicit rationale clause. Lower recall + some false positives vs
+    /// the LLM; zero deps. Falls back to this when Ollama is unavailable.
+    Heuristic,
+}
+
+impl ExtractMode {
+    /// Discovery `source` tag stored on each Decision. Distinct tags keep the
+    /// two backends separately resumable (a heuristic run won't skip a session
+    /// that only has `llm-extract` rows, and vice versa).
+    fn source_tag(self) -> &'static str {
+        match self {
+            ExtractMode::Llm => "llm-extract",
+            ExtractMode::Heuristic => "heuristic",
+        }
+    }
+}
+
 /// Configuration for one `extract-decisions` run.
 #[derive(Debug, Clone)]
 pub struct ExtractConfig {
@@ -111,6 +154,9 @@ pub struct ExtractConfig {
     pub dry_run: bool,
     /// Per-session / per-chunk progress on stderr.
     pub verbose: bool,
+    /// Extraction backend (LLM vs heuristic). Default `Llm`; override with
+    /// `--heuristic` / `--mode` / `ATHENEUM_EXTRACT_MODE`.
+    pub mode: ExtractMode,
     /// Single session id to process (`all` must be false).
     pub session_id: Option<String>,
 }
@@ -126,6 +172,22 @@ impl Default for ExtractConfig {
                     .join("atheneum.db")
             });
         let transcripts_dir = dirs_or_home().join(".claude").join("projects");
+        let mode = match std::env::var("ATHENEUM_EXTRACT_MODE")
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase()
+            .as_str()
+        {
+            "heuristic" | "rules" | "no-llm" => ExtractMode::Heuristic,
+            "llm" | "ollama" | "" => ExtractMode::Llm,
+            other => {
+                eprintln!(
+                    "ATHENEUM_EXTRACT_MODE={:?} unrecognized (expected llm|heuristic); defaulting to llm",
+                    other
+                );
+                ExtractMode::Llm
+            }
+        };
         Self {
             db,
             transcripts_dir,
@@ -138,6 +200,7 @@ impl Default for ExtractConfig {
             force: false,
             dry_run: false,
             verbose: false,
+            mode,
             session_id: None,
         }
     }
@@ -611,6 +674,257 @@ fn recover_sequence(decision: &Decision, chunk: &[Turn], default: i64) -> i64 {
     default
 }
 
+// --- heuristic extraction (no LLM, no network) ---------------------------
+
+/// Common English stopwords used to derive a short target label from a chosen
+/// clause. Deliberately tiny — this builds a slug, not a parse tree.
+const STOPWORDS: &[&str] = &[
+    "the", "a", "an", "and", "or", "but", "for", "to", "of", "in", "on", "with", "we", "i", "us",
+    "let", "let's", "is", "are", "be", "will", "should", "would", "can", "could", "this", "that",
+    "these", "those", "it", "its", "as", "at", "by", "from", "our", "their", "your", "my", "than",
+    "then", "so", "if",
+];
+
+/// Phrases that mark a decision-in-progress. Matched case-insensitively as
+/// substrings; the chosen clause follows the trigger up to the next clause
+/// boundary or rationale marker. Order matters only for earliest-match; the
+/// list is searched and the first hit in the sentence wins.
+const DECISION_TRIGGERS: &[&str] = &[
+    "i recommend",
+    "i suggest we",
+    "i suggest",
+    "let's go with",
+    "let us go with",
+    "let's use",
+    "let us use",
+    "let's choose",
+    "let us choose",
+    "let's adopt",
+    "let us adopt",
+    "we should use",
+    "we should go with",
+    "we should adopt",
+    "we'll go with",
+    "we will go with",
+    "we'll use",
+    "we will use",
+    "we'll adopt",
+    "we will adopt",
+    "we adopt",
+    "i'll go with",
+    "i will go with",
+    "i'll use",
+    "i will use",
+    "i'll adopt",
+    "i will adopt",
+    "going with",
+    "decided to",
+    "decision is to",
+    "the decision is",
+    "chosen approach",
+    "i'll choose",
+    "we choose",
+    "i choose",
+];
+
+/// Markers that introduce the rationale clause. The text after the first
+/// matching marker is the rationale. A trigger sentence with NO rationale
+/// marker is dropped — this is the precision filter that pays for the
+/// heuristic's lower recall. Kept strict on purpose ("because"/"since"/
+/// "so that"); looser markers like bare "to" would match almost every
+/// sentence and drown the graph in false positives.
+const RATIONALE_MARKERS: &[&str] = &[" because ", " since ", " so that "];
+
+/// Split turn text into sentence-ish fragments on sentence + clause
+/// terminators. Transcript prose is often loosely punctuated, so we also split
+/// on newlines and semicolons. Fragments shorter than `MIN_PHRASE` are dropped
+/// (they cannot carry a real decision).
+fn sentences(text: &str) -> Vec<String> {
+    text.split(['.', '!', '?', ';', '\n'])
+        .map(|s| s.trim().to_string())
+        .filter(|s| s.len() >= MIN_PHRASE)
+        .collect()
+}
+
+/// First `n` non-stopword tokens of `s`, with surrounding punctuation stripped.
+/// Used to build a short target label from a chosen clause when no explicit
+/// "for <topic>" prefix is present.
+fn first_content_words(s: &str, n: usize) -> String {
+    s.split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_'))
+        .filter(|w| !w.is_empty() && !STOPWORDS.contains(&w.to_lowercase().as_str()))
+        .take(n)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Detect a "<prefix> <topic>," lead-in before the trigger (`for <topic>,`,
+/// `on <topic>,`, `about <topic>,`, `regarding <topic>,`). Returns the topic
+/// phrase when present, so the decision target is the subject under decision
+/// rather than a slug derived from the chosen clause.
+fn extract_target(sentence: &str, trigger: &str) -> Option<String> {
+    let lower = sentence.to_lowercase();
+    let trigger_idx = lower.find(trigger)?;
+    let before = &sentence[..trigger_idx];
+    let before_lower = before.to_lowercase();
+    for prefix in ["for ", "on ", "about ", "regarding "] {
+        if let Some(idx) = before_lower.rfind(prefix) {
+            let tail = &before[idx + prefix.len()..];
+            let phrase = tail.split([',', ':', '\n']).next().unwrap_or("").trim();
+            if phrase.len() >= 3 && is_real_content(phrase) {
+                let slug = first_content_words(phrase, 4);
+                return Some(if slug.is_empty() {
+                    phrase.to_string()
+                } else {
+                    slug
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Best-effort alternatives capture: an `instead of <X>` clause anywhere after
+/// the trigger records X as the rejected option. Returns 0 or 1 entries — the
+/// heuristic does not attempt to enumerate full option sets.
+fn extract_alternatives(after_trigger: &str) -> Vec<String> {
+    let lower = after_trigger.to_lowercase();
+    let mut alts = Vec::new();
+    if let Some(idx) = lower.find("instead of ") {
+        let tail = &after_trigger[idx + "instead of ".len()..];
+        let lower_tail = tail.to_lowercase();
+        // Cut the rejected-option phrase at the first rationale marker or clause
+        // boundary, so `instead of btree because …` yields `btree` not the rest.
+        let mut end = tail.len();
+        for marker in [
+            " because ",
+            " since ",
+            " so that ",
+            ",",
+            ".",
+            ";",
+            ":",
+            "\n",
+        ] {
+            if let Some(m) = lower_tail.find(marker) {
+                if m < end {
+                    end = m;
+                }
+            }
+        }
+        let phrase = tail[..end].trim();
+        if is_real_content(phrase) {
+            alts.push(phrase.to_string());
+        }
+    }
+    alts
+}
+
+/// Pull a `Decision` out of one sentence using trigger + rationale-marker
+/// rules. Returns `None` when no trigger fires, or when the chosen/rationale
+/// clauses fail the hallucination guard (the same guard the LLM path uses).
+fn extract_decision_from_sentence(sentence: &str, seq: i64) -> Option<Decision> {
+    let lower = sentence.to_lowercase();
+    // Earliest trigger present in the sentence.
+    let mut trigger_hit: Option<(&str, usize)> = None;
+    for t in DECISION_TRIGGERS {
+        if let Some(idx) = lower.find(t) {
+            match trigger_hit {
+                Some((_, best)) if idx >= best => {}
+                _ => trigger_hit = Some((t, idx)),
+            }
+        }
+    }
+    let (trigger, _) = trigger_hit?;
+    let trigger_start = lower.find(trigger)?;
+    let after = &sentence[trigger_start + trigger.len()..];
+    let lower_after = after.to_lowercase();
+
+    // chosen clause = from after the trigger up to the first rationale marker
+    // or clause boundary, whichever comes first.
+    let mut chosen_end = after.len();
+    let mut rationale_from: Option<usize> = None;
+    for marker in RATIONALE_MARKERS {
+        if let Some(idx) = lower_after.find(marker) {
+            if idx < chosen_end {
+                chosen_end = idx;
+                rationale_from = Some(idx + marker.len());
+            }
+        }
+    }
+    for sep in [", ", ": ", " — ", " – ", " - ", " instead of "] {
+        if let Some(idx) = lower_after.find(sep) {
+            if idx < chosen_end {
+                chosen_end = idx;
+            }
+        }
+    }
+    let chosen = after[..chosen_end]
+        .trim()
+        .trim_end_matches(',')
+        .trim()
+        .to_string();
+    let rationale = match rationale_from {
+        Some(from) => after[from..]
+            .trim()
+            .trim_end_matches('.')
+            .trim()
+            .to_string(),
+        None => String::new(),
+    };
+    if !is_real_content(&chosen) || !is_real_content(&rationale) {
+        return None;
+    }
+    let target = extract_target(sentence, trigger).unwrap_or_else(|| {
+        // No "for <topic>," prefix → derive a short target label. Prefer the
+        // chosen clause's head content words, but fall back to the rationale's
+        // head nouns when the chosen slug is degenerate (≤ its own words, i.e.
+        // would equal `chosen` and carry no extra topic signal). This keeps
+        // `target` distinct + informative for prefix-less decision sentences
+        // like "I suggest we adopt HNSW because approximate nearest neighbor
+        // is the access pattern" (target → "approximate nearest neighbor",
+        // not a copy of `chosen`).
+        let slug = first_content_words(&chosen, 4);
+        if is_real_content(&slug) && slug.to_lowercase() != chosen.to_lowercase() {
+            slug
+        } else {
+            let rslug = first_content_words(&rationale, 3);
+            if is_real_content(&rslug) {
+                rslug
+            } else {
+                chosen.clone()
+            }
+        }
+    });
+    let alternatives = extract_alternatives(after);
+    Some(Decision {
+        target,
+        chosen,
+        alternatives,
+        rationale,
+        sequence: seq,
+    })
+}
+
+/// Rule-based decision extraction over a transcript's turns. No LLM, no network.
+/// Decisions are emitted with their turn's real `sequence` (no recovery pass
+/// needed). Within-session dedup on `(target, chosen)` mirrors the LLM path.
+fn heuristic_extract(turns: &[Turn]) -> Vec<Decision> {
+    let mut out: Vec<Decision> = Vec::new();
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    for turn in turns {
+        for sent in sentences(&turn.text) {
+            if let Some(d) = extract_decision_from_sentence(&sent, turn.sequence) {
+                let key = (d.target.clone(), d.chosen.clone());
+                if seen.insert(key) {
+                    out.push(d);
+                }
+            }
+        }
+    }
+    out
+}
+
 // --- store / pre-scan -----------------------------------------------------
 
 /// Decisions already stored for `session_id` with their (source, target, chosen)
@@ -640,14 +954,19 @@ fn existing_decisions(graph: &AtheneumGraph, session_id: &str) -> Vec<(String, S
         .collect()
 }
 
-fn has_llm_decisions(existing: &[(String, String, String)]) -> bool {
-    existing.iter().any(|(src, _, _)| src == SOURCE_TAG)
+fn has_extract_decisions(existing: &[(String, String, String)], tag: &str) -> bool {
+    existing.iter().any(|(src, _, _)| src == tag)
 }
 
-fn already_present(existing: &[(String, String, String)], target: &str, chosen: &str) -> bool {
+fn already_present(
+    existing: &[(String, String, String)],
+    target: &str,
+    chosen: &str,
+    tag: &str,
+) -> bool {
     existing
         .iter()
-        .any(|(src, t, c)| src == SOURCE_TAG && t == target && c == chosen)
+        .any(|(src, t, c)| src == tag && t == target && c == chosen)
 }
 
 fn store_decision(
@@ -655,6 +974,7 @@ fn store_decision(
     agent: &str,
     project: Option<&str>,
     session_id: &str,
+    source_tag: &str,
     d: &Decision,
 ) -> Result<i64> {
     let mut metadata = json!({
@@ -664,7 +984,7 @@ fn store_decision(
         "target": d.target,
         "session_id": session_id,
         "sequence": d.sequence,
-        "source": SOURCE_TAG,
+        "source": source_tag,
         "file": null,
         "line": null,
     });
@@ -704,13 +1024,17 @@ fn process_transcript(
         None => Vec::new(),
     };
 
-    // Session-level idempotency: skip if the session already has any
-    // llm-extract Decision (store mode, no --force).
-    if !config.dry_run && !config.force && has_llm_decisions(&existing) {
+    let tag = config.mode.source_tag();
+
+    // Session-level idempotency: skip if the session already has a Decision
+    // from this same backend (store mode, no --force). Distinct backends stay
+    // separately resumable — a heuristic run will still process a session that
+    // only has `llm-extract` rows, and vice versa.
+    if !config.dry_run && !config.force && has_extract_decisions(&existing, tag) {
         if config.verbose {
             eprintln!(
-                "  skip {}: already has llm-extract decisions (--force to re-extract)",
-                session_id
+                "  skip {}: already has {} decisions (--force to re-extract)",
+                session_id, tag
             );
         }
         return Ok((0, 0, 0));
@@ -724,34 +1048,48 @@ fn process_transcript(
         return Ok((0, 0, 0));
     }
 
-    let chunks = chunk_turns(&turns, config.max_chars);
-    let mut extracted: Vec<Decision> = Vec::new();
-    for (ci, chunk) in chunks.iter().enumerate() {
-        let body = render_chunk(chunk);
-        let prompt = format!(
-            "{}\n\nSession id: {}\n\nTranscript turns (sequence | role | text):\n{}",
-            EXTRACTION_INSTRUCTION, session_id, body
-        );
-        if config.verbose {
-            eprintln!(
-                "  chunk {}/{} ({} turns)…",
-                ci + 1,
-                chunks.len(),
-                chunk.len()
-            );
-        }
-        let (response, thinking) = call_ollama(&config.model, &config.ollama_url, &prompt)?;
-        let default_seq = chunk[0].sequence;
-        for raw in [response.as_str(), thinking.as_str()] {
-            if raw.trim().is_empty() {
-                continue;
+    let extracted: Vec<Decision> = match config.mode {
+        ExtractMode::Heuristic => {
+            if config.verbose {
+                eprintln!(
+                    "  heuristic mode: no LLM — lower recall, some false positives; \
+                     review with --dry-run first"
+                );
             }
-            for mut d in parse_decision_json(raw) {
-                d.sequence = recover_sequence(&d, chunk, default_seq);
-                extracted.push(d);
-            }
+            heuristic_extract(&turns)
         }
-    }
+        ExtractMode::Llm => {
+            let chunks = chunk_turns(&turns, config.max_chars);
+            let mut out: Vec<Decision> = Vec::new();
+            for (ci, chunk) in chunks.iter().enumerate() {
+                let body = render_chunk(chunk);
+                let prompt = format!(
+                    "{}\n\nSession id: {}\n\nTranscript turns (sequence | role | text):\n{}",
+                    EXTRACTION_INSTRUCTION, session_id, body
+                );
+                if config.verbose {
+                    eprintln!(
+                        "  chunk {}/{} ({} turns)…",
+                        ci + 1,
+                        chunks.len(),
+                        chunk.len()
+                    );
+                }
+                let (response, thinking) = call_ollama(&config.model, &config.ollama_url, &prompt)?;
+                let default_seq = chunk[0].sequence;
+                for raw in [response.as_str(), thinking.as_str()] {
+                    if raw.trim().is_empty() {
+                        continue;
+                    }
+                    for mut d in parse_decision_json(raw) {
+                        d.sequence = recover_sequence(&d, chunk, default_seq);
+                        out.push(d);
+                    }
+                }
+            }
+            out
+        }
+    };
 
     // Within-run dedup on (target, chosen).
     let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
@@ -768,7 +1106,7 @@ fn process_transcript(
     let mut stored = 0usize;
     let mut skipped = 0usize;
     for d in &unique {
-        if !config.dry_run && already_present(&existing, &d.target, &d.chosen) {
+        if !config.dry_run && already_present(&existing, &d.target, &d.chosen, tag) {
             skipped += 1;
             continue;
         }
@@ -780,13 +1118,13 @@ fn process_transcript(
                 "rationale": d.rationale,
                 "sequence": d.sequence,
                 "session_id": session_id,
-                "source": SOURCE_TAG,
+                "source": tag,
             });
             println!("{}", serde_json::to_string(&out).unwrap_or_default());
             continue;
         }
         if let Some(g) = graph {
-            let did = store_decision(g, &config.agent, Some(&project), &session_id, d)?;
+            let did = store_decision(g, &config.agent, Some(&project), &session_id, tag, d)?;
             stored += 1;
             if config.verbose {
                 eprintln!(
@@ -905,5 +1243,66 @@ mod tests {
         let one = chunk_turns(&big, 100);
         assert_eq!(one.len(), 1);
         assert_eq!(one[0].len(), 1);
+    }
+
+    #[test]
+    fn heuristic_extracts_decision_with_rationale_clause() {
+        let turns = vec![Turn {
+            sequence: 4,
+            role: "assistant".into(),
+            text: "For the storage engine, I recommend CSR adjacency because the read path is scan-heavy and btree point lookups dominate latency."
+                .to_string(),
+        }];
+        let out = heuristic_extract(&turns);
+        assert_eq!(out.len(), 1);
+        let d = &out[0];
+        assert_eq!(d.sequence, 4);
+        assert_eq!(d.target, "storage engine");
+        assert_eq!(d.chosen, "CSR adjacency");
+        assert!(d.rationale.contains("scan-heavy"));
+    }
+
+    #[test]
+    fn heuristic_drops_trigger_without_rationale() {
+        // Trigger present but no because/since/so that → dropped (precision filter).
+        let turns = vec![Turn {
+            sequence: 1,
+            role: "assistant".into(),
+            text: "I recommend JWT for auth.".to_string(),
+        }];
+        assert!(heuristic_extract(&turns).is_empty());
+    }
+
+    #[test]
+    fn heuristic_dedups_within_session() {
+        let turns = vec![
+            Turn {
+                sequence: 1,
+                role: "assistant".into(),
+                text: "We should use CSR adjacency because scan-heavy.".to_string(),
+            },
+            Turn {
+                sequence: 2,
+                role: "assistant".into(),
+                text: "We should use CSR adjacency because scan-heavy.".to_string(),
+            },
+        ];
+        assert_eq!(heuristic_extract(&turns).len(), 1);
+    }
+
+    #[test]
+    fn heuristic_source_tag_is_distinct_from_llm() {
+        assert_eq!(ExtractMode::Llm.source_tag(), "llm-extract");
+        assert_eq!(ExtractMode::Heuristic.source_tag(), "heuristic");
+    }
+
+    #[test]
+    fn heuristic_captures_alternative_from_instead_of() {
+        let sent =
+            "Let's go with HNSW instead of btree because vector similarity is the access pattern.";
+        let d = extract_decision_from_sentence(sent, 7).unwrap();
+        assert_eq!(d.sequence, 7);
+        assert_eq!(d.chosen, "HNSW");
+        assert_eq!(d.alternatives, vec!["btree".to_string()]);
     }
 }

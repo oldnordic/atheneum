@@ -1008,7 +1008,8 @@ fn run() -> anyhow::Result<()> {
                 eprintln!(
                     "Usage: atheneum extract-decisions <db-path> [--all | <session-id>] \
                      [--dry-run] [--force] [--verbose] [--project P] [--agent A] \
-                     [--model M] [--transcripts-dir D] [--max-chars N] [--ollama-url U]"
+                     [--model M] [--transcripts-dir D] [--max-chars N] [--ollama-url U] \
+                     [--heuristic | --mode llm|heuristic]"
                 );
                 std::process::exit(1);
             }
@@ -1024,6 +1025,22 @@ fn run() -> anyhow::Result<()> {
                     "--dry-run" => config.dry_run = true,
                     "--force" => config.force = true,
                     "--verbose" => config.verbose = true,
+                    "--heuristic" => config.mode = atheneum::graph::ExtractMode::Heuristic,
+                    "--mode" => {
+                        let v = args
+                            .get(i + 1)
+                            .ok_or_else(|| anyhow::anyhow!("--mode requires a value"))?;
+                        config.mode = match v.as_str() {
+                            "llm" | "ollama" => atheneum::graph::ExtractMode::Llm,
+                            "heuristic" | "rules" | "no-llm" => {
+                                atheneum::graph::ExtractMode::Heuristic
+                            }
+                            other => {
+                                anyhow::bail!("unknown --mode {:?} (expected llm|heuristic)", other)
+                            }
+                        };
+                        i += 1;
+                    }
                     "--json" => json_out = true,
                     "--project" => {
                         config.project = Some(

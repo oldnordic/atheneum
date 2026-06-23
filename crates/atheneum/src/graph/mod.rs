@@ -39,7 +39,7 @@ pub use cache::RuntimeStats;
 pub use chat::{ChatChainNode, ChatDecision, ChatDirection, ChatQuery, ChatReport, ChatTurn};
 pub use dream::{DreamConfig, DreamFinding, DreamMode, DreamPhase, DreamReport};
 #[cfg(feature = "extract")]
-pub use extract_decisions::{run_extract, ExtractConfig, ExtractStats};
+pub use extract_decisions::{run_extract, ExtractConfig, ExtractMode, ExtractStats};
 pub use navigation::{estimate_entity_tokens, truncate_subgraph};
 pub use planning::{KanbanStatus, KanbanUpdate};
 pub use types::ProvenanceData;

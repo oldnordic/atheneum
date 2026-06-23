@@ -293,7 +293,14 @@ old transcripts — no model cooperation needed. Makes `--only-decisions` +
   `graph.store_discovery` directly (no temp file / shell-out), and dedups with
   the same `decision_exists`-equivalent check. The `~/.local/bin/extract-decisions`
   script remains the default fallback (no special build needed); the native
-  subcommand is enabled with `--features extract` (or `--all-features`).
+  subcommand is enabled with `--features extract` (or `--all-features`). The
+  subcommand ships **two user-picked backends**: the default Ollama LLM
+  (`source = "llm-extract"`) and a rule-based `--heuristic` / `--mode
+  heuristic` / `ATHENEUM_EXTRACT_MODE=heuristic` backend (`source =
+  "heuristic"`) — no LLM, no network, catches decision-shaped sentences with
+  an explicit rationale clause. Distinct `source` tags keep the two backends
+  separately resumable and distinguishable. Tradeoff documented in MANUAL +
+  the module doc: heuristic has lower recall + some false positives, zero deps.
 
 **Decision schema (metadata JSON):**
 ```json
