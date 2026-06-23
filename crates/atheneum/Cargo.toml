@@ -54,3 +54,8 @@ web-ui = ["dep:axum", "dep:tower-http", "dep:askama"]
 async = ["tokio", "tracing-subscriber"]
 neural-embed = ["dep:ureq"]
 semantic-search = []
+# Native `atheneum extract-decisions` subcommand (Phase 3 Rust port). Calls a
+# local Ollama LLM over transcripts and stores Decision discoveries in-process.
+# Off by default; the `~/.local/bin/extract-decisions` Python script remains the
+# default fallback. Enable with `--features extract` (or `--all-features`).
+extract = ["dep:ureq"]

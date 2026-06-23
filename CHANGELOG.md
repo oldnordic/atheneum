@@ -7,7 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Added
+
+- **`extract-decisions` native subcommand** — Rust port of the
+  `~/.local/bin/extract-decisions` operator script, behind the `extract`
+  Cargo feature (default off). `atheneum extract-decisions <db> [--all |
+  <session-id>] [--dry-run] [--force] [--verbose] [--project P] [--agent A]
+  [--model M] [--transcripts-dir D] [--max-chars N] [--ollama-url U]` calls a
+  local Ollama LLM (default `qwen3.5`) over transcript JSONL in-process
+  (`ureq`), parses the strict decision JSON, applies the placeholder
+  hallucination guard, recovers the `sequence` of each decision by matching
+  its `chosen`/`rationale` back to the source turn, and stores `Decision`
+  discoveries via `graph.store_discovery` directly (no temp file / shell-out)
+  with `source = "llm-extract"`. Same prompt/schema and dedup semantics as
+  the script; resumable via `--all` (skips sessions that already have an
+  `llm-extract` Decision). The Python script remains the default fallback
+  (no special build needed); enable the subcommand with `--features extract`
+  (or `--all-features`).
 
 ## [0.9.0] — 2026-06-23
 

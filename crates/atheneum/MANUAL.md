@@ -506,6 +506,17 @@ Options: `--db PATH` (default `$ATHENEUM_DB` or
 (default `claude`), `--model NAME` (default `qwen3.5`), `--transcripts-dir`,
 `--max-chars N` (per-chunk cap, default 20000), `--force`, `--verbose`.
 
+**Native subcommand:** the same backfill is also available as an `atheneum`
+subcommand — `atheneum extract-decisions <db> [--all | <session-id>] [...]`
+(see `atheneum extract-decisions` with no args for the full usage). It is a
+Rust port of the script, built behind the `extract` Cargo feature (default
+off; enable with `--features extract` or `--all-features`). It calls Ollama
+in-process (`ureq`), applies the same prompt/schema, hallucination guard,
+sequence recovery, and `--all` resumability, and stores `Decision` rows via
+`graph.store_discovery` directly — no temp file, no shell-out to
+`store-discovery`. The operator script remains the default (no special build
+needed); use the subcommand when you want one binary and no Python dep.
+
 **Hallucination guard:** a decision is accepted only if `target`, `chosen`,
 and `rationale` each contain a real alphabetic token (≥3 chars), rejecting
 placeholder fill. **Idempotency:** extraction is non-deterministic, so a
@@ -1280,6 +1291,7 @@ atheneum help
 | `default` | yes | Core graph, wiki, sessions, planning, search, thread — lexical (bag-of-tokens) search + BFS graph navigation |
 | `semantic-search` | no | HNSW vector index for `search` (opt-in; heavy — index + embedder). Off by default; `search`/`navigate`/`thread` fall back to a lexical scan + graph traversal |
 | `neural-embed` | no | Ollama neural embeddings (requires `ureq`, ollama + nomic-embed-text) |
+| `extract` | no | Native `atheneum extract-decisions` subcommand — Rust port of the `~/.local/bin/extract-decisions` script (requires `ureq`, ollama + an LLM model, default `qwen3.5`) |
 | `web` | no | Web dashboard (axum + askama templates) |
 | `cli` | no | `atheneum` CLI binary |
 | `async` | no | Async runtime support |

@@ -999,6 +999,98 @@ fn run() -> anyhow::Result<()> {
                 ))?;
             }
         }
+        #[cfg(feature = "extract")]
+        "extract-decisions" => {
+            // Phase 3 native port. Backfill Decision discoveries from Claude Code
+            // transcripts via a local Ollama LLM, stored in-process (no CLI shell).
+            // `atheneum extract-decisions <db> [--all | <session-id>] [...]`.
+            if args.len() < 3 {
+                eprintln!(
+                    "Usage: atheneum extract-decisions <db-path> [--all | <session-id>] \
+                     [--dry-run] [--force] [--verbose] [--project P] [--agent A] \
+                     [--model M] [--transcripts-dir D] [--max-chars N] [--ollama-url U]"
+                );
+                std::process::exit(1);
+            }
+            let mut config = atheneum::graph::ExtractConfig {
+                db: PathBuf::from(&args[2]),
+                ..atheneum::graph::ExtractConfig::default()
+            };
+            let mut json_out = false;
+            let mut i = 3;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--all" => config.all = true,
+                    "--dry-run" => config.dry_run = true,
+                    "--force" => config.force = true,
+                    "--verbose" => config.verbose = true,
+                    "--json" => json_out = true,
+                    "--project" => {
+                        config.project = Some(
+                            args.get(i + 1)
+                                .ok_or_else(|| anyhow::anyhow!("--project requires a value"))?
+                                .clone(),
+                        );
+                        i += 1;
+                    }
+                    "--agent" => {
+                        config.agent = args
+                            .get(i + 1)
+                            .ok_or_else(|| anyhow::anyhow!("--agent requires a value"))?
+                            .clone();
+                        i += 1;
+                    }
+                    "--model" => {
+                        config.model = args
+                            .get(i + 1)
+                            .ok_or_else(|| anyhow::anyhow!("--model requires a value"))?
+                            .clone();
+                        i += 1;
+                    }
+                    "--transcripts-dir" => {
+                        config.transcripts_dir =
+                            PathBuf::from(args.get(i + 1).ok_or_else(|| {
+                                anyhow::anyhow!("--transcripts-dir requires a value")
+                            })?);
+                        i += 1;
+                    }
+                    "--ollama-url" => {
+                        config.ollama_url = args
+                            .get(i + 1)
+                            .ok_or_else(|| anyhow::anyhow!("--ollama-url requires a value"))?
+                            .clone();
+                        i += 1;
+                    }
+                    "--max-chars" => {
+                        config.max_chars = args
+                            .get(i + 1)
+                            .ok_or_else(|| anyhow::anyhow!("--max-chars requires a value"))?
+                            .parse::<usize>()
+                            .map_err(|e| anyhow::anyhow!("--max-chars: {}", e))?;
+                        i += 1;
+                    }
+                    other if !other.starts_with('-') => {
+                        if config.session_id.is_some() {
+                            anyhow::bail!("unexpected positional argument: {}", other);
+                        }
+                        config.session_id = Some(other.to_string());
+                    }
+                    other => anyhow::bail!("unknown extract-decisions option: {}", other),
+                }
+                i += 1;
+            }
+            let stats = atheneum::graph::run_extract(&config)?;
+            if json_out {
+                print_json(json!({
+                    "sessions": stats.sessions,
+                    "extracted": stats.extracted,
+                    "stored": stats.stored,
+                    "skipped": stats.skipped,
+                    "dry_run": config.dry_run,
+                    "all": config.all,
+                }))?;
+            }
+        }
         "handoffs-recent" => {
             if args.len() < 3 {
                 eprintln!("Usage: atheneum handoffs-recent <db-path> [--project P] [--agent A] [--limit N]");

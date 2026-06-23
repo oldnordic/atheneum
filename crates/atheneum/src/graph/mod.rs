@@ -18,6 +18,8 @@ pub mod discovery;
 pub mod dream;
 pub mod embed;
 pub mod evidence;
+#[cfg(feature = "extract")]
+pub mod extract_decisions;
 pub mod extraction;
 pub mod handoff;
 mod hashing;
@@ -36,6 +38,8 @@ use cache::GraphRuntime;
 pub use cache::RuntimeStats;
 pub use chat::{ChatChainNode, ChatDecision, ChatDirection, ChatQuery, ChatReport, ChatTurn};
 pub use dream::{DreamConfig, DreamFinding, DreamMode, DreamPhase, DreamReport};
+#[cfg(feature = "extract")]
+pub use extract_decisions::{run_extract, ExtractConfig, ExtractStats};
 pub use navigation::{estimate_entity_tokens, truncate_subgraph};
 pub use planning::{KanbanStatus, KanbanUpdate};
 pub use types::ProvenanceData;

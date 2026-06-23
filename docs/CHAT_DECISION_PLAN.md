@@ -1,9 +1,11 @@
 # Chat Navigation + Decision Capture Plan
 
 **Status:** Implemented 2026-06-23 — Phases 1, 2, 3, 4, 5, 6 complete. Ships
-in atheneum 0.9.0 (Phase 5 ships as the `plugin/atheneum-decisions/` companion
-plugin). Builds on the session-digest plan (Phases 1–3 complete in atheneum
-0.8.0 / envoy 0.3.1).
+in atheneum 0.9.0. Phase 3 ships both the `~/.local/bin/extract-decisions`
+script (default) and a native `atheneum extract-decisions` subcommand behind
+the `extract` feature. Phase 5 ships as the `plugin/atheneum-decisions/`
+companion plugin. Builds on the session-digest plan (Phases 1–3 complete in
+atheneum 0.8.0 / envoy 0.3.1).
 
 **Goal:** make the Claude Code chat transcript queryable as a graph —
 token-budgeted, directional, SQL-filtered, paginated — and capture real
@@ -285,8 +287,13 @@ old transcripts — no model cooperation needed. Makes `--only-decisions` +
      `atheneum store-discovery <db> claude Decision <target> /tmp/dec.json
      --session <sid>`. `store_discovery` auto-links it into the thread
      (`caused_by` prior, `led_to` inverse) per Phase 2 of the session-digest plan.
-- Optional: `atheneum extract-decisions <db> --session <id> [--all]` subcommand
-  as a Rust port once the script proves the prompt/schema. (Defer; script first.)
+- `atheneum extract-decisions <db> [--all | <session-id>] [...]` subcommand
+  — the Rust port, implemented behind the `extract` feature (default off). Same
+  prompt/schema as the script, calls Ollama in-process (`ureq`), stores via
+  `graph.store_discovery` directly (no temp file / shell-out), and dedups with
+  the same `decision_exists`-equivalent check. The `~/.local/bin/extract-decisions`
+  script remains the default fallback (no special build needed); the native
+  subcommand is enabled with `--features extract` (or `--all-features`).
 
 **Decision schema (metadata JSON):**
 ```json

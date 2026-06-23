@@ -182,11 +182,16 @@ dedups on `(session_id, target, source, chosen)` via `store-discovery --dedup`
 (it has no stable transcript `sequence`); see MANUAL.md for the install
 command.
 
-`extract-decisions` (a `~/.local/bin` operator script, not an `atheneum`
-subcommand) is the one-shot LLM backfiller for decisions that lack a Tier-1
-structured signal — it shells out to `atheneum store-discovery`, so each
-extracted decision is linked into the session thread (`caused_by` / `led_to`)
-for free. `atheneum watch-decisions` is the always-on deterministic detector
+`extract-decisions` is the one-shot LLM backfiller for decisions that lack a
+Tier-1 structured signal. It ships two ways: a `~/.local/bin` operator script
+(the default, no special build needed) and a native `atheneum
+extract-decisions` subcommand (a Rust port, behind the `extract` feature —
+`--features extract` or `--all-features`). Both call a local Ollama LLM
+(default `qwen3.5`) over a transcript, extract decision-shaped turns, and
+store each as a `Decision` discovery (`source = "llm-extract"`) linked into
+the session thread (`caused_by` / `led_to`) for free — the script shells out to
+`atheneum store-discovery`, the subcommand stores in-process via
+`graph.store_discovery`. `atheneum watch-decisions` is the always-on deterministic detector
 (`--once` runs a single cold-cursor scan, safe for cron). The watcher is
 detect-only at the Tier-1 layer — the SessionStop `sync-claude-transcript`
 hook still owns full transcript ingest at session end. A `Decision` row
@@ -263,6 +268,7 @@ graph.link_wiki_to_symbols(
 | `default` | ✓ | Core graph, wiki, sessions, planning, search, thread — lexical (bag-of-tokens) search + BFS graph navigation |
 | `semantic-search` | — | HNSW vector index for `search` (opt-in; heavy — index + embedder). Off by default; lexical fallback + graph traversal suffice for `search`/`navigate`/`thread` |
 | `neural-embed` | — | Ollama neural embeddings (requires `ureq`, ollama + nomic-embed-text) |
+| `extract` | — | Native `atheneum extract-decisions` subcommand (Rust port of the operator script; requires `ureq`, ollama + an LLM, default `qwen3.5`) |
 | `web` | — | Web dashboard (axum + askama templates) |
 | `cli` | — | `atheneum` CLI binary |
 | `async` | — | Async runtime support |
@@ -300,6 +306,7 @@ QUERY & NAVIGATION:
   thread <db> <query> [--k N] [--depth D=3] [--tokens T=1500] [--project P] [--json]  Walk a decision chain (caused_by/led_to edges)
   chat <db> <session_id> [--tokens T] [--only-decisions] [--json]  Token-budgeted walk of a session's chat records (or just its decisions)
   watch-decisions <db> [--once] [--interval S=2] [--config-dir D]... [--project P] [--agent A] [--dry-run]  Live-tail transcripts, capture structured decisions
+  extract-decisions <db> [--all|<session-id>] [--dry-run] [--force] [--project P] [--agent A] [--model M] [--transcripts-dir D] [--max-chars N] [--ollama-url U] [--verbose]  LLM backfill of decisions (feature: extract)
   query-wiki <db> <path>                            Query a wiki page by path
   query-journal <db> <path>                         Query journal sections by path
   query-knowledge <db> <target> [--project P] [--max-tokens N]       Aggregated knowledge
