@@ -866,19 +866,24 @@ fn run() -> anyhow::Result<()> {
         }
         "discoveries-recent" => {
             if args.len() < 3 {
-                eprintln!("Usage: atheneum discoveries-recent <db-path> [--project P] [--agent A] [--limit N]");
+                eprintln!("Usage: atheneum discoveries-recent <db-path> [--project P] [--agent A] [--session ID] [--limit N]");
                 std::process::exit(1);
             }
             let db_path = PathBuf::from(&args[2]);
             let opts = parse_options(&args[3..])?;
             let limit = parse_i64_option(opts.limit.as_deref(), "limit")?.unwrap_or(20);
             let graph = AtheneumGraph::open(&db_path)?;
-            let discoveries =
-                graph.recent_discoveries(opts.project.as_deref(), opts.agent.as_deref(), limit)?;
+            let discoveries = graph.recent_discoveries(
+                opts.project.as_deref(),
+                opts.agent.as_deref(),
+                opts.session.as_deref(),
+                limit,
+            )?;
             print_json(json!({
                 "count": discoveries.len(),
                 "project": opts.project,
                 "agent": opts.agent,
+                "session": opts.session,
                 "discoveries": discoveries.iter().map(entity_to_json).collect::<Vec<_>>(),
             }))?;
         }

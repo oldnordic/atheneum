@@ -1,6 +1,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use rusqlite::params;
+use rusqlite::params_from_iter;
 use serde_json::{json, Value};
 use sqlitegraph::GraphEntity;
 
@@ -358,35 +359,46 @@ impl AtheneumGraph {
         &self,
         project_id: Option<&str>,
         agent: Option<&str>,
+        session_id: Option<&str>,
         limit: i64,
     ) -> Result<Vec<GraphEntity>> {
         let project_id = project_id.map(|s| s.to_string());
         let agent = agent.map(|s| s.to_string());
+        let session_id = session_id.map(|s| s.to_string());
 
         super::with_graph_conn(&self.inner, move |conn| {
+            // Build the WHERE clause with bare `?` placeholders only and bind
+            // params in order via `params_from_iter`. This avoids the fragile
+            // positional-index bookkeeping the old fixed-`?N` form required when
+            // adding a fourth optional filter (`session_id`).
             let mut sql = String::from(
                 "SELECT id, kind, name, file_path, data FROM graph_entities
-                 WHERE kind = ?1",
+                 WHERE kind = ?",
             );
-            if project_id.is_some() {
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(1 + 2 + 1 + 1);
+            params.push(Box::new(EntityType::Discovery.as_str().to_string()));
+            if let Some(pid) = &project_id {
+                // `project_id` OR `project` — same value bound twice.
                 sql.push_str(
-                    " AND (json_extract(data, '$.project_id') = ?2
-                           OR json_extract(data, '$.project') = ?2)",
+                    " AND (json_extract(data, '$.project_id') = ?
+                           OR json_extract(data, '$.project') = ?)",
                 );
+                params.push(Box::new(pid.clone()));
+                params.push(Box::new(pid.clone()));
             }
-            if agent.is_some() {
-                let idx = if project_id.is_some() { 3 } else { 2 };
-                sql.push_str(&format!(" AND json_extract(data, '$.agent') = ?{}", idx));
+            if let Some(agent) = &agent {
+                sql.push_str(" AND json_extract(data, '$.agent') = ?");
+                params.push(Box::new(agent.clone()));
             }
-            let limit_idx = match (project_id.is_some(), agent.is_some()) {
-                (false, false) => 2,
-                (true, false) | (false, true) => 3,
-                (true, true) => 4,
-            };
-            sql.push_str(&format!(" ORDER BY id DESC LIMIT ?{}", limit_idx));
+            if let Some(sid) = &session_id {
+                sql.push_str(" AND json_extract(data, '$.session_id') = ?");
+                params.push(Box::new(sid.clone()));
+            }
+            sql.push_str(" ORDER BY id DESC LIMIT ?");
+            params.push(Box::new(limit));
 
             let mut stmt = conn.prepare_cached(&sql)?;
-            let row_fn = |row: &rusqlite::Row<'_>| {
+            let rows = stmt.query_map(params_from_iter(params.iter()), |row| {
                 Ok(GraphEntity {
                     id: row.get(0)?,
                     kind: row.get(1)?,
@@ -395,25 +407,7 @@ impl AtheneumGraph {
                     data: serde_json::from_str(row.get_ref(4)?.as_str()?)
                         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
                 })
-            };
-
-            let rows = match (&project_id, &agent) {
-                (Some(project), Some(agent)) => stmt.query_map(
-                    params![EntityType::Discovery.as_str(), project, agent, limit],
-                    row_fn,
-                )?,
-                (Some(project), None) => stmt.query_map(
-                    params![EntityType::Discovery.as_str(), project, limit],
-                    row_fn,
-                )?,
-                (None, Some(agent)) => stmt.query_map(
-                    params![EntityType::Discovery.as_str(), agent, limit],
-                    row_fn,
-                )?,
-                (None, None) => {
-                    stmt.query_map(params![EntityType::Discovery.as_str(), limit], row_fn)?
-                }
-            };
+            })?;
 
             let mut out = Vec::new();
             for row in rows {

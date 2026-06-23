@@ -90,16 +90,72 @@ fn recent_discoveries_filters_by_project_and_agent() {
         .expect("store discovery");
 
     let envoy_only = graph
-        .recent_discoveries(Some("envoy"), None, 10)
+        .recent_discoveries(Some("envoy"), None, None, 10)
         .expect("recent discoveries");
     assert_eq!(envoy_only.len(), 2);
 
     let hermes_envoy = graph
-        .recent_discoveries(Some("envoy"), Some("hermes"), 10)
+        .recent_discoveries(Some("envoy"), Some("hermes"), None, 10)
         .expect("recent discoveries");
     assert_eq!(hermes_envoy.len(), 1);
     assert_eq!(hermes_envoy[0].data["agent"].as_str(), Some("hermes"));
     assert_eq!(hermes_envoy[0].data["project_id"].as_str(), Some("envoy"));
+}
+
+/// `recent_discoveries` session filter: `json_extract(data,'$.session_id')`.
+/// Backs the `discoveries-recent --session` flag used by the Phase-3 decision
+/// backfill idempotency pre-scan.
+#[test]
+fn recent_discoveries_filters_by_session() {
+    let dir = tempdir().expect("tempdir");
+    let db_path = dir.path().join("atheneum.db");
+    let graph = AtheneumGraph::open(&db_path).expect("open graph");
+
+    // Two discoveries in sess_a, one in sess_b — all project envoy.
+    graph
+        .store_discovery_in_project(
+            "claude",
+            "Decision",
+            "pick_a1",
+            Some("envoy"),
+            json!({"session_id": "sess_a", "sequence": 1}),
+        )
+        .expect("store a1");
+    graph
+        .store_discovery_in_project(
+            "claude",
+            "Decision",
+            "pick_a2",
+            Some("envoy"),
+            json!({"session_id": "sess_a", "sequence": 2}),
+        )
+        .expect("store a2");
+    graph
+        .store_discovery_in_project(
+            "claude",
+            "Decision",
+            "pick_b1",
+            Some("envoy"),
+            json!({"session_id": "sess_b", "sequence": 1}),
+        )
+        .expect("store b1");
+
+    let sess_a = graph
+        .recent_discoveries(None, None, Some("sess_a"), 100)
+        .expect("recent sess_a");
+    assert_eq!(sess_a.len(), 2, "only the two sess_a decisions");
+    assert!(sess_a.iter().all(|d| d.data["session_id"] == "sess_a"));
+
+    let sess_b = graph
+        .recent_discoveries(None, None, Some("sess_b"), 100)
+        .expect("recent sess_b");
+    assert_eq!(sess_b.len(), 1);
+    assert_eq!(sess_b[0].data["target"].as_str(), Some("pick_b1"));
+
+    let none = graph
+        .recent_discoveries(None, None, Some("sess_missing"), 100)
+        .expect("recent missing");
+    assert!(none.is_empty(), "unknown session -> empty, not error");
 }
 
 #[test]
