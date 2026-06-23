@@ -22,3 +22,6 @@ Cargo.lock
 
 # Magellan
 .magellan/
+
+# Local agent hooks/scripts (machine-specific, not published)
+.claude/

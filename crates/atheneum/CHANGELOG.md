@@ -62,6 +62,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entity's name. `--json` is unchanged. Previously the renderer printed a
   flat id-ordered list with a `_N chain edge(s)_` footer, so the chain
   structure and rationale were invisible.
+- **Repo no longer publishes machine-specific `.claude/` shims.** The three
+  repo-local wrapper scripts (`.claude/hooks/verify-rust.fish`,
+  `.claude/hooks/pre-commit-rust-standards`, `.claude/scripts/quality-gate.sh`)
+  were personal delegates into `/home/<user>/Projects/.claude/...` with no
+  portable target. They are untracked and `.claude/` is gitignored, so the
+  public repo no longer exposes a developer's home paths. The `MANUAL.md`
+  maintainer checklist now points at the published `cargo fmt / clippy / test`
+  gate instead. The `plugin/atheneum-decisions/` companion plugin was already
+  portable (`${CLAUDE_PLUGIN_ROOT}`, `$ATHENEUM_DB`, `$HOME`,
+  `$CLAUDE_CODE_SESSION_ID`) and ships unchanged.
 
 ### Fixed
 
