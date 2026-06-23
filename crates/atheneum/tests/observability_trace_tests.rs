@@ -90,12 +90,12 @@ fn recent_discoveries_filters_by_project_and_agent() {
         .expect("store discovery");
 
     let envoy_only = graph
-        .recent_discoveries(Some("envoy"), None, None, 10)
+        .recent_discoveries(Some("envoy"), None, None, None, 10)
         .expect("recent discoveries");
     assert_eq!(envoy_only.len(), 2);
 
     let hermes_envoy = graph
-        .recent_discoveries(Some("envoy"), Some("hermes"), None, 10)
+        .recent_discoveries(Some("envoy"), Some("hermes"), None, None, 10)
         .expect("recent discoveries");
     assert_eq!(hermes_envoy.len(), 1);
     assert_eq!(hermes_envoy[0].data["agent"].as_str(), Some("hermes"));
@@ -141,21 +141,89 @@ fn recent_discoveries_filters_by_session() {
         .expect("store b1");
 
     let sess_a = graph
-        .recent_discoveries(None, None, Some("sess_a"), 100)
+        .recent_discoveries(None, None, Some("sess_a"), None, 100)
         .expect("recent sess_a");
     assert_eq!(sess_a.len(), 2, "only the two sess_a decisions");
     assert!(sess_a.iter().all(|d| d.data["session_id"] == "sess_a"));
 
     let sess_b = graph
-        .recent_discoveries(None, None, Some("sess_b"), 100)
+        .recent_discoveries(None, None, Some("sess_b"), None, 100)
         .expect("recent sess_b");
     assert_eq!(sess_b.len(), 1);
     assert_eq!(sess_b[0].data["target"].as_str(), Some("pick_b1"));
 
     let none = graph
-        .recent_discoveries(None, None, Some("sess_missing"), 100)
+        .recent_discoveries(None, None, Some("sess_missing"), None, 100)
         .expect("recent missing");
     assert!(none.is_empty(), "unknown session -> empty, not error");
+}
+
+#[test]
+fn recent_discoveries_filter_by_discovery_type() {
+    // The `--type` / `discovery_type` filter narrows to one discovery_type and
+    // combines with the session filter. Three Decisions across sess_a/sess_b
+    // plus one Bug; `Decision` + no session = 3, `Decision` + sess_a = 2,
+    // `Bug` = 1, an absent type = 0.
+    let dir = tempdir().expect("tempdir");
+    let db_path = dir.path().join("atheneum.db");
+    let graph = AtheneumGraph::open(&db_path).expect("open graph");
+
+    graph
+        .store_discovery_in_project(
+            "claude",
+            "Decision",
+            "pick_a1",
+            Some("envoy"),
+            json!({"session_id": "sess_a", "sequence": 1}),
+        )
+        .expect("store a1");
+    graph
+        .store_discovery_in_project(
+            "claude",
+            "Decision",
+            "pick_a2",
+            Some("envoy"),
+            json!({"session_id": "sess_a", "sequence": 2}),
+        )
+        .expect("store a2");
+    graph
+        .store_discovery_in_project(
+            "claude",
+            "Decision",
+            "pick_b1",
+            Some("envoy"),
+            json!({"session_id": "sess_b", "sequence": 1}),
+        )
+        .expect("store b1");
+    graph
+        .store_discovery_in_project(
+            "claude",
+            "Bug",
+            "bug_x",
+            Some("envoy"),
+            json!({"session_id": "sess_b", "sequence": 2}),
+        )
+        .expect("store bug");
+
+    let decisions = graph
+        .recent_discoveries(None, None, None, Some("Decision"), 100)
+        .expect("recent decisions");
+    assert_eq!(decisions.len(), 3, "all three Decisions, no the Bug");
+
+    let sess_a_decisions = graph
+        .recent_discoveries(None, None, Some("sess_a"), Some("Decision"), 100)
+        .expect("recent sess_a decisions");
+    assert_eq!(sess_a_decisions.len(), 2, "type + session combine");
+
+    let bugs = graph
+        .recent_discoveries(None, None, None, Some("Bug"), 100)
+        .expect("recent bugs");
+    assert_eq!(bugs.len(), 1);
+
+    let absent = graph
+        .recent_discoveries(None, None, None, Some("Invariant"), 100)
+        .expect("recent absent type");
+    assert!(absent.is_empty(), "unknown type -> empty, not error");
 }
 
 #[test]
@@ -444,6 +512,101 @@ fn session_digest_computes_activity_and_surfaces_decisions() {
     assert_eq!(sessions[0]["file_writes"], json!(2));
     assert_eq!(sessions[0]["tool"], json!("claude-code"));
     assert_eq!(sessions[0]["tool"].as_str().unwrap(), "claude-code");
+}
+
+/// The digest's `decisions` block surfaces `Decision` discoveries from every
+/// capture source — filtered to `discovery_type = 'Decision'` and labeled with
+/// the capture `source` — without dropping the existing `discoveries` block.
+/// A non-Decision discovery (Bug) must NOT appear in the decisions block.
+#[test]
+fn session_digest_surfaces_structured_decisions_with_source() {
+    let dir = tempdir().expect("tempdir");
+    let db_path = dir.path().join("atheneum.db");
+    let graph = AtheneumGraph::open(&db_path).expect("open graph");
+
+    let session_id = "digest-dec-sess".to_string();
+    graph
+        .record_session(SessionParams {
+            session_id: session_id.clone(),
+            agent_name: "claude".to_string(),
+            project: "atheneum".to_string(),
+            tool: "claude-code".to_string(),
+            trigger: "cli".to_string(),
+            model: None,
+            git_branch: Some("main".to_string()),
+            git_head: None,
+            parent_session_id: None,
+            relations: vec![],
+        })
+        .expect("record session");
+
+    // A live-watcher AskUserQuestion decision with structured fields.
+    graph
+        .store_discovery(
+            "claude",
+            "Decision",
+            "Index",
+            json!({
+                "session_id": session_id,
+                "project_id": "atheneum",
+                "source": "askuser",
+                "chosen": "HNSW",
+                "alternatives": ["HNSW", "brute"],
+                "rationale": "fast ANN",
+                "sequence": 1,
+            }),
+        )
+        .expect("store askuser decision");
+    // A Bug in the same session — must surface in `discoveries` but NOT in
+    // `decisions` (the decisions block is Decision-only).
+    graph
+        .store_discovery(
+            "claude",
+            "Bug",
+            "query_sessions",
+            json!({
+                "session_id": session_id,
+                "project_id": "atheneum",
+                "summary": "anonymous ? params",
+            }),
+        )
+        .expect("store bug");
+
+    let text = graph
+        .compose_digest(Some("atheneum"), 3, 800)
+        .expect("compose digest");
+
+    // Decision block: chosen label + source tag + rationale.
+    assert!(
+        text.contains("decision: HNSW [askuser] — fast ANN"),
+        "structured decision with source: {}",
+        text
+    );
+    // The Bug appears in the discoveries block, not the decisions block.
+    assert!(
+        text.contains("discovery: query_sessions [Bug]"),
+        "bug still in discoveries: {}",
+        text
+    );
+    // No fabricated "decision:" line for the Bug.
+    assert!(
+        !text.contains("decision: query_sessions"),
+        "bug must not leak into decisions block: {}",
+        text
+    );
+
+    // --json: the decisions array carries source/chosen/rationale.
+    let value = graph
+        .compose_digest_json(Some("atheneum"), 3)
+        .expect("compose digest json");
+    let decisions = value["sessions"][0]["decisions"]
+        .as_array()
+        .expect("decisions array");
+    assert_eq!(decisions.len(), 1, "only the Decision, not the Bug");
+    assert_eq!(decisions[0]["target"], json!("Index"));
+    assert_eq!(decisions[0]["source"], json!("askuser"));
+    assert_eq!(decisions[0]["chosen"], json!("HNSW"));
+    assert_eq!(decisions[0]["rationale"], json!("fast ANN"));
 }
 
 #[test]

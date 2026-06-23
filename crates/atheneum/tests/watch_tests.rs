@@ -66,7 +66,7 @@ fn run_once(db: &Path, config_dir: &Path) -> atheneum::graph::WatchStats {
 fn decision_rows(db: &Path, session_id: &str) -> Vec<Value> {
     let graph = AtheneumGraph::open(db).unwrap();
     let rows = graph
-        .recent_discoveries(None, None, Some(session_id), 1000)
+        .recent_discoveries(None, None, Some(session_id), None, 1000)
         .unwrap();
     rows.into_iter().map(|e| e.data).collect::<Vec<_>>()
 }
@@ -290,7 +290,7 @@ fn decisions_are_session_scoped() {
     // A different session_id filter returns nothing.
     let graph = AtheneumGraph::open(&db).unwrap();
     let other = graph
-        .recent_discoveries(None, None, Some("sess_other"), 1000)
+        .recent_discoveries(None, None, Some("sess_other"), None, 1000)
         .unwrap();
     assert!(other.is_empty());
 }

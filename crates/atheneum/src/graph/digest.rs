@@ -48,6 +48,20 @@ struct DigestDiscovery {
     summary: Option<String>,
 }
 
+/// One `Decision` discovery attributed to a session, surfaced separately so
+/// the digest reliably shows the session's structured decisions (from any
+/// capture source) rather than only the most recent discoveries of any type.
+/// `source` is the capture layer (`askuser` / `exitplan` / `taskcreate` /
+/// `todowrite` for the live watcher, `llm-extract` for the post-hoc
+/// extractor, `NULL` for a manual `store_discovery`).
+#[derive(Debug, serde::Serialize)]
+struct DigestDecision {
+    target: String,
+    source: Option<String>,
+    chosen: Option<String>,
+    rationale: Option<String>,
+}
+
 /// Per-session block in the digest.
 #[derive(Debug, serde::Serialize)]
 struct DigestSession {
@@ -66,6 +80,7 @@ struct DigestSession {
     last_tool_summary: Option<String>,
     reasoning: Vec<DigestReasoning>,
     discoveries: Vec<DigestDiscovery>,
+    decisions: Vec<DigestDecision>,
 }
 
 /// One project-scoped memory entry.
@@ -280,6 +295,34 @@ impl AtheneumGraph {
             for row in rows {
                 discoveries.push(row?);
             }
+            drop(stmt);
+
+            // Structured `Decision` rows for this session — filtered to
+            // `discovery_type = 'Decision'` and labeled with their capture
+            // `source` so the digest surfaces decisions from every layer
+            // (live watcher, backfiller, manual) rather than only the most
+            // recent discoveries of any type.
+            let mut decisions = Vec::new();
+            let mut stmt = conn.prepare(
+                "SELECT target,
+                        json_extract(metadata, '$.source'),
+                        json_extract(metadata, '$.chosen'),
+                        json_extract(metadata, '$.rationale')
+                 FROM discoveries
+                 WHERE session_id = ?1 AND discovery_type = 'Decision'
+                 ORDER BY id DESC LIMIT 5",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+                Ok(DigestDecision {
+                    target: row.get(0)?,
+                    source: row.get(1)?,
+                    chosen: row.get(2)?,
+                    rationale: row.get(3)?,
+                })
+            })?;
+            for row in rows {
+                decisions.push(row?);
+            }
 
             Ok::<SessionDetail, anyhow::Error>(SessionDetail {
                 computed_tool_calls,
@@ -287,6 +330,7 @@ impl AtheneumGraph {
                 top_files,
                 reasoning,
                 discoveries,
+                decisions,
             })
         })?;
 
@@ -310,6 +354,7 @@ impl AtheneumGraph {
             last_tool_summary: s.last_tool_summary.clone(),
             reasoning: detail.reasoning,
             discoveries: detail.discoveries,
+            decisions: detail.decisions,
         })
     }
 
@@ -402,6 +447,7 @@ struct SessionDetail {
     top_files: Vec<FileAccess>,
     reasoning: Vec<DigestReasoning>,
     discoveries: Vec<DigestDiscovery>,
+    decisions: Vec<DigestDecision>,
 }
 
 fn short_id(session_id: &str) -> String {
@@ -576,6 +622,25 @@ fn render_session_block(s: &DigestSession) -> String {
             d.target, d.discovery_type, summary
         ));
     }
+    for d in &s.decisions {
+        // `chosen` is the most useful one-line signal for a decision; fall
+        // back to the target if it is absent (e.g. a manual store_discovery
+        // with no structured fields). `source` names the capture layer.
+        let head = d.chosen.as_deref().unwrap_or(&d.target);
+        let src = d.source.as_deref().unwrap_or("manual");
+        let tail = d
+            .rationale
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(|s| format!(" — {}", truncate_summary(s, 100)))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "  decision: {} [{}]{}\n",
+            truncate_summary(head, 120),
+            src,
+            tail,
+        ));
+    }
     out
 }
 
@@ -688,6 +753,7 @@ mod tests {
                 summary: "decided X".into(),
             }],
             discoveries: vec![],
+            decisions: vec![],
         };
         let report = DigestReport {
             project: Some("p".into()),

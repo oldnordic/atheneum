@@ -9,6 +9,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.9.0] — 2026-06-23
+
+Implements the chat-decision plan (decision capture from Claude Code chat
+transcripts): schema v12 adds generated columns + an FTS5 index over chat
+content so navigation queries are cheap; the `chat` command navigates that
+content; `extract-decisions` + the live `watch-decisions` watcher convert the
+structured-choice signals in transcripts (`AskUserQuestion`, `ExitPlanMode`,
+`TaskCreate`, `TodoWrite`) into real `Decision` discovery rows. Schema
+migration v12 (additive — new generated columns + triggers + FTS) is a minor
+bump; no insert-path changes and no breaking API removal.
+
+### Added
+
+- **Schema migration v12 `chat-columns-fts`** — four `VIRTUAL` generated
+  columns over `graph_entities` (`session_id`, `sequence`, `role`,
+  `content_text`) extracted from the chat-content JSON, two covering indexes
+  (`idx_entities_session_seq`, `idx_entities_session_role_seq`), and an
+  `entity_fts` FTS5 external-content table over those columns with four
+  `AFTER INSERT/UPDATE/DELETE` sync triggers. `--search` no longer full-scans
+  + `json_extract`s; it hits the generated columns + FTS5. Foundation for the
+  `chat` command.
+- **`chat` command — token-budgeted chat navigation.** `atheneum chat <db>
+  <session_id> [--tokens T] [--only-decisions] [--json]` walks a session's
+  records in `sequence` order, emitting `role` + a content snippet per record
+  and bounding output to a token budget. `--only-decisions` narrows the walk
+  to the `Decision` discovery rows attached to that session (from any source —
+  transcript extract, watcher, or manual `store_discovery`), deduped by
+  `session_id`+`sequence`+`target`+`source`.
+- **`extract-decisions` operator script — backfill structured decisions from
+  transcripts.** A standalone `~/.local/bin/extract-decisions` script (reusing
+  the `dream` + `remember-to-atheneum` pattern) runs a local LLM (Ollama
+  `qwen3.5` by default) over each Claude Code transcript, extracts
+  decision-shaped turns, and stores each as a `Decision` discovery
+  (`source = "llm-extract"`, with `chosen` / `alternatives` / `rationale` /
+  `sequence`) via `atheneum store-discovery` — so each is linked into the
+  session thread. Covers decisions that lack a Tier-1 structured signal.
+  Resumable (`--all` skips sessions already having an `llm-extract`
+  Decision), `--dry-run` for review, `--force` to re-extract. Hallucination
+  guard rejects entries without a real alphabetic `target`/`chosen`/
+  `rationale`. Not an `atheneum` subcommand; the Rust port is deferred per
+  the plan.
+- **`watch-decisions` command — live structured-decision capture.** `atheneum
+  watch-decisions <db> [--once] [--interval S=2] [--config-dir D]...
+  [--project P] [--agent A] [--dry-run]`. Tails the same transcript files in a
+  loop, detecting the same Tier-1 signals and storing `Decision` rows in real
+  time. In-memory per-file cursor (offset/inode/mtime) with partial-line
+  tolerance (a half-written final line is re-read next scan, never fabricated
+  into a decision). `--once` runs a single scan with a cold cursor — safe for
+  cron; relies on `decision_exists` dedup as the cross-invocation safety net.
+  Detect-only by design; the SessionStop `sync-claude-transcript` hook still
+  owns full ingest at session end.
+- **`decision_exists` graph method** — indexed dedup lookup on the
+  `discoveries` table (`session_id` + `target` + `discovery_type='Decision'`
+  + `source` + `sequence` via `json_extract`), so both the backfiller and the
+  watcher skip already-captured decisions without a graph full-scan.
+- **`recent_discoveries` `--session` + `--type` filters.**
+  `recent_discoveries(project_id, agent, session_id, discovery_type, limit)`
+  accepts a session id and a discovery-type filter (e.g. `"Decision"`), both
+  applied as `json_extract` predicates over the discovery `data` JSON, and
+  `atheneum discoveries-recent` exposes `--session <id>` and `--type <T>` so
+  `chat --only-decisions` and the watcher's session scope are observable. The
+  `discoveries` table also carries `session_id` + `discovery_type` columns
+  with indexes (v11 / v3), used by `decision_exists` for indexed dedup.
+- **`session-digest` surfaces a dedicated `decisions` block.** Each
+  session's digest now lists its `Decision` discoveries (filtered to
+  `discovery_type = 'Decision'`, limited to 5) labeled with the capture
+  `source` (`askuser` / `exitplan` / `taskcreate` / `todowrite` /
+  `llm-extract`, or `manual`), so decisions from every layer appear
+  together. The existing `discoveries` block (recent discoveries of any
+  type) is preserved — the decisions block is additive.
+
+### Fixed
+
+- **`recent_discoveries` accepts a `session_id` filter.** The query now
+  narrows to discoveries attributed to a session (via `json_extract` on the
+  `data` JSON), so `chat --only-decisions` and the watcher's session scope
+  are observable from the CLI.
+
 ## [0.8.0] — 2026-06-22
 
 Consolidates the session-digest plan Phases 1–3 (session-digest composer,

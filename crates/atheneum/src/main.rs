@@ -866,17 +866,20 @@ fn run() -> anyhow::Result<()> {
         }
         "discoveries-recent" => {
             if args.len() < 3 {
-                eprintln!("Usage: atheneum discoveries-recent <db-path> [--project P] [--agent A] [--session ID] [--limit N]");
+                eprintln!("Usage: atheneum discoveries-recent <db-path> [--project P] [--agent A] [--session ID] [--type T] [--limit N]");
                 std::process::exit(1);
             }
             let db_path = PathBuf::from(&args[2]);
             let opts = parse_options(&args[3..])?;
             let limit = parse_i64_option(opts.limit.as_deref(), "limit")?.unwrap_or(20);
             let graph = AtheneumGraph::open(&db_path)?;
+            // `--type` is the shared type-filter slot (`opts.event_type`); for
+            // discoveries-recent it selects a `discovery_type` (e.g. `Decision`).
             let discoveries = graph.recent_discoveries(
                 opts.project.as_deref(),
                 opts.agent.as_deref(),
                 opts.session.as_deref(),
+                opts.event_type.as_deref(),
                 limit,
             )?;
             print_json(json!({
@@ -884,6 +887,7 @@ fn run() -> anyhow::Result<()> {
                 "project": opts.project,
                 "agent": opts.agent,
                 "session": opts.session,
+                "type": opts.event_type,
                 "discoveries": discoveries.iter().map(entity_to_json).collect::<Vec<_>>(),
             }))?;
         }
@@ -1393,7 +1397,7 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     )?;
     writeln!(
         writer,
-        "  discoveries-recent <db-path> [--project P] [--agent A] [--limit N]  Recent discoveries"
+        "  discoveries-recent <db-path> [--project P] [--agent A] [--session S] [--type T] [--limit N]  Recent discoveries (filter by session and/or discovery type)"
     )?;
     writeln!(
         writer,

@@ -9,6 +9,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.9.0] — 2026-06-23
+
+Implements the chat-decision plan (decision capture from Claude Code chat
+transcripts). Schema v12 is additive (new generated columns + triggers + an
+FTS5 table), so no insert-path changes and no breaking API removal — a minor
+bump.
+
+### Added
+
+- **Schema migration v12 `chat-columns-fts`** (`graph::db::chat`): four
+  `VIRTUAL` generated columns over `graph_entities` (`session_id`,
+  `sequence`, `role`, `content_text`) extracted from the chat-content JSON,
+  two covering indexes (`idx_entities_session_seq`,
+  `idx_entities_session_role_seq`), and an `entity_fts` FTS5 external-content
+  table over those columns with four `AFTER INSERT/UPDATE/DELETE` sync
+  triggers. Registered in `graph::db::MIGRATIONS`.
+- **`chat` command — token-budgeted chat navigation.** `atheneum chat <db>
+  <session_id> [--tokens T] [--only-decisions] [--json]` walks a session's
+  records in `sequence` order, emitting `role` + a content snippet per record
+  and bounding output to a token budget. `--only-decisions` narrows the walk
+  to the session's `Decision` discovery rows (any source), deduped by
+  `session_id`+`sequence`+`target`+`source`.
+- **`extract-decisions` operator script — backfill structured decisions
+  from transcripts.** A standalone `~/.local/bin/extract-decisions` script
+  runs a local LLM (Ollama `qwen3.5` by default) over each Claude Code
+  transcript, extracts decision-shaped turns, and stores each as a `Decision`
+  discovery (`source = "llm-extract"`, with `chosen` / `alternatives` /
+  `rationale` / `sequence`) via `atheneum store-discovery` — so each is
+  linked into the session thread. Resumable (`--all` skips sessions already
+  having an `llm-extract` Decision), `--dry-run`, `--force`. Hallucination
+  guard rejects entries without a real alphabetic `target`/`chosen`/
+  `rationale`. Not an `atheneum` subcommand; the Rust port is deferred per
+  the plan.
+- **`watch-decisions` command + `graph::watch` — live structured-decision
+  capture.** `atheneum watch-decisions <db> [--once] [--interval S=2]
+  [--config-dir D]... [--project P] [--agent A] [--dry-run]` tails transcript
+  files in a loop and stores `Decision` rows in real time. In-memory
+  per-file cursor (offset/inode/mtime) with partial-line tolerance (a
+  half-written final line is re-read next scan, never fabricated).
+  `--once` runs a single cold-cursor scan — safe for cron; `decision_exists`
+  dedup is the cross-invocation safety net. Detect-only; the SessionStop
+  `sync-claude-transcript` hook owns full ingest at session end.
+- **`decision_exists` graph method** (`graph::discovery`): indexed dedup
+  lookup on the `discoveries` table so the backfiller and watcher skip
+  already-captured decisions without a graph full-scan.
+- **`recent_discoveries` `--session` + `--type` filters.**
+  `recent_discoveries(project_id, agent, session_id, discovery_type, limit)`
+  accepts a session id and a discovery-type filter (e.g. `"Decision"`), both
+  applied as `json_extract` predicates over the discovery `data` JSON, and
+  `atheneum discoveries-recent` exposes `--session <id>` and `--type <T>`.
+  The `discoveries` table also carries `session_id` + `discovery_type`
+  columns with indexes (v11 / v3), used by `decision_exists` for indexed
+  dedup.
+- **`session-digest` surfaces a dedicated `decisions` block.** Each
+  session's digest lists its `Decision` discoveries (filtered to
+  `discovery_type = 'Decision'`, limited to 5) labeled with the capture
+  `source`. The existing `discoveries` block is preserved — the decisions
+  block is additive.
+
+### Fixed
+
+- **`recent_discoveries` accepts a `session_id` filter.** The query narrows
+  to discoveries attributed to a session (via `json_extract` on the `data`
+  JSON), so `chat --only-decisions` and the watcher's session scope are
+  observable from the CLI.
+
 ## [0.8.0] — 2026-06-22
 
 Consolidates the session-digest plan Phases 1–2 (session-digest composer,

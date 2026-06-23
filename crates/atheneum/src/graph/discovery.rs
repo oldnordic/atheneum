@@ -360,22 +360,24 @@ impl AtheneumGraph {
         project_id: Option<&str>,
         agent: Option<&str>,
         session_id: Option<&str>,
+        discovery_type: Option<&str>,
         limit: i64,
     ) -> Result<Vec<GraphEntity>> {
         let project_id = project_id.map(|s| s.to_string());
         let agent = agent.map(|s| s.to_string());
         let session_id = session_id.map(|s| s.to_string());
+        let discovery_type = discovery_type.map(|s| s.to_string());
 
         super::with_graph_conn(&self.inner, move |conn| {
             // Build the WHERE clause with bare `?` placeholders only and bind
             // params in order via `params_from_iter`. This avoids the fragile
             // positional-index bookkeeping the old fixed-`?N` form required when
-            // adding a fourth optional filter (`session_id`).
+            // adding optional filters (`session_id`, `discovery_type`).
             let mut sql = String::from(
                 "SELECT id, kind, name, file_path, data FROM graph_entities
                  WHERE kind = ?",
             );
-            let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(1 + 2 + 1 + 1);
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(1 + 2 + 1 + 1 + 1);
             params.push(Box::new(EntityType::Discovery.as_str().to_string()));
             if let Some(pid) = &project_id {
                 // `project_id` OR `project` — same value bound twice.
@@ -393,6 +395,10 @@ impl AtheneumGraph {
             if let Some(sid) = &session_id {
                 sql.push_str(" AND json_extract(data, '$.session_id') = ?");
                 params.push(Box::new(sid.clone()));
+            }
+            if let Some(dty) = &discovery_type {
+                sql.push_str(" AND json_extract(data, '$.discovery_type') = ?");
+                params.push(Box::new(dty.clone()));
             }
             sql.push_str(" ORDER BY id DESC LIMIT ?");
             params.push(Box::new(limit));

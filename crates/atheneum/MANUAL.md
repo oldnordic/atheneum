@@ -429,6 +429,131 @@ atheneum navigate ./atheneum.db timezone --kind memories
 
 ---
 
+## Decision Capture from Chat Transcripts
+
+Claude Code chat transcripts (`~/.claude/projects/*/*.jsonl`) carry the
+structured-choice signals that are genuinely *decisions* — `AskUserQuestion`
+(a human-answered choice), `ExitPlanMode` (a plan approved for execution),
+`TaskCreate`, and `TodoWrite`. Atheneum captures those as first-class
+`Decision` discoveries so the graph holds the decision chain, not just the
+chat text. Three commands, one capture model.
+
+### Capture model
+
+Each captured decision is stored with `discovery_type = "Decision"` and a
+metadata block carrying the structured fields:
+
+| Field | Meaning |
+|-------|---------|
+| `source` | Which signal produced it: `askuser`, `exitplan`, `taskcreate`, `todowrite` (live watcher / backfiller), or `llm-extract` (post-hoc LLM extractor) |
+| `chosen` | The selected option / approved plan / created task subject |
+| `alternatives` | The options that were not chosen (AskUserQuestion labels, ExitPlanMode `allowedPrompts`, etc.) |
+| `rationale` | Why — the chosen option's description, the task description, or the LLM extractor's reasoning |
+| `sequence` | The tool-call sequence number within the session, for ordering |
+| `session_id` | The transcript session (file stem) the decision belongs to |
+
+**Dedup key:** `session_id` + `sequence` + `target` + `source`. Both the
+live watcher and the backfiller call `decision_exists` before insert, so a
+decision is captured once even if the same transcript is scanned repeatedly.
+A decision captured live (`source = "askuser"`) and re-extracted post-hoc
+(`source = "llm-extract"`) is intentionally *not* collapsed — that
+cross-layer double is the documented tradeoff, because the two layers have
+different fidelity and you may want both records.
+
+### `chat` — token-budgeted chat navigation
+
+`atheneum chat <db> <session_id>` walks a session's records in `sequence`
+order, emitting `role` + a content snippet per record and bounding output to
+a token budget. `--only-decisions` narrows the walk to the session's
+`Decision` discoveries (from any source), deduped by the capture key.
+
+```bash
+# Full session walk, bounded to ~2k tokens
+atheneum chat ./atheneum.db abc-123 --tokens 2000
+
+# Just the structured decisions captured for that session
+atheneum chat ./atheneum.db abc-123 --only-decisions --json
+```
+
+### `extract-decisions` — one-shot LLM backfill (operator script)
+
+`extract-decisions` is a standalone operator script (`~/.local/bin/`,
+reusing the `dream` + `remember-to-atheneum` pattern), **not** an `atheneum`
+subcommand. It runs a local LLM (Ollama `qwen3.5` by default) over a
+session's transcript, extracts decision-shaped turns from assistant `text`
++ `thinking` blocks, and stores each via `atheneum store-discovery` — so
+each extracted decision is linked into the session thread (`caused_by` /
+`led_to`) for free. It covers the decisions that *lack* a Tier-1 structured
+signal (the watcher catches those deterministically). No cloud / Claude API
+calls.
+
+```bash
+# One session, store
+extract-decisions <session-id>
+
+# Every transcript, resumable (skips sessions that already have an
+# llm-extract Decision); --force re-extracts a session
+extract-decisions --all
+extract-decisions --all --force --project atheneum
+
+# Preview only, store nothing
+extract-decisions <session-id> --dry-run
+extract-decisions --all --dry-run
+```
+
+Options: `--db PATH` (default `$ATHENEUM_DB` or
+`~/.magellan/atheneum/atheneum.db`), `--project NAME`, `--agent NAME`
+(default `claude`), `--model NAME` (default `qwen3.5`), `--transcripts-dir`,
+`--max-chars N` (per-chunk cap, default 20000), `--force`, `--verbose`.
+
+**Hallucination guard:** a decision is accepted only if `target`, `chosen`,
+and `rationale` each contain a real alphabetic token (≥3 chars), rejecting
+placeholder fill. **Idempotency:** extraction is non-deterministic, so a
+store-mode run skips any session that already has an `llm-extract` Decision
+(pre-scan via `atheneum discoveries-recent --session <sid>`); re-running is a
+no-op and `--all` is resumable. Run `--dry-run` before `--all`.
+
+### `watch-decisions` — live capture
+
+Tails the same transcript files in a loop and stores `Decision` rows in real
+time. In-memory per-file cursor (offset / inode / mtime); a half-written
+final line is re-read on the next scan, never fabricated into a decision.
+
+```bash
+# Always-on, 2s poll (the shipped systemd unit)
+atheneum watch-decisions ./atheneum.db --interval 2 --project atheneum
+
+# Single cold-cursor scan — safe for cron; decision_exists dedup is the
+# cross-invocation safety net because each --once call re-reads the file
+atheneum watch-decisions ./atheneum.db --once --project atheneum
+```
+
+The watcher is **detect-only** at the Tier-1 layer. The SessionStop
+`sync-claude-transcript` hook still owns full transcript ingest (prompt
+summaries, tool-call evidence, accessed-file edges) at session end — the
+watcher adds the structured-decision layer on top, it does not replace
+ingest. A standalone `atheneum-decision-watcher.service` systemd unit ships
+the always-on path; it opens the same WAL-mode DB as envoy with a
+`busy_timeout`, so concurrent reads and the watcher's append-only writes do
+not contend.
+
+### Observing captured decisions
+
+```bash
+# Decisions for one session (any source)
+atheneum discoveries-recent ./atheneum.db --session abc-123 --type Decision --limit 50
+
+# All decisions across the project
+atheneum discoveries-recent ./atheneum.db --project atheneum --type Decision
+```
+
+`session-digest` surfaces decisions from all sources — the digest's decision
+section filters on `discovery_type = 'Decision'` and labels each with its
+`source`, so live-watcher, backfiller, and manual `store_discovery` rows
+appear together.
+
+---
+
 ## Knowledge Graph
 
 ```rust

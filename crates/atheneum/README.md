@@ -139,6 +139,52 @@ and truncates to a token budget. `--json` emits the structured report.
 atheneum session-digest ./atheneum.db --project envoy --last 3 --tokens 500
 ```
 
+### Decision Capture
+
+Claude Code chat transcripts carry the structured-choice signals that are
+genuinely *decisions* — `AskUserQuestion` (a human-answered choice),
+`ExitPlanMode` (a plan approved for execution), `TaskCreate`, and `TodoWrite`.
+Atheneum captures those as first-class `Decision` discovery rows so the
+graph holds the decision chain, not just the chat text.
+
+**Model:** each captured decision stores `source` (`askuser` / `exitplan` /
+`taskcreate` / `todowrite`), `chosen`, `alternatives`, and `rationale` in the
+discovery metadata, scoped to the session that made it. Dedup key is
+`session_id` + `sequence` + `target` + `source`, so a decision is captured
+once even if the same transcript is scanned repeatedly.
+
+Three layers, one shape:
+
+```bash
+# Backfill: a standalone operator script runs a local LLM (Ollama qwen3.5)
+# over each transcript and stores decision-shaped turns via `atheneum
+# store-discovery`. One session, or --all (resumable).
+extract-decisions <session-id>                 # one session, store
+extract-decisions --all                       # every transcript (resumable)
+extract-decisions --all --dry-run             # preview everything, store none
+extract-decisions <session-id> --model qwen3.5 --project atheneum
+
+# Live: the atheneum watcher tails transcripts in a loop, captures the
+# Tier-1 structured signals deterministically (no LLM).
+atheneum watch-decisions ./atheneum.db --interval 2 --project atheneum
+
+# Observe: the decisions captured for a session (any source)
+atheneum chat ./atheneum.db <session_id> --only-decisions
+atheneum discoveries-recent ./atheneum.db --session <session_id> --type Decision --limit 50
+```
+
+`extract-decisions` (a `~/.local/bin` operator script, not an `atheneum`
+subcommand) is the one-shot LLM backfiller for decisions that lack a Tier-1
+structured signal — it shells out to `atheneum store-discovery`, so each
+extracted decision is linked into the session thread (`caused_by` / `led_to`)
+for free. `atheneum watch-decisions` is the always-on deterministic detector
+(`--once` runs a single cold-cursor scan, safe for cron). The watcher is
+detect-only at the Tier-1 layer — the SessionStop `sync-claude-transcript`
+hook still owns full transcript ingest at session end. A `Decision` row
+from any source (backfill script, watcher, or manual `store_discovery`) is
+visible to `chat --only-decisions` and `session-digest`, deduped across
+sources by the same key.
+
 ## HopGraph
 
 HopGraph is atheneum's retrieval model: **embeddings find the door, graph walk retrieves the room.**
@@ -243,6 +289,8 @@ QUERY & NAVIGATION:
   search <db> <query> [--k N] [--project P] [--max-tokens N]         Lexical search (HNSW with --features semantic-search)
   navigate <db> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N]  Search then walk subgraphs
   thread <db> <query> [--k N] [--depth D=3] [--tokens T=1500] [--project P] [--json]  Walk a decision chain (caused_by/led_to edges)
+  chat <db> <session_id> [--tokens T] [--only-decisions] [--json]  Token-budgeted walk of a session's chat records (or just its decisions)
+  watch-decisions <db> [--once] [--interval S=2] [--config-dir D]... [--project P] [--agent A] [--dry-run]  Live-tail transcripts, capture structured decisions
   query-wiki <db> <path>                            Query a wiki page by path
   query-journal <db> <path>                         Query journal sections by path
   query-knowledge <db> <target> [--project P] [--max-tokens N]       Aggregated knowledge
@@ -251,7 +299,7 @@ QUERY & NAVIGATION:
   session-digest <db> [--project P] [--last N] [--tokens T] [--json]  Bounded bootstrap digest
   session-trace <db> --session <id> [--limit N]     Session summary plus recent events
   tool-usage <db> --session <id> [--limit N]        Tool breakdown for one session
-  discoveries-recent <db> [--project P] [--agent A] [--limit N]  Recent discoveries
+  discoveries-recent <db> [--project P] [--agent A] [--session S] [--type T] [--limit N]  Recent discoveries (filter by session and/or type)
   handoffs-recent <db> [--project P] [--agent A] [--limit N]     Recent handoffs
   events-recent <db> [--session ID] [--type T] [--limit N]       Recent events
   sessions-recent <db> [--project P] [--agent A] [--limit N]     Recent sessions
