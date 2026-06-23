@@ -33,9 +33,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resumable and distinguishable in the graph. Lower recall + some false
   positives vs the LLM; zero deps. The default backend remains the Ollama LLM
   (`--mode llm`).
-
-### Added
-
 - **`sessions-recent --exclude-project <P>` (repeatable)** — hides named
   project buckets from the recent-sessions view without re-attributing rows.
   Targets the `tmp` / `Projects` buckets that arise honestly when a session

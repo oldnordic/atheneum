@@ -34,9 +34,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (distinct from `llm-extract`, so the two backends are separately resumable).
   Selected via `--heuristic` / `--mode heuristic` / `ATHENEUM_EXTRACT_MODE=heuristic`.
   Lower recall + some false positives vs the LLM; zero deps. Default stays `Llm`.
-
-### Added
-
 - **`sessions-recent --exclude-project <P>` (repeatable).** Hides named
   project buckets from the recent-sessions view without re-attributing the
   rows. Targets the `tmp` / `Projects` buckets that arise honestly when a
