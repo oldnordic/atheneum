@@ -251,7 +251,12 @@ decision thread. Discoveries stored with `--session` are also linked into a
 `caused_by`/`led_to` chain per session (most-recent earlier same-session
 decision), so `atheneum thread <db> <query> [--depth N] [--tokens T]` walks
 the chain directly — lexical match on `ReasoningLog` + `Discovery` entry
-points, then BFS along those edges only, bounded to a token budget.
+points, then BFS along those edges only, bounded to a token budget. The
+human renderer prints each entry's decision metadata (`source` / `sequence`
+/ `chosen` / `rationale` / `alternatives`) when the entry is a `Decision`,
+then the chain edges literally (`from ──caused_by/led_to──> to` with named
+endpoints), then the BFS-expanded related entities. `--json` returns the raw
+subgraphs unchanged.
 
 Attribute a discovery to a session so it appears in that session's digest
 block:

@@ -52,6 +52,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chain snippet when `caused_by` / `led_to` edges exist. Previously emitted
   only `id` / `target` / `created_at` / `why`, so the mode read as a bare
   index rather than a rationale-bearing view.
+- **`thread` human renderer polished** — plain-text `thread` output now leads
+  with an entry-count / depth / token-budget header, renders each entry's
+  decision metadata (`source` / `sequence` / `chosen` / `rationale` /
+  `alternatives`) inline when the entry is a `Decision` (same style as
+  `chat --only-decisions`), lists chain edges literally as
+  `from ──caused_by/led_to──> to` with named endpoints instead of a bare
+  edge count, and drops the redundant snippet when it repeats an entity's
+  name. `--json` unchanged. Previously a flat id-ordered list with a
+  `_N chain edge(s)_` footer, so chain structure and rationale were invisible.
 
 ## [0.9.0] — 2026-06-23
 

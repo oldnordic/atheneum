@@ -2217,43 +2217,74 @@ fn print_thread(
         stdoutln(format_args!("{}", out))?;
         return Ok(());
     }
+    out.push_str(&format!(
+        "_{} entry point(s) · depth up to {} · token budget ~{}_\n",
+        views.len(),
+        views.iter().map(|v| v.depth).max().unwrap_or(0),
+        max_tokens
+    ));
 
     for (vi, view) in views.iter().enumerate() {
         if vi > 0 {
             out.push_str("\n---\n\n");
         }
+        let entry = &view.entry;
         out.push_str(&format!(
-            "## chain entry: {} `{}` ({})\n",
-            view.entry.kind, view.entry.name, view.entry.id
+            "## entry [{}] {} — `{}`\n",
+            entry.id, entry.kind, entry.name
         ));
 
-        // Build the display list from the entry plus its chain neighbors,
-        // ordered by id ascending. caused_by links to a lower id and led_to to
-        // a higher id, so id order is the chronological chain order. The entry
-        // is included so its snippet shows even when no chain edges exist yet.
-        let entry_id = view.entry.id;
-        let mut ents: Vec<GraphEntity> = std::iter::once(view.entry.clone())
-            .chain(view.entities.iter().cloned())
-            .collect();
-        ents.sort_by_key(|e| e.id);
-        ents.dedup_by_key(|e| e.id);
-        for e in &ents {
-            let marker = if e.id == entry_id { "★" } else { " " };
-            out.push_str(&format!(
-                "{}- [{}] **{}**: `{}`",
-                marker, e.id, e.kind, e.name
-            ));
-            if let Some(s) = entity_snippet(e) {
-                out.push_str(&format!(" — {}", truncate_snippet(&s, 160)));
-            }
-            out.push('\n');
+        // Decision metadata block, same visual style as `chat --only-decisions`.
+        if let Some(obj) = entry.data.as_object() {
+            push_thread_decision_meta(obj, &mut out);
         }
 
+        // Resolve endpoint names, including the entry itself (which is not in
+        // `view.entities`). caused_by links to a lower id, led_to to a higher
+        // id, so rendering each edge literally as `from --edge_type--> to`
+        // reads in chronological order when scanned top-to-bottom.
+        let name_for = |id: i64| -> String {
+            if id == view.entry.id {
+                return view.entry.name.clone();
+            }
+            view.entities
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.name.clone())
+                .unwrap_or_else(|| format!("entity:{}", id))
+        };
+
         if !view.edges.is_empty() {
-            out.push_str(&format!(
-                "\n_{} chain edge(s): caused_by / led_to_\n",
-                view.edges.len()
-            ));
+            out.push_str(&format!("\n_chain_ ({} edge(s)):\n", view.edges.len()));
+            for e in &view.edges {
+                out.push_str(&format!(
+                    "  [{}] {}  ──{}──>  [{}] {}\n",
+                    e.from_id,
+                    truncate_snippet(&name_for(e.from_id), 80),
+                    e.edge_type,
+                    e.to_id,
+                    truncate_snippet(&name_for(e.to_id), 80)
+                ));
+            }
+        }
+
+        // BFS-expanded neighbors beyond the entry, for context. Skip the
+        // snippet when it merely repeats the entity name (Decision `target`
+        // often equals the name).
+        let related: Vec<&GraphEntity> =
+            view.entities.iter().filter(|e| e.id != entry.id).collect();
+        if !related.is_empty() {
+            out.push_str("\n_related_:\n");
+            for e in related {
+                out.push_str(&format!("  - [{}] {} `{}`", e.id, e.kind, e.name));
+                if let Some(s) = entity_snippet(e) {
+                    let trimmed = s.trim();
+                    if !trimmed.is_empty() && trimmed != e.name.trim() {
+                        out.push_str(&format!(" — {}", truncate_snippet(&s, 140)));
+                    }
+                }
+                out.push('\n');
+            }
         }
     }
 
@@ -2265,6 +2296,62 @@ fn print_thread(
 
     stdoutln(format_args!("{}", out))?;
     Ok(())
+}
+
+/// Append decision metadata (`source` / `sequence` / `chosen` / `rationale` /
+/// `alternatives` / `why`) from a Discovery entity's JSON data, in the same
+/// visual style as `chat --only-decisions`. No-op for non-decision entities.
+fn push_thread_decision_meta(obj: &serde_json::Map<String, serde_json::Value>, out: &mut String) {
+    let is_decision = obj
+        .get("discovery_type")
+        .and_then(|v| v.as_str())
+        .map(|s| s == "Decision")
+        .unwrap_or(false);
+    if !is_decision {
+        return;
+    }
+    let source = obj.get("source").and_then(|v| v.as_str());
+    let seq = obj.get("sequence").and_then(|v| v.as_i64());
+    if source.is_some() || seq.is_some() {
+        out.push_str("  ");
+        if let Some(src) = source {
+            out.push_str(&format!("_src={}_ ", src));
+        }
+        if let Some(s) = seq {
+            out.push_str(&format!("seq={}", s));
+        }
+        out.push('\n');
+    }
+    if let Some(chosen) = obj.get("chosen").and_then(|v| v.as_str()) {
+        if !chosen.trim().is_empty() {
+            out.push_str(&format!(
+                "  **chosen**: {}\n",
+                truncate_snippet(chosen, 200)
+            ));
+        }
+    }
+    if let Some(rat) = obj.get("rationale").and_then(|v| v.as_str()) {
+        if !rat.trim().is_empty() {
+            out.push_str(&format!("  _rationale_: {}\n", truncate_snippet(rat, 240)));
+        }
+    }
+    if let Some(alts) = obj.get("alternatives").and_then(|v| v.as_array()) {
+        if !alts.is_empty() {
+            let list = alts
+                .iter()
+                .filter_map(|a| a.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            if !list.is_empty() {
+                out.push_str(&format!("  _alternatives_: {}\n", list));
+            }
+        }
+    }
+    if let Some(why) = obj.get("why").and_then(|v| v.as_str()) {
+        if !why.trim().is_empty() {
+            out.push_str(&format!("  _why_: {}\n", truncate_snippet(why, 160)));
+        }
+    }
 }
 
 fn cross_result_to_json(hit: &atheneum::CrossSearchResult) -> serde_json::Value {
