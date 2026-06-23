@@ -304,9 +304,9 @@ hook has the Phase 1+2 commands.
 - Subagent (`⤷parent_id`) gets `--last 1`. ✅ (verified — `CLAUDE_PARENT_SESSION_ID` set → header reads `last 1`, one session shown)
 
 **Verification (run 2026-06-22):**
-- `env CLAUDE_PROJECT_DIR=/home/feanor/Projects/atheneum fish ~/.claude/hooks/session-bootstrap.fish` → output includes the `== PRIOR SESSIONS (project: atheneum, last 3) ==` block with per-session activity + decisions + thread anchors, rendered multi-line. ✅
+- `env CLAUDE_PROJECT_DIR=/path/to/atheneum fish ~/.claude/hooks/session-bootstrap.fish` → output includes the `== PRIOR SESSIONS (project: atheneum, last 3) ==` block with per-session activity + decisions + thread anchors, rendered multi-line. ✅
 - Same with `CLAUDE_PARENT_SESSION_ID=parent-xyz` → header reads `last 1`, exactly one session shown. ✅
-- Project resolution: from `/home/feanor/Projects/atheneum/docs` (subdir), `PROJECT` resolves to `atheneum` (repo basename), not `docs`. ✅ (fish snippet + `project_name_uses_git_toplevel_basename` test)
+- Project resolution: from `/path/to/atheneum/docs` (subdir), `PROJECT` resolves to `atheneum` (repo basename), not `docs`. ✅ (fish snippet + `project_name_uses_git_toplevel_basename` test)
 - `fish -n` on both hooks: syntax clean. ✅
 - envoy: `cargo build` + `cargo test` (all groups, 0 failed) + `cargo clippy --all-targets -- -D warnings` + `cargo fmt --check`: clean. ✅
 - Digest latency on the live DB: ~0.7s (release build); well within the 15s SessionStart hook timeout. ✅

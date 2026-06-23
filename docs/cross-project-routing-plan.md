@@ -46,20 +46,20 @@ Register each project once. Re-registering the same name updates the record.
 ```bash
 # Register a Rust project
 atheneum meta-register envoy \
-  /home/feanor/Projects/envoy \
-  /home/feanor/Projects/envoy/.magellan/magellan.db \
+  /path/to/envoy \
+  /path/to/envoy/.magellan/magellan.db \
   --language rust
 
 # Register another Rust project
 atheneum meta-register magellan \
-  /home/feanor/Projects/magellan \
-  /home/feanor/Projects/magellan/.magellan/magellan.db \
+  /path/to/magellan \
+  /path/to/magellan/.magellan/magellan.db \
   --language rust
 
 # Register a Go project
 atheneum meta-register my-api \
-  /home/feanor/Projects/my-api \
-  /home/feanor/Projects/my-api/.magellan/magellan.db \
+  /path/to/my-api \
+  /path/to/my-api/.magellan/magellan.db \
   --language go
 
 # List registered projects

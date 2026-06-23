@@ -325,8 +325,8 @@ Atheneum can now search and navigate across multiple magellan-indexed projects i
 
 ```bash
 # Register a project once
-atheneum meta-register envoy /home/feanor/Projects/envoy \
-  /home/feanor/Projects/envoy/.magellan/magellan.db --language rust
+atheneum meta-register envoy /path/to/envoy \
+  /path/to/envoy/.magellan/magellan.db --language rust
 
 # Search for a symbol across all Rust projects
 atheneum cross-search "build_router" --language rust --k 10

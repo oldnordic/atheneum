@@ -377,7 +377,7 @@ tool signals, no LLM, 100% precision.
 - `crates/atheneum/src/main.rs` — `watch-decisions <db>` subcommand (foreground
   + `--once` for a single scan).
 - `~/.config/systemd/user/atheneum-decision-watcher.service` (new) —
-  `ExecStart=/home/feanor/.local/bin/atheneum watch-decisions <db>`,
+  `ExecStart=$HOME/.local/bin/atheneum watch-decisions <db>`,
   `Restart=on-failure`, `WantedBy=default.target`.
 - `crates/atheneum/tests/watch_tests.rs` (new) — synthetic transcript with
   known `ExitPlanMode`/`AskUserQuestion`/`TodoWrite` lines; assert the detector
