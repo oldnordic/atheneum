@@ -353,6 +353,56 @@ fn run() -> anyhow::Result<()> {
                 print_thread(query, &views, tokens)?;
             }
         }
+        "chat" => {
+            if args.len() < 4 {
+                eprintln!(
+                    "Usage: atheneum chat <db-path> --session <id> \
+                     [--tokens N] [--direction recent|chrono] \
+                     [--kinds ReasoningLog,ToolCall] [--role <role>] \
+                     [--search \"query\"] [--only-decisions] \
+                     [--offset N --limit L] [--walk] [--json]"
+                );
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let opts = parse_options(&args[3..])?;
+            let session_id = opts
+                .session
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("--session <id> is required"))?;
+            let direction = match opts.direction.as_deref() {
+                Some(d) => atheneum::graph::ChatDirection::parse(d)?,
+                None => atheneum::graph::ChatDirection::Recent,
+            };
+            let kinds = opts
+                .kinds
+                .as_deref()
+                .map(|s| {
+                    s.split(',')
+                        .map(|p| p.trim().to_string())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let query = atheneum::graph::ChatQuery {
+                session_id,
+                tokens: parse_usize_option(opts.tokens.as_deref(), "tokens")?.unwrap_or(500),
+                direction,
+                kinds,
+                role: opts.role.clone(),
+                search: opts.search.clone(),
+                only_decisions: opts.only_decisions,
+                offset: parse_i64_option(opts.offset.as_deref(), "offset")?.unwrap_or(0),
+                limit: parse_i64_option(opts.limit.as_deref(), "limit")?,
+                walk: opts.walk,
+            };
+            let graph = AtheneumGraph::open(&db_path)?;
+            let report = graph.query_chat(query)?;
+            if opts.json {
+                print_json(serde_json::to_value(&report)?)?;
+            } else {
+                print_chat(&report)?;
+            }
+        }
         "graph-stats" => {
             if args.len() < 3 {
                 eprintln!("Usage: atheneum graph-stats <db-path>");
@@ -1379,6 +1429,14 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
         writer,
         "  atheneum thread ./atheneum.db \"gemv q4_0 dispatch\" --tokens 1500 --depth 3"
     )?;
+    writeln!(
+        writer,
+        "  atheneum chat ./atheneum.db --session abc123 --tokens 500 --direction recent"
+    )?;
+    writeln!(
+        writer,
+        "  atheneum chat ./atheneum.db --session abc123 --search \"HNSW\" --walk"
+    )?;
     writeln!(writer, "  atheneum add-edge ./atheneum.db 1 2 explains")?;
     writeln!(
         writer,
@@ -1439,6 +1497,12 @@ struct CliOptions {
     language: Option<String>,
     tokens: Option<String>,
     last: Option<String>,
+    direction: Option<String>,
+    kinds: Option<String>,
+    role: Option<String>,
+    search: Option<String>,
+    walk: bool,
+    only_decisions: bool,
     dry_run: bool,
     auto_merge: bool,
     concise: bool,
@@ -1460,6 +1524,12 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
             i += 1;
         } else if args[i] == "--json" {
             opts.json = true;
+            i += 1;
+        } else if args[i] == "--walk" {
+            opts.walk = true;
+            i += 1;
+        } else if args[i] == "--only-decisions" {
+            opts.only_decisions = true;
             i += 1;
         } else if args[i].starts_with('-') && args[i] != "--data" {
             let key = args[i].as_str();
@@ -1485,6 +1555,10 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
                 "--language" => opts.language = Some(value),
                 "--tokens" => opts.tokens = Some(value),
                 "--last" => opts.last = Some(value),
+                "--direction" => opts.direction = Some(value),
+                "--kinds" => opts.kinds = Some(value),
+                "--role" => opts.role = Some(value),
+                "--search" => opts.search = Some(value),
                 other => anyhow::bail!("unknown option: {}", other),
             }
             i += 2;
@@ -1738,6 +1812,81 @@ fn truncate_snippet(s: &str, max_chars: usize) -> String {
     let mut out: String = s.chars().take(max_chars.saturating_sub(1)).collect();
     out.push('…');
     out.replace('\n', " ")
+}
+
+fn print_chat(report: &atheneum::graph::ChatReport) -> anyhow::Result<()> {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "# chat: session `{}` ({})\n",
+        report.session_id, report.direction
+    ));
+    out.push_str(&format!(
+        "_tokens {}/{} · offset {} · has_more: {}_\n",
+        report.token_total, report.token_budget, report.offset, report.has_more
+    ));
+
+    if !report.decisions.is_empty() {
+        out.push_str("\n## decisions\n");
+        for d in &report.decisions {
+            out.push_str(&format!("- [{}] `{}` — {}", d.id, d.target, d.created_at));
+            if let Some(why) = d.metadata.get("why").and_then(|v| v.as_str()) {
+                out.push_str(&format!("\n    _why_: {}", truncate_snippet(why, 160)));
+            }
+            out.push('\n');
+        }
+        if report.turns.is_empty() {
+            return stdoutln(format_args!("{}", out));
+        }
+    }
+
+    if report.turns.is_empty() && report.decisions.is_empty() {
+        out.push_str("\n_No chat turns or decisions found for this session._\n");
+        return stdoutln(format_args!("{}", out));
+    }
+
+    out.push_str("\n## turns\n");
+    for t in &report.turns {
+        let tag = match t.role.as_deref() {
+            Some(role) => role.to_string(),
+            None => t.kind.clone(),
+        };
+        out.push_str(&format!(
+            "\n**[{}]** seq={} kind=`{}` ({} tok)",
+            tag,
+            t.sequence
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "—".into()),
+            t.kind,
+            t.tokens
+        ));
+        let body = if t.content_text.trim().is_empty() {
+            t.data
+                .get("tool_name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_default()
+        } else {
+            t.content_text.trim().replace('\n', " ")
+        };
+        if !body.is_empty() {
+            out.push_str(&format!("\n{}", truncate_snippet(&body, 200)));
+        }
+        if !t.chain.is_empty() {
+            out.push_str("\n  _chain:_");
+            for node in &t.chain {
+                out.push_str(&format!(" [{}] `{}` ({})", node.id, node.kind, node.via));
+            }
+        }
+        out.push('\n');
+    }
+
+    if report.has_more {
+        out.push_str(&format!(
+            "\n_…more rows beyond this window (offset {}, tokens {}/{})._\n",
+            report.offset, report.token_total, report.token_budget
+        ));
+    }
+    stdoutln(format_args!("{}", out))
 }
 
 fn print_thread(

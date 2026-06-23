@@ -11,6 +11,7 @@ use embed::HashEmbedder;
 
 pub mod audit;
 mod cache;
+pub mod chat;
 pub mod claude;
 pub mod digest;
 pub mod discovery;
@@ -32,6 +33,7 @@ pub mod wiki;
 
 use cache::GraphRuntime;
 pub use cache::RuntimeStats;
+pub use chat::{ChatChainNode, ChatDecision, ChatDirection, ChatQuery, ChatReport, ChatTurn};
 pub use dream::{DreamConfig, DreamFinding, DreamMode, DreamPhase, DreamReport};
 pub use navigation::{estimate_entity_tokens, truncate_subgraph};
 pub use planning::{KanbanStatus, KanbanUpdate};
