@@ -40,7 +40,7 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum init <db-path>");
                 std::process::exit(1);
             }
-            let path = PathBuf::from(&args[2]);
+            let path = PathBuf::from(positional(&args, 2, "db-path")?);
             stdoutln(format_args!(
                 "Initializing Atheneum graph at: {}",
                 path.display()
@@ -57,9 +57,9 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum sync-wiki <db-path> <wiki-dir> [project-id]");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
-            let wiki_dir = PathBuf::from(&args[3]);
-            let project_id = args.get(4).map(|s| s.as_str());
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let wiki_dir = PathBuf::from(positional(&args, 3, "wiki-dir")?);
+            let project_id = optional_positional(&args, 4, "project-id")?;
 
             if !wiki_dir.is_dir() {
                 eprintln!("Not a directory: {}", wiki_dir.display());
@@ -82,9 +82,9 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum sync-journal <db-path> <journal-dir> [project-id]");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
-            let journal_dir = PathBuf::from(&args[3]);
-            let project_id = args.get(4).map(|s| s.as_str());
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let journal_dir = PathBuf::from(positional(&args, 3, "journal-dir")?);
+            let project_id = optional_positional(&args, 4, "project-id")?;
 
             if !journal_dir.is_dir() {
                 eprintln!("Not a directory: {}", journal_dir.display());
@@ -107,9 +107,9 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum sync-logseq <db-path> <wiki-root> [project-id]");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
-            let wiki_root = PathBuf::from(&args[3]);
-            let project_id = args.get(4).map(|s| s.as_str());
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let wiki_root = PathBuf::from(positional(&args, 3, "wiki-root")?);
+            let project_id = optional_positional(&args, 4, "project-id")?;
 
             if !wiki_root.is_dir() {
                 eprintln!("Not a directory: {}", wiki_root.display());
@@ -138,10 +138,12 @@ fn run() -> anyhow::Result<()> {
                 );
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
-            let transcript_path = PathBuf::from(&args[3]);
-            let project = args.get(4).cloned();
-            let agent_name = args.get(5).cloned().unwrap_or_else(|| "claude".into());
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let transcript_path = PathBuf::from(positional(&args, 3, "transcript-path")?);
+            let project = optional_positional(&args, 4, "project")?.map(|s| s.to_string());
+            let agent_name = optional_positional(&args, 5, "agent-name")?
+                .unwrap_or("claude")
+                .to_string();
             let graph = AtheneumGraph::open(&db_path)?;
             let summary = graph.sync_claude_transcript(ClaudeTranscriptImportParams {
                 transcript_path,
@@ -177,8 +179,8 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum query-wiki <db-path> <path>");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
-            let path = &args[3];
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let path = positional(&args, 3, "path")?;
 
             let graph = AtheneumGraph::open(&db_path)?;
             match graph.get_wiki_page(path)? {
@@ -206,8 +208,8 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum query-journal <db-path> <path>");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
-            let path = &args[3];
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let path = positional(&args, 3, "path")?;
 
             let graph = AtheneumGraph::open(&db_path)?;
             let sections = graph.query_journal_sections(path)?;
@@ -242,8 +244,8 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum entity <db-path> <entity-id>");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
-            let entity_id = parse_i64_arg(&args[3], "entity-id")?;
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let entity_id = parse_i64_arg(positional(&args, 3, "entity-id")?, "entity-id")?;
             let graph = AtheneumGraph::open(&db_path)?;
             print_json(entity_to_json(&graph.get_entity(entity_id)?))?;
         }
@@ -252,8 +254,8 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum edge <db-path> <edge-id>");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
-            let edge_id = parse_i64_arg(&args[3], "edge-id")?;
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let edge_id = parse_i64_arg(positional(&args, 3, "edge-id")?, "edge-id")?;
             let graph = AtheneumGraph::open(&db_path)?;
             print_json(edge_to_json(&graph.get_edge(edge_id)?))?;
         }
@@ -262,8 +264,8 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum neighbors <db-path> <entity-id> [--depth N]");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
-            let entity_id = parse_i64_arg(&args[3], "entity-id")?;
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let entity_id = parse_i64_arg(positional(&args, 3, "entity-id")?, "entity-id")?;
             let opts = parse_options(&args[4..])?;
             let depth = parse_u32_option(opts.depth.as_deref(), "depth")?.unwrap_or(0);
             let graph = AtheneumGraph::open(&db_path)?;
@@ -285,8 +287,8 @@ fn run() -> anyhow::Result<()> {
                 );
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
-            let query = &args[3];
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let query = positional(&args, 3, "query")?;
             let opts = parse_options(&args[4..])?;
             let k = parse_usize_option(opts.k.as_deref(), "k")?.unwrap_or(5);
             let depth = parse_u32_option(opts.depth.as_deref(), "depth")?.unwrap_or(2);
@@ -332,8 +334,8 @@ fn run() -> anyhow::Result<()> {
                 );
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
-            let query = &args[3];
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let query = positional(&args, 3, "query")?;
             let opts = parse_options(&args[4..])?;
             let k = parse_usize_option(opts.k.as_deref(), "k")?.unwrap_or(3);
             let depth = parse_u32_option(opts.depth.as_deref(), "depth")?.unwrap_or(3);
@@ -364,7 +366,7 @@ fn run() -> anyhow::Result<()> {
                 );
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
             let opts = parse_options(&args[3..])?;
             let session_id = opts
                 .session
@@ -408,7 +410,7 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum graph-stats <db-path>");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
             let graph = AtheneumGraph::open(&db_path)?;
             let stats = graph.graph_stats()?;
             let runtime = graph.runtime_stats();
@@ -425,7 +427,7 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum reindex <db-path>");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
             let graph = AtheneumGraph::open(&db_path)?;
             #[cfg(feature = "semantic-search")]
             {
@@ -456,10 +458,10 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum store-discovery <db-path> <agent> <type> <target> [metadata.json] [--session <id>] [--project <id>] [--dedup] [--force]");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
-            let agent = &args[3];
-            let discovery_type = &args[4];
-            let target = &args[5];
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let agent = positional(&args, 3, "agent")?;
+            let discovery_type = positional(&args, 4, "type")?;
+            let target = positional(&args, 5, "target")?;
             // Positional metadata file is args[6] only if it isn't a flag.
             let metadata_path = args.get(6).filter(|s| !s.starts_with('-'));
             let mut metadata: serde_json::Value = if let Some(meta_path) = metadata_path {
@@ -544,13 +546,20 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum add-edge <db-path> <from-id> <to-id> <edge-type> [metadata.json|--data 'json']");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
-            let from_id = parse_i64_arg(&args[3], "from-id")?;
-            let to_id = parse_i64_arg(&args[4], "to-id")?;
-            let edge_type_str = &args[5];
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let from_id = parse_i64_arg(positional(&args, 3, "from-id")?, "from-id")?;
+            let to_id = parse_i64_arg(positional(&args, 4, "to-id")?, "to-id")?;
+            let edge_type_str = positional(&args, 5, "edge-type")?;
             let edge_type = EdgeType::from_label(edge_type_str)
                 .ok_or_else(|| anyhow::anyhow!("unknown edge type '{}'. Valid: performed_by, assigned_to, called, calls, accessed, modified, verified_by, caused_by, created, related_to, mentions, wikilink, implements, depends_on, tested_by, fixed_by, regressed_by, observed_in, belongs_to_project, similar_failure, requires_skill, handled_by_tool, explains, derived_from, superseded_by, consolidated_from", edge_type_str))?;
             let data = if let Some(data_arg) = args.get(6) {
+                if data_arg.starts_with('-') && data_arg != "--data" {
+                    anyhow::bail!(
+                        "expected optional positional <metadata.json>, got flag-looking \
+                         argument '{}'; use --data '<json>' to pass JSON inline",
+                        data_arg
+                    );
+                }
                 if data_arg == "--data" {
                     let json_str = args
                         .get(7)
@@ -579,8 +588,8 @@ fn run() -> anyhow::Result<()> {
                 );
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
-            let title = &args[3];
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let title = positional(&args, 3, "title")?;
             let description = args.get(4).and_then(|s| {
                 if s.starts_with('-') {
                     None
@@ -598,7 +607,7 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum task-list <db-path> [--project P] [--status S]");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
             let opts = parse_options(&args[3..])?;
             let graph = AtheneumGraph::open(&db_path)?;
             let tasks: Vec<serde_json::Value> = if let Some(status_str) = &opts.status {
@@ -622,9 +631,9 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum task-update <db-path> <task-id> <status>");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
-            let task_id = parse_i64_arg(&args[3], "task-id")?;
-            let status_str = &args[4];
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let task_id = parse_i64_arg(positional(&args, 3, "task-id")?, "task-id")?;
+            let status_str = positional(&args, 4, "status")?;
             let status = atheneum::graph::KanbanStatus::parse(status_str).ok_or_else(|| {
                 anyhow::anyhow!(
                     "unknown status '{}'. Valid: TODO, IN_PROGRESS, DONE, BLOCKED, ARCHIVED",
@@ -640,8 +649,8 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum task-done <db-path> <task-id>");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
-            let task_id = parse_i64_arg(&args[3], "task-id")?;
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let task_id = parse_i64_arg(positional(&args, 3, "task-id")?, "task-id")?;
             let graph = AtheneumGraph::open(&db_path)?;
             graph.update_task_status(task_id, atheneum::graph::KanbanStatus::Done)?;
             print_json(json!({"task_id": task_id, "status": "DONE"}))?;
@@ -651,8 +660,8 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum task-archive <db-path> <task-id>");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
-            let task_id = parse_i64_arg(&args[3], "task-id")?;
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let task_id = parse_i64_arg(positional(&args, 3, "task-id")?, "task-id")?;
             let graph = AtheneumGraph::open(&db_path)?;
             graph.update_task_status(task_id, atheneum::graph::KanbanStatus::Archived)?;
             print_json(json!({"task_id": task_id, "status": "ARCHIVED"}))?;
@@ -662,8 +671,8 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum search <db-path> <query> [--k N] [--project P] [--max-tokens N]");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
-            let query = &args[3];
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let query = positional(&args, 3, "query")?;
             let opts = parse_options(&args[4..])?;
             let k = parse_usize_option(opts.k.as_deref(), "k")?.unwrap_or(10);
             let max_tokens = parse_usize_option(opts.max_tokens.as_deref(), "max-tokens")?;
@@ -682,8 +691,8 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum search-wiki <db-path> <query> [--limit N] [--offset N] [--project P]");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
-            let query = &args[3];
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let query = positional(&args, 3, "query")?;
             let opts = parse_options(&args[4..])?;
             let limit = parse_usize_option(opts.limit.as_deref(), "limit")?.unwrap_or(10);
             let offset = parse_usize_option(opts.offset.as_deref(), "offset")?.unwrap_or(0);
@@ -703,7 +712,7 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum backfill-wiki <db-path> [--project P]");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
             let opts = parse_options(&args[3..])?;
             let graph = AtheneumGraph::open(&db_path)?;
             let fixed = graph.backfill_wiki_pages_to_graph(opts.project.as_deref())?;
@@ -718,8 +727,8 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum query-knowledge <db-path> <target> [--project P] [--max-tokens N]");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
-            let target = &args[3];
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let target = positional(&args, 3, "target")?;
             let opts = parse_options(&args[4..])?;
             let max_tokens = parse_usize_option(opts.max_tokens.as_deref(), "max-tokens")?;
             let graph = AtheneumGraph::open(&db_path)?;
@@ -732,7 +741,7 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum consolidate <db-path> [target] [--project P]");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
             let target = args
                 .get(3)
                 .filter(|s| !s.starts_with('-'))
@@ -765,7 +774,7 @@ fn run() -> anyhow::Result<()> {
                 );
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
             let opts = parse_options(&args[3..])?;
             let offset = parse_usize_option(opts.offset.as_deref(), "offset")?.unwrap_or(0);
             let limit = parse_usize_option(opts.limit.as_deref(), "limit")?.unwrap_or(1000);
@@ -783,7 +792,7 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum query-sessions <db-path> [--project P] [--offset N] [--limit N]");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
             let opts = parse_options(&args[3..])?;
             let offset = parse_usize_option(opts.offset.as_deref(), "offset")?.unwrap_or(0);
             let limit = parse_i64_option(opts.limit.as_deref(), "limit")?.unwrap_or(20);
@@ -802,7 +811,7 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum query-events <db-path> [--session <id>] [--type <event-type>] [--offset N] [--limit N]");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
             let opts = parse_options(&args[3..])?;
             let offset = parse_usize_option(opts.offset.as_deref(), "offset")?.unwrap_or(0);
             let limit = parse_usize_option(opts.limit.as_deref(), "limit")?.unwrap_or(50);
@@ -825,7 +834,7 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum session-digest <db-path> [--project P] [--last N] [--tokens T] [--json]");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
             let opts = parse_options(&args[3..])?;
             let last = parse_i64_option(opts.last.as_deref(), "last")?.unwrap_or(3);
             let tokens = parse_usize_option(opts.tokens.as_deref(), "tokens")?.unwrap_or(500);
@@ -843,7 +852,7 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum session-trace <db-path> --session <id> [--limit N]");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
             let opts = parse_options(&args[3..])?;
             let session_id = opts
                 .session
@@ -872,7 +881,7 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum tool-usage <db-path> --session <id> [--limit N]");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
             let opts = parse_options(&args[3..])?;
             let session_id = opts
                 .session
@@ -907,7 +916,7 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum discoveries-recent <db-path> [--project P] [--agent A] [--session ID] [--type T] [--limit N]");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
             let opts = parse_options(&args[3..])?;
             let limit = parse_i64_option(opts.limit.as_deref(), "limit")?.unwrap_or(20);
             let graph = AtheneumGraph::open(&db_path)?;
@@ -938,7 +947,7 @@ fn run() -> anyhow::Result<()> {
                 );
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
             let opts = parse_options(&args[3..])?;
             let interval = parse_u64_option(opts.interval.as_deref(), "interval")?
                 .map(std::time::Duration::from_secs)
@@ -1014,7 +1023,7 @@ fn run() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
             let mut config = atheneum::graph::ExtractConfig {
-                db: PathBuf::from(&args[2]),
+                db: PathBuf::from(positional(&args, 2, "db-path")?),
                 ..atheneum::graph::ExtractConfig::default()
             };
             let mut json_out = false;
@@ -1113,7 +1122,7 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum handoffs-recent <db-path> [--project P] [--agent A] [--limit N]");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
             let opts = parse_options(&args[3..])?;
             let limit = parse_i64_option(opts.limit.as_deref(), "limit")?.unwrap_or(20);
             let graph = AtheneumGraph::open(&db_path)?;
@@ -1133,7 +1142,7 @@ fn run() -> anyhow::Result<()> {
                 );
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
             let opts = parse_options(&args[3..])?;
             let limit = parse_usize_option(opts.limit.as_deref(), "limit")?.unwrap_or(50);
             let graph = AtheneumGraph::open(&db_path)?;
@@ -1157,7 +1166,7 @@ fn run() -> anyhow::Result<()> {
                 );
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
             let opts = parse_options(&args[3..])?;
             let limit = parse_i64_option(opts.limit.as_deref(), "limit")?.unwrap_or(20);
             let graph = AtheneumGraph::open(&db_path)?;
@@ -1180,9 +1189,9 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum memory-store <db-path> <key> <content> [--scope S] [--confidence N] [--project P]");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
-            let key = &args[3];
-            let content = &args[4];
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let key = positional(&args, 3, "key")?;
+            let content = positional(&args, 4, "content")?;
             let opts = parse_options(&args[5..])?;
             let scope = opts.scope.as_deref().unwrap_or("user");
             let confidence: f64 =
@@ -1203,8 +1212,8 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum memory-get <db-path> <key> [--scope S] [--project P]");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
-            let key = &args[3];
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let key = positional(&args, 3, "key")?;
             let opts = parse_options(&args[4..])?;
             let graph = AtheneumGraph::open(&db_path)?;
             let items = graph.query_memory(key, opts.scope.as_deref(), opts.project.as_deref())?;
@@ -1219,7 +1228,7 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum memory-list <db-path> [--scope S] [--project P] [--offset N] [--limit N]");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
             let opts = parse_options(&args[3..])?;
             let offset = parse_usize_option(opts.offset.as_deref(), "offset")?.unwrap_or(0);
             let limit = parse_usize_option(opts.limit.as_deref(), "limit")?.unwrap_or(1000);
@@ -1242,7 +1251,7 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum dream <db-path> [--scope S] [--project P] [--dry-run|--auto-merge]");
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
             let opts = parse_options(&args[3..])?;
             let graph = AtheneumGraph::open(&db_path)?;
 
@@ -1267,7 +1276,7 @@ fn run() -> anyhow::Result<()> {
                 );
                 std::process::exit(1);
             }
-            let db_path = PathBuf::from(&args[2]);
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
             let opts = parse_options(&args[3..])?;
             let graph = AtheneumGraph::open(&db_path)?;
 
@@ -1317,9 +1326,9 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum meta-register <name> <root-path> <magellan-db> [--atheneum-db PATH] [--language LANG]");
                 std::process::exit(1);
             }
-            let name = &args[2];
-            let root_path = &args[3];
-            let magellan_db = &args[4];
+            let name = positional(&args, 2, "name")?;
+            let root_path = positional(&args, 3, "root-path")?;
+            let magellan_db = positional(&args, 4, "magellan-db")?;
             let opts = parse_options(&args[5..])?;
             let mut router = MetaRouter::open()?;
             router.register_project(
@@ -1361,7 +1370,7 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("Usage: atheneum cross-search <query> [--language LANG] [--k N]");
                 std::process::exit(1);
             }
-            let query = &args[2];
+            let query = positional(&args, 2, "query")?;
             let opts = parse_options(&args[3..])?;
             let k = parse_usize_option(opts.k.as_deref(), "k")?.unwrap_or(10);
             let mut router = CrossRouter::open()?;
@@ -1381,7 +1390,7 @@ fn run() -> anyhow::Result<()> {
                 );
                 std::process::exit(1);
             }
-            let query = &args[2];
+            let query = positional(&args, 2, "query")?;
             let opts = parse_options(&args[3..])?;
             let k = parse_usize_option(opts.k.as_deref(), "k")?.unwrap_or(5);
             let depth = parse_u32_option(opts.depth.as_deref(), "depth")?.unwrap_or(1);
@@ -1752,6 +1761,51 @@ struct CliOptions {
     once: bool,
     interval: Option<String>,
     exclude_projects: Vec<String>,
+}
+
+/// Read a required positional argument, rejecting flag-looking values.
+///
+/// Subcommand arms historically did `PathBuf::from(&args[2])` / `&args[3]`
+/// directly, so a bare flag in a positional slot (e.g. `atheneum init --help`)
+/// was silently accepted as the value — `--help` became the db path and a
+/// SQLite file named `--help` got created. This guard fails fast with a clear
+/// message instead. A lone `-` is allowed (stdin convention) even though no
+/// atheneum positional currently uses it.
+fn positional<'a>(args: &'a [String], idx: usize, name: &str) -> anyhow::Result<&'a str> {
+    let v = args
+        .get(idx)
+        .ok_or_else(|| anyhow::anyhow!("missing required positional <{}>", name))?;
+    if v.starts_with('-') && v.as_str() != "-" {
+        anyhow::bail!(
+            "expected positional <{}>, got flag-looking argument '{}'; \
+             flags must come after positionals or be passed as --flag value",
+            name,
+            v
+        );
+    }
+    Ok(v)
+}
+
+/// Read an optional positional argument (no `parse_options` slice follows),
+/// rejecting flag-looking values when present. Use `positional` for required
+/// slots; for optional slots followed by `parse_options(&args[N..])`, keep the
+/// existing `args.get(N).filter(|s| !s.starts_with('-'))` pattern so a flag is
+/// treated as "not provided" and consumed by the option parser instead.
+fn optional_positional<'a>(
+    args: &'a [String],
+    idx: usize,
+    name: &str,
+) -> anyhow::Result<Option<&'a str>> {
+    match args.get(idx) {
+        None => Ok(None),
+        Some(v) if v.starts_with('-') && v.as_str() != "-" => anyhow::bail!(
+            "expected optional positional <{}>, got flag-looking argument '{}'; \
+             flags must come after positionals or be passed as --flag value",
+            name,
+            v
+        ),
+        Some(v) => Ok(Some(v.as_str())),
+    }
 }
 
 fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
@@ -2478,5 +2532,85 @@ mod tests {
         assert!(text.contains("handoffs-recent <db-path>"));
         assert!(text.contains("events-recent <db-path>"));
         assert!(text.contains("sessions-recent <db-path>"));
+    }
+
+    fn args(vec: &[&str]) -> Vec<String> {
+        vec.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn positional_returns_value_when_present() {
+        let a = args(&["atheneum", "init", "/tmp/x.db"]);
+        assert_eq!(positional(&a, 2, "db-path").unwrap(), "/tmp/x.db");
+    }
+
+    #[test]
+    fn positional_errors_when_missing() {
+        let a = args(&["atheneum", "init"]);
+        let err = positional(&a, 2, "db-path").expect_err("missing positional must error");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("missing required positional <db-path>"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn positional_rejects_flag_looking_value() {
+        // The original bug: `atheneum init --help` treated "--help" as the db path.
+        let a = args(&["atheneum", "init", "--help"]);
+        let err = positional(&a, 2, "db-path").expect_err("flag-looking positional must error");
+        let msg = format!("{err}");
+        assert!(msg.contains("expected positional <db-path>"), "got: {msg}");
+        assert!(
+            msg.contains("--help"),
+            "message must name the offending arg: {msg}"
+        );
+    }
+
+    #[test]
+    fn positional_rejects_short_flag_looking_value() {
+        let a = args(&["atheneum", "entity", "x.db", "-v"]);
+        let err = positional(&a, 3, "entity-id").expect_err("short-flag positional must error");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("expected positional <entity-id>"),
+            "got: {msg}"
+        );
+        assert!(msg.contains("-v"), "got: {msg}");
+    }
+
+    #[test]
+    fn positional_allows_lone_dash() {
+        let a = args(&["atheneum", "cmd", "-"]);
+        assert_eq!(positional(&a, 2, "value").unwrap(), "-");
+    }
+
+    #[test]
+    fn optional_positional_none_when_absent() {
+        let a = args(&["atheneum", "sync-wiki", "x.db", "/wiki"]);
+        assert!(optional_positional(&a, 4, "project-id").unwrap().is_none());
+    }
+
+    #[test]
+    fn optional_positional_some_when_present() {
+        let a = args(&["atheneum", "sync-wiki", "x.db", "/wiki", "atheneum"]);
+        assert_eq!(
+            optional_positional(&a, 4, "project-id").unwrap(),
+            Some("atheneum")
+        );
+    }
+
+    #[test]
+    fn optional_positional_rejects_flag_looking_value() {
+        let a = args(&["atheneum", "sync-wiki", "x.db", "/wiki", "--help"]);
+        let err = optional_positional(&a, 4, "project-id")
+            .expect_err("flag-looking optional positional must error");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("expected optional positional <project-id>"),
+            "got: {msg}"
+        );
+        assert!(msg.contains("--help"), "got: {msg}");
     }
 }

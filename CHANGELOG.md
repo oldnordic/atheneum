@@ -62,6 +62,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   name. `--json` unchanged. Previously a flat id-ordered list with a
   `_N chain edge(s)_` footer, so chain structure and rationale were invisible.
 
+### Fixed
+
+- **CLI rejects flag-looking positionals** — subcommand arms historically read
+  raw positionals (`PathBuf::from(&args[2])`, `&args[3]`, …) without checking
+  whether the value started with `-`, so a bare flag in a positional slot was
+  silently accepted as the value. `atheneum init --help` created a real SQLite
+  file named `--help` in the cwd. A central `positional` / `optional_positional`
+  guard now fails fast with `expected positional <name>, got flag-looking
+  argument '<x>'` across every subcommand (init, sync-*, query-*, entity/edge/
+  neighbors, navigate/thread/search(-wiki), store-discovery, add-edge,
+  task-create/update/done/archive, query-knowledge, memory-store/get,
+  meta-register, cross-search/navigate, extract-decisions). Required slots
+  error on a missing or flag-looking value; optional slots not followed by the
+  option parser (sync-* project-id, sync-claude-transcript project/agent) error
+  on a flag-looking value; optional slots followed by the option parser keep
+  the existing flag-means-absent behavior. `--json` and the option-parsing path
+  are unchanged.
+
 ## [0.9.0] — 2026-06-23
 
 Implements the chat-decision plan (decision capture from Claude Code chat
