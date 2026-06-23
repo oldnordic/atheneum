@@ -394,17 +394,17 @@ mod tests {
         router
             .register_project(
                 "envoy",
-                "/home/feanor/Projects/envoy",
-                "/home/feanor/Projects/envoy/.magellan/magellan.db",
-                Some("/home/feanor/Projects/envoy/atheneum.db"),
+                "/tmp/atheneum-meta-test/envoy",
+                "/tmp/atheneum-meta-test/envoy/magellan.db",
+                Some("/tmp/atheneum-meta-test/envoy/atheneum.db"),
                 Some("rust"),
             )
             .unwrap();
         router
             .register_project(
                 "magellan",
-                "/home/feanor/Projects/magellan",
-                "/home/feanor/Projects/magellan/.magellan/magellan.db",
+                "/tmp/atheneum-meta-test/magellan",
+                "/tmp/atheneum-meta-test/magellan/magellan.db",
                 None,
                 Some("rust"),
             )
@@ -421,7 +421,7 @@ mod tests {
 
         let envoy = router.get_project("envoy").unwrap();
         assert!(envoy.is_some());
-        assert_eq!(envoy.unwrap().root_path, "/home/feanor/Projects/envoy");
+        assert_eq!(envoy.unwrap().root_path, "/tmp/atheneum-meta-test/envoy");
 
         router.disable_project("envoy").unwrap();
         let after = router.list_projects().unwrap();

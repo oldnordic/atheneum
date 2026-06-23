@@ -639,7 +639,7 @@ atheneum store-discovery ./atheneum.db claude Decision storage-engine dec.json \
 
 ```bash
 # From the atheneum repo root — register a local marketplace and install
-claude plugin marketplace add /home/feanor/Projects/atheneum/plugin
+claude plugin marketplace add ./plugin
 claude plugin install atheneum-decisions@atheneum-decisions
 ```
 
@@ -1144,9 +1144,9 @@ registry, so atheneum keeps working standalone.
 
 ```bash
 # Optional: add enrichment (language, atheneum-db) to a project
-atheneum meta-register envoy /home/feanor/Projects/envoy \
-  /home/feanor/Projects/envoy/.magellan/magellan.db \
-  --atheneum-db /home/feanor/Projects/envoy/atheneum.db \
+atheneum meta-register envoy /path/to/envoy \
+  /path/to/envoy/.magellan/magellan.db \
+  --atheneum-db /path/to/envoy/atheneum.db \
   --language rust
 ```
 
