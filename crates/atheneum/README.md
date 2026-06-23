@@ -322,7 +322,7 @@ QUERY & NAVIGATION:
   discoveries-recent <db> [--project P] [--agent A] [--session S] [--type T] [--limit N]  Recent discoveries (filter by session and/or type)
   handoffs-recent <db> [--project P] [--agent A] [--limit N]     Recent handoffs
   events-recent <db> [--session ID] [--type T] [--limit N]       Recent events
-  sessions-recent <db> [--project P] [--agent A] [--limit N]     Recent sessions
+  sessions-recent <db> [--project P] [--agent A] [--limit N] [--exclude-project P ...]     Recent sessions (hide non-repo project buckets)
   list-pages <db> [--project P] [--offset N] [--limit N]  List wiki pages (default limit 1000)
   entity <db> <id>                                  Print entity as JSON
   edge <db> <id>                                    Print edge as JSON

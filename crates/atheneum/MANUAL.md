@@ -217,7 +217,7 @@ atheneum tool-usage <db-path> --session <id> [--limit N]
 atheneum discoveries-recent <db-path> [--project P] [--agent A] [--limit N]
 atheneum handoffs-recent <db-path> [--project P] [--agent A] [--limit N]
 atheneum events-recent <db-path> [--session ID] [--type T] [--limit N]
-atheneum sessions-recent <db-path> [--project P] [--agent A] [--limit N]
+atheneum sessions-recent <db-path> [--project P] [--agent A] [--limit N] [--exclude-project P ...]
 ```
 
 These commands all return JSON so they can be consumed by local agents and shell tooling without a separate adapter layer.
@@ -1064,7 +1064,7 @@ atheneum handoffs-recent <db-path> [--project P] [--agent A] [--limit N]
 atheneum events-recent <db-path> [--session ID] [--type T] [--limit N]
 
 # Recent sessions
-atheneum sessions-recent <db-path> [--project P] [--agent A] [--limit N]
+atheneum sessions-recent <db-path> [--project P] [--agent A] [--limit N] [--exclude-project P ...]
 
 # List wiki pages (default limit 1000)
 atheneum list-pages <db-path> [--project P] [--offset N] [--limit N]
@@ -1103,7 +1103,7 @@ The following commands are available for querying and inspecting session, tool, 
 - `discoveries-recent` returns a list of recent discoveries, with optional filtering by project and agent.
 - `handoffs-recent` returns a list of recent handoffs, with optional filtering by project and agent.
 - `events-recent` retrieves recent events, allowing filtering by session ID and event type.
-- `sessions-recent` retrieves recent sessions, with optional project and agent filtering.
+- `sessions-recent` retrieves recent sessions, with optional project and agent filtering. `--exclude-project P` (repeatable) hides named project buckets — e.g. `tmp` and `Projects`, the honest fallback names for sessions run from `/tmp` or a non-repo parent dir — without re-attributing the rows. The `LIMIT` applies after exclusion.
 
 ### Cross-Project Registry (Meta)
 

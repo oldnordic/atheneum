@@ -35,6 +35,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Selected via `--heuristic` / `--mode heuristic` / `ATHENEUM_EXTRACT_MODE=heuristic`.
   Lower recall + some false positives vs the LLM; zero deps. Default stays `Llm`.
 
+### Added
+
+- **`sessions-recent --exclude-project <P>` (repeatable).** Hides named
+  project buckets from the recent-sessions view without re-attributing the
+  rows. Targets the `tmp` / `Projects` buckets that arise honestly when a
+  session runs from `/tmp` or a non-repo parent dir (no git worktree, so the
+  shared git-toplevel-basename fallback yields the dir basename). The `LIMIT`
+  is applied after exclusion so the returned set is never under-filled.
+  `query_sessions_recent` gained an `exclude_projects: &[String]` parameter
+  (SQL `AND s.project NOT IN (...)`, built with `params_from_iter`).
+
 ### Changed
 
 - **`chat --only-decisions` renderer enriched.** Each decision now prints

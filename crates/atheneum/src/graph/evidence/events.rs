@@ -1,6 +1,6 @@
 use anyhow::Result;
 use chrono::Utc;
-use rusqlite::OptionalExtension;
+use rusqlite::{params_from_iter, OptionalExtension};
 use serde_json::{json, Value};
 
 use super::super::cache::{CacheDomain, QueryCacheKey, QueryCacheValue};
@@ -277,15 +277,22 @@ impl AtheneumGraph {
         Ok(sessions)
     }
 
-    /// Query recent sessions with optional project and agent filtering.
+    /// Query recent sessions with optional project and agent filtering, and an
+    /// optional exclude list of project names (`exclude_projects`) that are
+    /// omitted from the result. The exclude list lets operators hide non-repo
+    /// project buckets (e.g. sessions run from `/tmp` whose project falls back
+    /// to the dir basename) without re-attributing the rows. The `LIMIT` is
+    /// applied after exclusion, so the returned set is never under-filled.
     pub fn query_sessions_recent(
         &self,
         project: Option<&str>,
         agent: Option<&str>,
         limit: i64,
+        exclude_projects: &[String],
     ) -> Result<Vec<SessionSummary>> {
         let project = project.map(|s| s.to_string());
         let agent = agent.map(|s| s.to_string());
+        let exclude: Vec<String> = exclude_projects.to_vec();
 
         self.with_raw_connection(move |conn| {
             let mut sql = String::from(
@@ -311,13 +318,25 @@ impl AtheneumGraph {
                  LEFT JOIN agents a ON s.agent_id = a.id
                  WHERE 1=1",
             );
-            if project.is_some() {
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+                Vec::with_capacity(2 + exclude.len() + 1);
+            if let Some(p) = &project {
                 sql.push_str(" AND s.project = ?");
+                params.push(Box::new(p.clone()));
             }
-            if agent.is_some() {
+            if let Some(a) = &agent {
                 sql.push_str(" AND a.name = ?");
+                params.push(Box::new(a.clone()));
+            }
+            if !exclude.is_empty() {
+                let placeholders = vec!["?"; exclude.len()].join(", ");
+                sql.push_str(&format!(" AND s.project NOT IN ({})", placeholders));
+                for e in &exclude {
+                    params.push(Box::new(e.clone()));
+                }
             }
             sql.push_str(" ORDER BY s.started_at DESC LIMIT ?");
+            params.push(Box::new(limit));
 
             let mut stmt = conn.prepare_cached(&sql)?;
             let row_fn = |row: &rusqlite::Row<'_>| {
@@ -344,12 +363,7 @@ impl AtheneumGraph {
                 })
             };
 
-            let rows = match (&project, &agent) {
-                (Some(p), Some(a)) => stmt.query_map(rusqlite::params![p, a, limit], row_fn)?,
-                (Some(p), None) => stmt.query_map(rusqlite::params![p, limit], row_fn)?,
-                (None, Some(a)) => stmt.query_map(rusqlite::params![a, limit], row_fn)?,
-                (None, None) => stmt.query_map(rusqlite::params![limit], row_fn)?,
-            };
+            let rows = stmt.query_map(params_from_iter(params.iter()), row_fn)?;
             let mut out = Vec::new();
             for row in rows {
                 out.push(row?);

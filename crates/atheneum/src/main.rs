@@ -1152,7 +1152,9 @@ fn run() -> anyhow::Result<()> {
         }
         "sessions-recent" => {
             if args.len() < 3 {
-                eprintln!("Usage: atheneum sessions-recent <db-path> [--project P] [--agent A] [--limit N]");
+                eprintln!(
+                    "Usage: atheneum sessions-recent <db-path> [--project P] [--agent A] [--limit N] [--exclude-project P ...]"
+                );
                 std::process::exit(1);
             }
             let db_path = PathBuf::from(&args[2]);
@@ -1163,11 +1165,13 @@ fn run() -> anyhow::Result<()> {
                 opts.project.as_deref(),
                 opts.agent.as_deref(),
                 limit,
+                &opts.exclude_projects,
             )?;
             print_json(json!({
                 "count": sessions.len(),
                 "project": opts.project,
                 "agent": opts.agent,
+                "exclude_projects": opts.exclude_projects,
                 "sessions": sessions,
             }))?;
         }
@@ -1747,6 +1751,7 @@ struct CliOptions {
     json: bool,
     once: bool,
     interval: Option<String>,
+    exclude_projects: Vec<String>,
 }
 
 fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
@@ -1810,6 +1815,7 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
                 "--role" => opts.role = Some(value),
                 "--search" => opts.search = Some(value),
                 "--interval" => opts.interval = Some(value),
+                "--exclude-project" => opts.exclude_projects.push(value),
                 other => anyhow::bail!("unknown option: {}", other),
             }
             i += 2;

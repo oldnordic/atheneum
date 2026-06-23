@@ -303,22 +303,92 @@ fn recent_sessions_filter_by_project_and_agent() {
         .expect("record session");
 
     let envoy_sessions = graph
-        .query_sessions_recent(Some("envoy"), None, 10)
+        .query_sessions_recent(Some("envoy"), None, 10, &[])
         .expect("recent sessions");
     assert_eq!(envoy_sessions.len(), 1);
     assert_eq!(envoy_sessions[0].session_id, "sess-envoy-hermes");
 
     let hermes_sessions = graph
-        .query_sessions_recent(None, Some("hermes"), 10)
+        .query_sessions_recent(None, Some("hermes"), 10, &[])
         .expect("recent sessions");
     assert_eq!(hermes_sessions.len(), 1);
     assert_eq!(hermes_sessions[0].project, "envoy");
 
     let atheneum_codex = graph
-        .query_sessions_recent(Some("atheneum"), Some("codex"), 10)
+        .query_sessions_recent(Some("atheneum"), Some("codex"), 10, &[])
         .expect("recent sessions");
     assert_eq!(atheneum_codex.len(), 1);
     assert_eq!(atheneum_codex[0].session_id, "sess-atheneum-codex");
+}
+
+/// `--exclude-project` hides named project buckets from `sessions-recent`
+/// without re-attributing the rows. The `LIMIT` applies after exclusion.
+#[test]
+fn recent_sessions_exclude_project_hides_named_buckets() {
+    let dir = tempdir().expect("tempdir");
+    let db_path = dir.path().join("atheneum.db");
+    let graph = AtheneumGraph::open(&db_path).expect("open graph");
+
+    let mk = |sid: &str, agent: &str, project: &str| {
+        graph
+            .record_session(SessionParams {
+                session_id: sid.to_string(),
+                agent_name: agent.to_string(),
+                project: project.to_string(),
+                tool: "claude-code".to_string(),
+                trigger: "cli".to_string(),
+                model: None,
+                git_branch: None,
+                git_head: None,
+                parent_session_id: None,
+                relations: vec![],
+            })
+            .expect("record session");
+    };
+    mk("sess-tmp-a", "claude", "tmp");
+    mk("sess-tmp-b", "claude", "tmp");
+    mk("sess-atheneum", "claude", "atheneum");
+    mk("sess-envoy", "claude", "envoy");
+
+    // No exclude: all four present.
+    let all = graph
+        .query_sessions_recent(None, None, 100, &[])
+        .expect("recent sessions");
+    assert_eq!(all.len(), 4);
+
+    // Exclude "tmp": the two tmp sessions drop, others remain.
+    let excluded = graph
+        .query_sessions_recent(None, None, 100, &["tmp".to_string()])
+        .expect("recent sessions");
+    let projects: Vec<String> = excluded.iter().map(|s| s.project.clone()).collect();
+    assert!(!projects.contains(&"tmp".to_string()));
+    assert_eq!(excluded.len(), 2);
+    assert!(projects.contains(&"atheneum".to_string()));
+    assert!(projects.contains(&"envoy".to_string()));
+
+    // Exclude two buckets at once.
+    let excluded2 = graph
+        .query_sessions_recent(None, None, 100, &["tmp".to_string(), "envoy".to_string()])
+        .expect("recent sessions");
+    let projects2: Vec<String> = excluded2.iter().map(|s| s.project.clone()).collect();
+    assert_eq!(excluded2.len(), 1);
+    assert_eq!(projects2[0], "atheneum");
+
+    // LIMIT applies after exclusion: excluding tmp (2 rows) leaves 2, limit 1
+    // returns exactly one non-tmp session.
+    let limited = graph
+        .query_sessions_recent(None, None, 1, &["tmp".to_string()])
+        .expect("recent sessions");
+    assert_eq!(limited.len(), 1);
+    assert_ne!(limited[0].project, "tmp");
+
+    // Combine project filter + exclude (exclude is redundant here but must not
+    // break the query).
+    let combined = graph
+        .query_sessions_recent(Some("atheneum"), None, 100, &["tmp".to_string()])
+        .expect("recent sessions");
+    assert_eq!(combined.len(), 1);
+    assert_eq!(combined[0].session_id, "sess-atheneum");
 }
 
 /// `session-digest` composes a bounded bootstrap packet with activity
