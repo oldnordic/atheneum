@@ -61,7 +61,7 @@ fn sync_claude_transcript_imports_prompt_tool_and_file_access_evidence() {
     let transcript_dir = temp
         .path()
         .join("projects")
-        .join("-home-feanor-Projects-forge");
+        .join("-home-user-Projects-forge");
     fs::create_dir_all(&transcript_dir).expect("create transcript dir");
     let transcript_path = transcript_dir.join("session-123.jsonl");
     fs::write(
@@ -136,7 +136,7 @@ fn sync_claude_transcript_is_incremental() {
     let transcript_dir = temp
         .path()
         .join("projects")
-        .join("-home-feanor-Projects-forge");
+        .join("-home-user-Projects-forge");
     fs::create_dir_all(&transcript_dir).expect("create transcript dir");
     let transcript_path = transcript_dir.join("session-456.jsonl");
     fs::write(
@@ -234,7 +234,7 @@ fn sync_claude_transcript_replays_after_truncation() {
     let transcript_dir = temp
         .path()
         .join("projects")
-        .join("-home-feanor-Projects-forge");
+        .join("-home-user-Projects-forge");
     fs::create_dir_all(&transcript_dir).expect("create transcript dir");
     let transcript_path = transcript_dir.join("session-789.jsonl");
     fs::write(

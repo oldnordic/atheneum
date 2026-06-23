@@ -769,7 +769,7 @@ mod tests {
     #[test]
     fn decode_project_dir_name_strips_encoded_prefix() {
         assert_eq!(
-            decode_project_dir_name("-home-feanor-Projects-atheneum"),
+            decode_project_dir_name("-home-user-Projects-atheneum"),
             "atheneum"
         );
         assert_eq!(decode_project_dir_name("plain"), "plain");

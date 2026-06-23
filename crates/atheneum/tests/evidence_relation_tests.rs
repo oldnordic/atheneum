@@ -190,7 +190,7 @@ fn test_commit_test_fix_chain_and_bench_ingest_relations() {
             commit_sha: "aaaaaaaa11111111".into(),
             parent_sha: None,
             message: "feat: add relation ingestion".into(),
-            author: "feanor".into(),
+            author: "user".into(),
             files_changed: 4,
             lines_inserted: 80,
             lines_deleted: 10,
