@@ -417,6 +417,45 @@ impl AtheneumGraph {
         })
     }
 
+    /// Dedup guard for live decision capture (Phase 4 watcher) and the
+    /// post-hoc extractor (Phase 3). Returns true iff a Decision row already
+    /// exists for this exact `(session_id, sequence, target, source)` quadruple
+    /// — the dedup key named in `CHAT_DECISION_PLAN.md` ("both layers check
+    /// before insert"). `source` distinguishes the capturing layer
+    /// (`"askuser"` / `"exitplan"` / `"taskcreate"` / `"todowrite"` for the
+    /// live watcher, `"llm-extract"` for the post-hoc extractor), so a decision
+    /// captured live and re-extracted post-hoc with a different `source` is
+    /// intentionally NOT collapsed here — that cross-layer double is the
+    /// plan's documented tradeoff, not a bug.
+    ///
+    /// Queries the indexed `discoveries` table (`session_id`, `target`,
+    /// `discovery_type` columns) rather than `graph_entities` so the check is
+    /// index-backed, not a full scan + `json_extract`.
+    pub fn decision_exists(
+        &self,
+        session_id: &str,
+        sequence: i64,
+        target: &str,
+        source: &str,
+    ) -> Result<bool> {
+        let session_id = session_id.to_string();
+        let target = target.to_string();
+        let source = source.to_string();
+        super::with_graph_conn(&self.inner, move |conn| {
+            let mut stmt = conn.prepare_cached(
+                "SELECT 1 FROM discoveries
+                 WHERE session_id = ?
+                   AND target = ?
+                   AND discovery_type = 'Decision'
+                   AND json_extract(metadata, '$.source') = ?
+                   AND json_extract(metadata, '$.sequence') = ?
+                 LIMIT 1",
+            )?;
+            let exists = stmt.exists(params![session_id, target, source, sequence])?;
+            Ok(exists)
+        })
+    }
+
     pub fn query_discoveries_in_project(
         &self,
         target: &str,

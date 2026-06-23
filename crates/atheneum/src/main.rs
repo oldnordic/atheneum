@@ -887,6 +887,76 @@ fn run() -> anyhow::Result<()> {
                 "discoveries": discoveries.iter().map(entity_to_json).collect::<Vec<_>>(),
             }))?;
         }
+        "watch-decisions" => {
+            if args.len() < 3 {
+                eprintln!(
+                    "Usage: atheneum watch-decisions <db-path> \
+                     [--once] [--interval SECS] [--project P] [--agent A] \
+                     [--config-dir DIR]... [--dry-run] [--json]"
+                );
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(&args[2]);
+            let opts = parse_options(&args[3..])?;
+            let interval = parse_u64_option(opts.interval.as_deref(), "interval")?
+                .map(std::time::Duration::from_secs)
+                .unwrap_or_else(|| std::time::Duration::from_secs(2));
+            // `--config-dir` overrides the auto-discovered config roots. May be
+            // supplied multiple times; each must be an existing directory. It is
+            // not parsed by `parse_options` (which would reject it as unknown),
+            // so scan the raw args here.
+            let mut dirs: Vec<PathBuf> = Vec::new();
+            let mut i = 3;
+            while i < args.len() {
+                if args[i] == "--config-dir" {
+                    let v = args
+                        .get(i + 1)
+                        .ok_or_else(|| anyhow::anyhow!("--config-dir requires a value"))?;
+                    dirs.push(PathBuf::from(v));
+                    i += 2;
+                } else if args[i] == "--project" || args[i] == "--agent" || args[i] == "--interval"
+                {
+                    // value-bearing flags already consumed by parse_options;
+                    // skip the value here too.
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            let default_config = atheneum::graph::WatchConfig::default();
+            let config_dirs = if dirs.is_empty() {
+                default_config.config_dirs.clone()
+            } else {
+                dirs
+            };
+            let config = atheneum::graph::WatchConfig {
+                config_dirs,
+                interval,
+                project: opts.project.clone(),
+                agent: opts.agent.clone().unwrap_or_else(|| "claude".to_string()),
+                dry_run: opts.dry_run,
+                once: opts.once,
+            };
+            let graph = AtheneumGraph::open(&db_path)?;
+            let stats = atheneum::graph::watch_decisions(&graph, &config)?;
+            if opts.json {
+                print_json(json!({
+                    "files_scanned": stats.files_scanned,
+                    "decisions_emitted": stats.decisions_emitted,
+                    "decisions_skipped": stats.decisions_skipped,
+                    "once": config.once,
+                    "dry_run": config.dry_run,
+                }))?;
+            } else {
+                stdoutln(format_args!(
+                    "watch-decisions{}: {} file(s) scanned, {} decision(s) emitted, {} skipped (dup)",
+                    if config.once { " --once" } else { "" },
+                    stats.files_scanned,
+                    stats.decisions_emitted,
+                    stats.decisions_skipped,
+                ))?;
+            }
+        }
         "handoffs-recent" => {
             if args.len() < 3 {
                 eprintln!("Usage: atheneum handoffs-recent <db-path> [--project P] [--agent A] [--limit N]");
@@ -1219,6 +1289,10 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     )?;
     writeln!(
         writer,
+        "  watch-decisions <db> [--once] [--interval S] [--config-dir D]...  Tail live transcripts, capture decisions"
+    )?;
+    writeln!(
+        writer,
         "  store-discovery <db> <agent> <type> <target> [meta.json]  Store a discovery"
     )?;
     writeln!(
@@ -1420,6 +1494,10 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     )?;
     writeln!(
         writer,
+        "  atheneum watch-decisions ./atheneum.db --once --config-dir ~/.claude --project atheneum"
+    )?;
+    writeln!(
+        writer,
         "  atheneum store-discovery ./atheneum.db claude Bug http_handler bug.json"
     )?;
     writeln!(
@@ -1512,6 +1590,8 @@ struct CliOptions {
     auto_merge: bool,
     concise: bool,
     json: bool,
+    once: bool,
+    interval: Option<String>,
 }
 
 fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
@@ -1536,6 +1616,16 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
         } else if args[i] == "--only-decisions" {
             opts.only_decisions = true;
             i += 1;
+        } else if args[i] == "--once" {
+            opts.once = true;
+            i += 1;
+        } else if args[i] == "--config-dir" {
+            // Multi-valued flag consumed by `watch-decisions`; skipped here so
+            // it isn't rejected as unknown. The arm re-scans the raw args.
+            if args.get(i + 1).is_none() {
+                anyhow::bail!("--config-dir requires a value");
+            }
+            i += 2;
         } else if args[i].starts_with('-') && args[i] != "--data" {
             let key = args[i].as_str();
             let value = args
@@ -1564,6 +1654,7 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
                 "--kinds" => opts.kinds = Some(value),
                 "--role" => opts.role = Some(value),
                 "--search" => opts.search = Some(value),
+                "--interval" => opts.interval = Some(value),
                 other => anyhow::bail!("unknown option: {}", other),
             }
             i += 2;
@@ -1584,6 +1675,15 @@ fn parse_u32_option(value: Option<&str>, name: &str) -> anyhow::Result<Option<u3
     value
         .map(|s| {
             s.parse::<u32>()
+                .map_err(|e| anyhow::anyhow!("invalid {} '{}': {}", name, s, e))
+        })
+        .transpose()
+}
+
+fn parse_u64_option(value: Option<&str>, name: &str) -> anyhow::Result<Option<u64>> {
+    value
+        .map(|s| {
+            s.parse::<u64>()
                 .map_err(|e| anyhow::anyhow!("invalid {} '{}': {}", name, s, e))
         })
         .transpose()

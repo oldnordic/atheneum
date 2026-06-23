@@ -29,6 +29,7 @@ pub mod ontology;
 pub mod planning;
 pub mod search;
 pub mod types;
+pub mod watch;
 pub mod wiki;
 
 use cache::GraphRuntime;
@@ -49,6 +50,7 @@ pub use types::{
     SubgraphView, TaskDetail, TestRunParams, ToolCallParams, ToolCallRecord, ToolCallTrace,
     WikiSearchResult, ONTOLOGY_CLASS_KIND, ONTOLOGY_PROPERTY_KIND,
 };
+pub use watch::{watch_decisions, WatchConfig, WatchStats};
 pub use wiki::{
     content_hash, extract_kanban_updates, extract_wikilinks, parse_journal_sections,
     JournalSection, WikiPage,
