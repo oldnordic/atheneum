@@ -2088,9 +2088,59 @@ fn print_chat(report: &atheneum::graph::ChatReport) -> anyhow::Result<()> {
     if !report.decisions.is_empty() {
         out.push_str("\n## decisions\n");
         for d in &report.decisions {
-            out.push_str(&format!("- [{}] `{}` — {}", d.id, d.target, d.created_at));
+            let source = d.metadata.get("source").and_then(|v| v.as_str());
+            let seq = d.metadata.get("sequence").and_then(|v| v.as_i64());
+            out.push_str(&format!("- [{}] `{}`", d.id, d.target));
+            if let Some(src) = source {
+                out.push_str(&format!(" _src={}_", src));
+            }
+            if let Some(s) = seq {
+                out.push_str(&format!(" seq={}", s));
+            }
+            out.push_str(&format!(" — {}", d.created_at));
+            if let Some(chosen) = d.metadata.get("chosen").and_then(|v| v.as_str()) {
+                out.push_str(&format!(
+                    "\n    **chosen**: {}",
+                    truncate_snippet(chosen, 200)
+                ));
+            }
+            if let Some(rat) = d.metadata.get("rationale").and_then(|v| v.as_str()) {
+                if !rat.trim().is_empty() {
+                    out.push_str(&format!(
+                        "\n    _rationale_: {}",
+                        truncate_snippet(rat, 240)
+                    ));
+                }
+            }
+            if let Some(alts) = d.metadata.get("alternatives").and_then(|v| v.as_array()) {
+                if !alts.is_empty() {
+                    let list = alts
+                        .iter()
+                        .filter_map(|a| a.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    if !list.is_empty() {
+                        out.push_str(&format!("\n    _alternatives_: {}", list));
+                    }
+                }
+            }
             if let Some(why) = d.metadata.get("why").and_then(|v| v.as_str()) {
-                out.push_str(&format!("\n    _why_: {}", truncate_snippet(why, 160)));
+                if !why.trim().is_empty() {
+                    out.push_str(&format!("\n    _why_: {}", truncate_snippet(why, 160)));
+                }
+            }
+            if !d.chain.is_empty() {
+                out.push_str(&format!("\n    _chain_ ({}): ", d.chain.len()));
+                let labels: Vec<String> = d
+                    .chain
+                    .iter()
+                    .take(8)
+                    .map(|n| format!("[{}] {}", n.via, n.name))
+                    .collect();
+                out.push_str(&labels.join(" → "));
+                if d.chain.len() > 8 {
+                    out.push_str(" …");
+                }
             }
             out.push('\n');
         }

@@ -34,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   positives vs the LLM; zero deps. The default backend remains the Ollama LLM
   (`--mode llm`).
 
+### Changed
+
+- **`chat --only-decisions` renderer enriched** — each decision now prints
+  `source` + `sequence` inline and the `chosen` / `rationale` / `alternatives`
+  / `why` metadata as indented sub-lines (snippet-truncated), plus a `--walk`
+  chain snippet when `caused_by` / `led_to` edges exist. Previously emitted
+  only `id` / `target` / `created_at` / `why`, so the mode read as a bare
+  index rather than a rationale-bearing view.
+
 ## [0.9.0] — 2026-06-23
 
 Implements the chat-decision plan (decision capture from Claude Code chat

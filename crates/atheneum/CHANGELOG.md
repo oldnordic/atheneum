@@ -35,6 +35,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Selected via `--heuristic` / `--mode heuristic` / `ATHENEUM_EXTRACT_MODE=heuristic`.
   Lower recall + some false positives vs the LLM; zero deps. Default stays `Llm`.
 
+### Changed
+
+- **`chat --only-decisions` renderer enriched.** Each decision now prints
+  `source` and `sequence` inline, plus the `chosen`, `rationale`,
+  `alternatives`, and `why` metadata fields as indented sub-lines (truncated
+  to readable snippet widths), and a `--walk` chain snippet when `caused_by` /
+  `led_to` edges exist on the decision. Previously the renderer emitted only
+  `id` / `target` / `created_at` / `why`, so `--only-decisions` read as a bare
+  index rather than a rationale-bearing view.
+
 ## [0.9.0] — 2026-06-23
 
 Implements the chat-decision plan (decision capture from Claude Code chat

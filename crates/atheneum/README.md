@@ -169,7 +169,7 @@ extract-decisions <session-id> --model qwen3.5 --project atheneum
 atheneum watch-decisions ./atheneum.db --interval 2 --project atheneum
 
 # Observe: the decisions captured for a session (any source)
-atheneum chat ./atheneum.db <session_id> --only-decisions
+atheneum chat ./atheneum.db --session <session_id> --only-decisions
 atheneum discoveries-recent ./atheneum.db --session <session_id> --type Decision --limit 50
 ```
 
@@ -308,7 +308,7 @@ QUERY & NAVIGATION:
   search <db> <query> [--k N] [--project P] [--max-tokens N]         Lexical search (HNSW with --features semantic-search)
   navigate <db> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N]  Search then walk subgraphs
   thread <db> <query> [--k N] [--depth D=3] [--tokens T=1500] [--project P] [--json]  Walk a decision chain (caused_by/led_to edges)
-  chat <db> <session_id> [--tokens T] [--only-decisions] [--json]  Token-budgeted walk of a session's chat records (or just its decisions)
+  chat <db> --session <id> [--tokens T] [--direction recent|chrono] [--kinds K] [--role R] [--search Q] [--only-decisions] [--walk] [--offset N --limit L] [--json]  Token-budgeted walk of a session's chat records (or just its decisions)
   watch-decisions <db> [--once] [--interval S=2] [--config-dir D]... [--project P] [--agent A] [--dry-run]  Live-tail transcripts, capture structured decisions
   extract-decisions <db> [--all|<session-id>] [--dry-run] [--force] [--project P] [--agent A] [--model M] [--transcripts-dir D] [--max-chars N] [--ollama-url U] [--heuristic|--mode llm|heuristic] [--verbose]  Backfill decisions (LLM or --heuristic; feature: extract)
   query-wiki <db> <path>                            Query a wiki page by path

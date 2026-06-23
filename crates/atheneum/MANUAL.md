@@ -462,17 +462,25 @@ different fidelity and you may want both records.
 
 ### `chat` — token-budgeted chat navigation
 
-`atheneum chat <db> <session_id>` walks a session's records in `sequence`
+`atheneum chat <db> --session <id>` walks a session's records in `sequence`
 order, emitting `role` + a content snippet per record and bounding output to
 a token budget. `--only-decisions` narrows the walk to the session's
-`Decision` discoveries (from any source), deduped by the capture key.
+`Decision` discoveries (from any source), deduped by the capture key, and
+renders each with its `source` + `sequence` inline plus the `chosen` /
+`rationale` / `alternatives` / `why` metadata as indented sub-lines, so the
+mode reads as a rationale-bearing view rather than a bare index. Add `--walk`
+to append a `caused_by` / `led_to` chain snippet per decision when those edges
+exist.
 
 ```bash
 # Full session walk, bounded to ~2k tokens
-atheneum chat ./atheneum.db abc-123 --tokens 2000
+atheneum chat ./atheneum.db --session abc-123 --tokens 2000
 
 # Just the structured decisions captured for that session
-atheneum chat ./atheneum.db abc-123 --only-decisions --json
+atheneum chat ./atheneum.db --session abc-123 --only-decisions --json
+
+# Decisions with their linked chain snippet
+atheneum chat ./atheneum.db --session abc-123 --only-decisions --walk
 ```
 
 ### `extract-decisions` — one-shot LLM backfill (operator script)
