@@ -89,6 +89,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `semgrep ci --config .semgrep/rules/` all execute against the workspace from
   the same directory as `Cargo.toml`, instead of depending on crate-local paths
   or missing config files.
+- **`semantic-search` docs now describe the real boundary.** HNSW is now
+  documented as an opt-in human fuzzy-search candidate index, while the
+  default grounded retrieval path is graph traversal plus typed SQL payload
+  queries with no vector index required.
 
 ### Fixed
 

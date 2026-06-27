@@ -752,7 +752,9 @@ After healing, `sync-wiki`, `search-wiki`, and `backfill-wiki` work normally. Th
 
 ## HopGraph
 
-HopGraph is atheneum's retrieval model: **embeddings find the door, graph walk retrieves the room.** Unlike flat RAG, HopGraph uses vector similarity only to locate entry points, then expands connected knowledge via graph traversal.
+HopGraph is an optional retrieval mode: **embeddings find the door, graph walk retrieves the room.** Unlike flat RAG, HopGraph uses vector similarity only to locate entry points, then expands connected knowledge via graph traversal.
+
+This is not the mandatory agent path. Grounded LLM workflows can navigate and query Atheneum directly through graph edges and typed SQL payload tables without any HNSW index. The vector path is kept opt-in because it primarily helps human fuzzy search and costs real memory/CPU to maintain.
 
 ### Token-Budgeted Retrieval
 
@@ -1026,7 +1028,7 @@ Output is a JSON `DreamReport` with findings organized by phase (DEDUPLICATE, ST
 ### Query and Navigation
 
 ```bash
-# Lexical search over all entities (HNSW with --features semantic-search)
+# Lexical search over all entities (optional HNSW candidate index with --features semantic-search)
 atheneum search <db-path> <query> [--k N] [--project P] [--max-tokens N]
 
 # Search then BFS-walk graph subgraphs
@@ -1090,7 +1092,7 @@ atheneum neighbors <db-path> <entity-id> [--depth N]
 atheneum graph-stats <db-path>
 ```
 
-`search` matches on shared tokens -- not semantic similarity. "car" will not match "automobile". Good for symbol and identifier search. Use `--max-tokens` to truncate the result list before it reaches your LLM context window. The default build scans `graph_entities` with a bag-of-tokens scorer; the optional `semantic-search` feature swaps in an HNSW vector index (with a lexical fallback when the index is unavailable or returns too few hits).
+`search` matches on shared tokens -- not semantic similarity. "car" will not match "automobile". Good for symbol and identifier search. Use `--max-tokens` to truncate the result list before it reaches your LLM context window. The default build scans `graph_entities` with a bag-of-tokens scorer; the optional `semantic-search` feature adds an HNSW candidate index for human fuzzy lookup, with lexical ranking and lexical fallback still defining the final result order.
 
 `search-wiki` uses the FTS5 index over `wiki_pages` (`title`, `body`, and `path`). It returns ranked excerpts only; the full article body is never included in the output. Prefix queries work automatically: searching `rout` matches `Router`, `Routes`, and path fragments like `wiki/router.md`. If FTS5 returns no hits, `search-wiki` falls back to a graph-entity name/path/title substring search so partial concept queries still find stored pages. Use `--limit` and `--offset` for pagination, and `--project` to scope the search.
 
@@ -1309,7 +1311,7 @@ atheneum config show
 ### Maintenance
 
 ```bash
-# Rebuild HNSW search index (requires --features semantic-search; no-op otherwise)
+# Rebuild optional HNSW human-search index (requires --features semantic-search; no-op otherwise)
 atheneum reindex <db-path>
 
 # Merge discoveries into Knowledge entities
@@ -1322,7 +1324,7 @@ atheneum --version
 atheneum help
 ```
 
-`reindex` rebuilds the HNSW index over all entities and then runs a WAL checkpoint to reclaim disk space. Useful after bulk imports or if search results seem incomplete. No-op when the `semantic-search` feature is disabled (the default build has no HNSW index to rebuild). (Prior to v0.6.2, the checkpoint call could panic with "Execute returned results"; it now uses `query_row` because `PRAGMA wal_checkpoint` returns a row.)
+`reindex` rebuilds the optional HNSW index over all entities and then runs a WAL checkpoint to reclaim disk space. Useful only when you explicitly enabled `semantic-search` for human fuzzy search. No-op when the feature is disabled, which is the normal agent-oriented build. (Prior to v0.6.2, the checkpoint call could panic with "Execute returned results"; it now uses `query_row` because `PRAGMA wal_checkpoint` returns a row.)
 
 `consolidate` merges all Discovery entities for a target (or all targets) into deduplicated Knowledge entities with `DerivedFrom` edges. Idempotent -- re-running returns the existing Knowledge entity.
 
@@ -1333,7 +1335,7 @@ atheneum help
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `default` | yes | Core graph, wiki, sessions, planning, search, thread — lexical (bag-of-tokens) search + BFS graph navigation |
-| `semantic-search` | no | HNSW vector index for `search` (opt-in; heavy — index + embedder). Off by default; `search`/`navigate`/`thread` fall back to a lexical scan + graph traversal |
+| `semantic-search` | no | Optional HNSW candidate index for human fuzzy lookup in `search` (opt-in; heavy — index + embedder). Off by default; agent retrieval uses lexical search, graph traversal, and SQL payload queries |
 | `neural-embed` | no | Ollama neural embeddings (requires `ureq`, ollama + nomic-embed-text) |
 | `extract` | no | Native `atheneum extract-decisions` subcommand — Rust port of the `~/.local/bin/extract-decisions` script (LLM backend requires `ureq` + ollama, default `qwen3.5`; `--heuristic` backend needs no LLM/network) |
 | `web` | no | Web dashboard (axum + askama templates) |

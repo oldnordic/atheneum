@@ -91,7 +91,7 @@ graph.ingest_wiki_page("my-note.md", content, None)?;
 | Ontology | class/property schemas for typed entity reasoning |
 | Memory | keyed memories with scope, confidence, project scoping |
 | Dream | reflective consolidation pass over memories (merge, deduplicate, promote) |
-| Search index | FTS5 full-text + bag-of-tokens lexical scan (HNSW vector index optional via `semantic-search` feature) |
+| Search index | FTS5 full-text + bag-of-tokens lexical scan; optional HNSW candidate index for human fuzzy lookup via `semantic-search` |
 
 ## HTTP Access
 
@@ -212,7 +212,9 @@ sources by the same key.
 
 ## HopGraph
 
-HopGraph is atheneum's retrieval model: **embeddings find the door, graph walk retrieves the room.**
+HopGraph is an optional retrieval mode: **embeddings find the door, graph walk retrieves the room.**
+
+For grounded agent workflows, the default path is still direct graph traversal plus typed SQL reads. HopGraph exists for fuzzy human-style lookup when approximate vector entry points are useful enough to justify the extra index cost.
 
 1. A text query is embedded and matched against the lexical index to find entry-point entities.
 2. From each hit, a BFS walk expands the subgraph — following only allowed edge types (e.g., `Explains`, `Wikilink`).
@@ -277,7 +279,7 @@ graph.link_wiki_to_symbols(
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `default` | ✓ | Core graph, wiki, sessions, planning, search, thread — lexical (bag-of-tokens) search + BFS graph navigation |
-| `semantic-search` | — | HNSW vector index for `search` (opt-in; heavy — index + embedder). Off by default; lexical fallback + graph traversal suffice for `search`/`navigate`/`thread` |
+| `semantic-search` | — | Optional HNSW candidate index for human fuzzy lookup in `search` (opt-in; heavy — index + embedder). Off by default; agent retrieval uses lexical search, graph traversal, and SQL payload queries |
 | `neural-embed` | — | Ollama neural embeddings (requires `ureq`, ollama + nomic-embed-text) |
 | `extract` | — | Native `atheneum extract-decisions` subcommand (Rust port of the operator script; LLM backend requires `ureq` + ollama, default `qwen3.5`; `--heuristic` backend needs no LLM/network) |
 | `web` | — | Web dashboard (axum + askama templates) |
@@ -312,7 +314,7 @@ DREAM:
   dream <db> [--scope S] [--project P] [--dry-run|--auto-merge]  Reflective memory consolidation
 
 QUERY & NAVIGATION:
-  search <db> <query> [--k N] [--project P] [--max-tokens N]         Lexical search (HNSW with --features semantic-search)
+  search <db> <query> [--k N] [--project P] [--max-tokens N]         Lexical search (optional HNSW candidate index with --features semantic-search)
   navigate <db> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N]  Search then walk subgraphs
   thread <db> <query> [--k N] [--depth D=3] [--tokens T=1500] [--project P] [--json]  Walk a decision chain (caused_by/led_to edges)
   chat <db> --session <id> [--tokens T] [--direction recent|chrono] [--kinds K] [--role R] [--search Q] [--only-decisions] [--walk] [--offset N --limit L] [--json]  Token-budgeted walk of a session's chat records (or just its decisions)
@@ -337,7 +339,7 @@ QUERY & NAVIGATION:
   graph-stats <db>                                  Graph topology counts
 
 MAINTENANCE:
-  reindex <db>                                      Rebuild HNSW search index
+  reindex <db>                                      Rebuild optional HNSW human-search index
   consolidate <db> [target] [--project P]           Merge discoveries into Knowledge
 ```
 

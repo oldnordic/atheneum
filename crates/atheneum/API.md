@@ -103,7 +103,7 @@ Query the current embedder's vector dimension.
 
 ### `build_search_index() -> Result<()>`
 
-Rebuild the HNSW search index over all entities. Called automatically on first search, but can be forced after embedder swaps or bulk imports.
+Rebuild the optional HNSW candidate index over all entities. This is only relevant when the `semantic-search` feature is enabled for human fuzzy lookup; grounded agent workflows do not require it.
 
 ---
 
@@ -336,7 +336,7 @@ Returns `{ discoveries: [...], handoffs: [...] }` for a target in a project.
 
 ### `store_memory(key, content, scope, confidence, project_id, tags) -> Result<i64>`
 
-Store or update a memory entry. Upsert by composite key (key, scope, project_id). Auto-indexed in HNSW.
+Store or update a memory entry. Upsert by composite key (key, scope, project_id). When `semantic-search` is enabled, the entry is also added to the optional HNSW candidate index.
 
 ```rust
 let id = graph.store_memory(
@@ -589,10 +589,11 @@ FTS5 over all entities. Fast keyword search.
 
 ### `lexical_search(query, k, project_id, entity_kind, max_tokens) -> Result<Vec<SearchResult>>`
 
-Hash-projected lexical retrieval with optional HNSW acceleration when the
-`semantic-search` feature is enabled. Finds entities sharing tokens with
+Hash-projected lexical retrieval with optional HNSW candidate generation when
+the `semantic-search` feature is enabled. Finds entities sharing tokens with
 `query`, then applies a provenance-aware rerank that favors authoritative
-`WikiPage` and `Discovery` style results in mixed corpora.
+`WikiPage` and `Discovery` style results in mixed corpora. The final ranking
+contract is lexical plus provenance-aware, not vector-semantic.
 **Lexical similarity only** -- no neural model, no synonym awareness. Synonyms with no token
 overlap score 0. Fast and dependency-free; good for symbol/identifier search.
 
@@ -616,7 +617,7 @@ Fuzzy entity lookup over the search index without mutation. Returns ranked candi
 
 ### `hopgraph_query(query, k, depth, allowed_types, max_tokens, project_id) -> Result<Vec<SubgraphView>>`
 
-Main retrieval API: lexical search -> filtered BFS subgraph -> token-budgeted truncation.
+Optional retrieval mode: lexical/vector entry-point search -> filtered BFS subgraph -> token-budgeted truncation. Grounded agent workflows can also navigate the graph and SQL payloads directly without HopGraph.
 
 ```rust
 let views = graph.hopgraph_query(
