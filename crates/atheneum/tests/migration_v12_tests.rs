@@ -5,8 +5,9 @@
 //! (`record_session` → `record_evidence_prompt` / `record_evidence_tool_call`)
 //! and the real migration body (`db::chat::migrate_v12_chat_columns_fts`):
 //!
-//! 1. A fresh in-memory DB migrates to v12 and has the generated columns,
-//!    composite indexes, `entity_fts` virtual table, and four sync triggers.
+//! 1. A fresh in-memory DB migrates through the current schema head and still
+//!    has the v12 generated columns, composite indexes, `entity_fts` virtual
+//!    table, and four sync triggers.
 //! 2. The generated columns (`session_id`, `sequence`, `role`, `content_text`)
 //!    populate automatically from `graph_entities.data` JSON when chat rows are
 //!    inserted via the existing evidence path — i.e. migration v12 required
@@ -14,8 +15,8 @@
 //! 3. The FTS5 external-content table is kept in sync for chat kinds only
 //!    (insert / delete / the two split update triggers), and session/sequence
 //!    lookups use the composite index rather than a table scan.
-//! 4. Re-opening an already-migrated DB is idempotent (v12 is skipped, schema
-//!    and indexed rows survive).
+//! 4. Re-opening an already-migrated DB is idempotent (the applied migrations
+//!    stay stamped, and the schema plus indexed rows survive).
 //!
 //! The live (`~/.local/share/atheneum/atheneum.db`) v11→v12 upgrade is exercised
 //! out-of-band in Phase 6 with the envoy stopped; touching a live, WAL-active
@@ -24,6 +25,8 @@
 use atheneum::graph::{AtheneumGraph, PromptParams, SessionParams, ToolCallParams};
 use rusqlite::params;
 use serde_json::json;
+
+const CURRENT_SCHEMA_VERSION: i64 = 13;
 
 /// Minimal `SessionParams` for the synthetic session `sess_v12`.
 fn session_params() -> SessionParams {
@@ -146,7 +149,10 @@ fn fresh_db_has_v12_schema() {
             "missing v12 object `{required}`; have: {objects:?}"
         );
     }
-    assert_eq!(version, 12, "schema_version should be stamped to 12");
+    assert_eq!(
+        version, CURRENT_SCHEMA_VERSION,
+        "schema_version should be stamped to the current migration head"
+    );
 }
 
 /// Zero insert-path change: a ReasoningLog written via the existing evidence
@@ -441,8 +447,8 @@ fn delete_trigger_removes_chat_from_fts() {
     );
 }
 
-/// Re-opening an already-migrated DB is idempotent: v12 is skipped, the schema
-/// objects and indexed rows survive the close/reopen.
+/// Re-opening an already-migrated DB is idempotent: the schema head stays
+/// stamped, and the schema objects plus indexed rows survive the close/reopen.
 #[test]
 fn reopen_is_idempotent() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -456,7 +462,7 @@ fn reopen_is_idempotent() {
             .expect("prompt");
     }
 
-    // Reopen — v12 is already stamped, so the migration must be a no-op.
+    // Reopen — all migrations are already stamped, so re-open must be a no-op.
     let graph = AtheneumGraph::open(&db_path).expect("open 2");
 
     let (version, fts_hit, cols_ok): (i64, i64, bool) = graph
@@ -481,8 +487,8 @@ fn reopen_is_idempotent() {
         .expect("reopen query");
 
     assert_eq!(
-        version, 12,
-        "schema_version should still be 12 after reopen"
+        version, CURRENT_SCHEMA_VERSION,
+        "schema_version should still be at the current migration head after reopen"
     );
     assert!(cols_ok, "generated columns should survive reopen");
     assert_eq!(

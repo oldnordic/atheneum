@@ -1246,6 +1246,19 @@ fn run() -> anyhow::Result<()> {
                 "items": items.iter().map(entity_to_json).collect::<Vec<_>>(),
             }))?;
         }
+        "memory-bootstrap" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum memory-bootstrap <db-path> [--project P] [--tokens T] [--last N]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let opts = parse_options(&args[3..])?;
+            let tokens = parse_usize_option(opts.tokens.as_deref(), "tokens")?.unwrap_or(800);
+            let last = parse_i64_option(opts.last.as_deref(), "last")?.unwrap_or(3);
+            let graph = AtheneumGraph::open(&db_path)?;
+            let value = graph.compose_memory_bootstrap(opts.project.as_deref(), tokens, last)?;
+            print_json(value)?;
+        }
         "dream" => {
             if args.len() < 3 {
                 eprintln!("Usage: atheneum dream <db-path> [--scope S] [--project P] [--dry-run|--auto-merge]");
@@ -1502,6 +1515,10 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     writeln!(
         writer,
         "  memory-list <db> [--scope S] [--project P] [--offset N] [--limit N]  List memories (paginated)"
+    )?;
+    writeln!(
+        writer,
+        "  memory-bootstrap <db> [--project P] [--tokens T] [--last N]  Memories + session digest packet"
     )?;
     writeln!(writer)?;
     writeln!(writer, "DREAM:")?;

@@ -13,6 +13,9 @@ use super::cache::{CacheDomain, QueryCacheKey, QueryCacheValue};
 use super::hashing::content_hash_excluding;
 use super::{AtheneumGraph, EntityType, MemoryPreview};
 
+type MemoryEntry = (String, String, String, f64, String);
+type ScoredMemoryRef<'a> = (f64, &'a MemoryEntry);
+
 impl AtheneumGraph {
     #[allow(
         clippy::too_many_arguments,
@@ -446,6 +449,288 @@ impl AtheneumGraph {
             QueryCacheValue::Entities(out.clone()),
         );
         Ok(out)
+    }
+
+    /// Compose a token-bounded bootstrap packet: recent memories + session digest.
+    ///
+    /// Memories are scored by relevance to recent discoveries (graph-aware) and
+    /// recency, rather than purely by `updated_at`. Returns JSON:
+    /// ```json
+    /// {
+    ///   "memories": [{"key": "...", "content": "...", "confidence": 1.0, "scope": "...", "updated_at": "..."}],
+    ///   "session_digest": "...",
+    ///   "token_estimate": 123,
+    ///   "relevance_context": ["term1", "term2", ...]
+    /// }
+    /// ```
+    pub fn compose_memory_bootstrap(
+        &self,
+        project: Option<&str>,
+        token_budget: usize,
+        last_sessions: i64,
+    ) -> Result<Value> {
+        const CHARS_PER_TOKEN: usize = 4;
+
+        let mem_budget = token_budget / 2;
+        let digest_budget = token_budget - mem_budget;
+
+        // Build relevance set from recent discoveries' targets.
+        // Split targets on whitespace, underscores, hyphens into indexable terms.
+        let (relevance_terms, top_context_terms) = self.with_raw_connection(|conn| {
+            let targets: Vec<String> = if let Some(pid) = project {
+                let mut s = conn.prepare_cached(
+                    "SELECT target FROM discoveries
+                     WHERE COALESCE(project_id, '') = ?1
+                     ORDER BY created_at DESC LIMIT 20",
+                )?;
+                let mut rows = Vec::new();
+                for v in s
+                    .query_map(rusqlite::params![pid], |r| r.get::<_, String>(0))?
+                    .flatten()
+                {
+                    rows.push(v);
+                }
+                rows
+            } else {
+                let mut s = conn.prepare_cached(
+                    "SELECT target FROM discoveries ORDER BY created_at DESC LIMIT 20",
+                )?;
+                let mut rows = Vec::new();
+                for v in s.query_map([], |r| r.get::<_, String>(0))?.flatten() {
+                    rows.push(v);
+                }
+                rows
+            };
+
+            let mut term_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut ordered: Vec<String> = Vec::new();
+            for target in &targets {
+                for part in target.split(|c: char| c.is_whitespace() || c == '_' || c == '-') {
+                    let t = part.to_lowercase();
+                    if t.len() > 2 && term_set.insert(t.clone()) {
+                        ordered.push(t);
+                    }
+                }
+            }
+            let top10: Vec<String> = ordered.into_iter().take(10).collect();
+            Ok((term_set, top10))
+        })?;
+
+        // BFS on graph_edges (depth 2) from recent Decision/Discovery nodes.
+        // Builds a set of memory keys that are graph-connected to recent activity.
+        let graph_boosted_keys: std::collections::HashSet<String> = self
+            .with_raw_connection(|conn| {
+                // Step 1: seed nodes — most recent Decision/Discovery entities.
+                let mut seed_ids: Vec<i64> = Vec::new();
+                {
+                    let mut s = conn.prepare_cached(
+                        "SELECT id FROM graph_entities
+                         WHERE kind IN ('Decision','Discovery')
+                         ORDER BY id DESC LIMIT 30",
+                    )?;
+                    for v in s.query_map([], |r| r.get::<_, i64>(0))?.flatten() {
+                        seed_ids.push(v);
+                    }
+                }
+
+                if seed_ids.is_empty() {
+                    return Ok(std::collections::HashSet::new());
+                }
+
+                // Step 2: BFS depth 2 across led_to/caused_by/related_to edges.
+                let mut visited: std::collections::HashSet<i64> =
+                    seed_ids.iter().copied().collect();
+                let mut frontier: Vec<i64> = seed_ids;
+                for _ in 0..2 {
+                    if frontier.is_empty() || visited.len() >= 200 {
+                        break;
+                    }
+                    let mut next_frontier: Vec<i64> = Vec::new();
+                    for node_id in &frontier {
+                        let mut s = conn.prepare_cached(
+                            "SELECT from_id, to_id FROM graph_edges
+                             WHERE (from_id = ?1 OR to_id = ?1)
+                               AND edge_type IN ('led_to','caused_by','related_to')",
+                        )?;
+                        for (from, to) in s
+                            .query_map(rusqlite::params![node_id], |r| {
+                                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+                            })?
+                            .flatten()
+                        {
+                            for neighbor in [from, to] {
+                                if visited.insert(neighbor) {
+                                    next_frontier.push(neighbor);
+                                    if visited.len() >= 200 {
+                                        break;
+                                    }
+                                }
+                            }
+                            if visited.len() >= 200 {
+                                break;
+                            }
+                        }
+                        if visited.len() >= 200 {
+                            break;
+                        }
+                    }
+                    frontier = next_frontier;
+                }
+
+                // Step 3: find Memory nodes in the visited set, extract their keys.
+                let mut boosted: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                for entity_id in &visited {
+                    let mut s =
+                        conn.prepare_cached("SELECT kind, data FROM graph_entities WHERE id = ?1")?;
+                    let mut rows: Vec<(String, String)> = Vec::new();
+                    for v in s
+                        .query_map(rusqlite::params![entity_id], |r| {
+                            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                        })?
+                        .flatten()
+                    {
+                        rows.push(v);
+                    }
+                    for (kind, data_str) in rows {
+                        if kind == "Memory" {
+                            if let Ok(data) = serde_json::from_str::<Value>(&data_str) {
+                                if let Some(key) = data.get("key").and_then(|v| v.as_str()) {
+                                    boosted.insert(key.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(boosted)
+            })
+            .unwrap_or_default();
+
+        // Fetch all candidate memories.
+        let memories: Vec<MemoryEntry> = self.with_raw_connection(|conn| {
+            let mut out = Vec::new();
+            if let Some(pid) = project {
+                let mut s = conn.prepare_cached(
+                    "SELECT key, scope, content, confidence, COALESCE(updated_at, created_at)
+                         FROM memory_entries
+                         WHERE COALESCE(project_id, '') = ?1
+                         LIMIT 200",
+                )?;
+                for row in s.query_map(rusqlite::params![pid], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, f64>(3)?,
+                        r.get::<_, String>(4)?,
+                    ))
+                })? {
+                    out.push(row?);
+                }
+            } else {
+                let mut s = conn.prepare_cached(
+                    "SELECT key, scope, content, confidence, COALESCE(updated_at, created_at)
+                         FROM memory_entries
+                         LIMIT 200",
+                )?;
+                for row in s.query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, f64>(3)?,
+                        r.get::<_, String>(4)?,
+                    ))
+                })? {
+                    out.push(row?);
+                }
+            }
+            Ok(out)
+        })?;
+
+        // Score each memory: relevance_hits + recency_bonus.
+        let now_ts = chrono::Utc::now();
+        let mut scored: Vec<ScoredMemoryRef<'_>> = memories
+            .iter()
+            .map(|m| {
+                let (key, _scope, content, _confidence, updated_at) = m;
+                let base_relevance: f64 = if relevance_terms.is_empty() {
+                    0.0
+                } else {
+                    let searchable = format!("{} {}", key, content).to_lowercase();
+                    let hits = relevance_terms
+                        .iter()
+                        .filter(|t| searchable.contains(t.as_str()))
+                        .count();
+                    hits as f64
+                };
+                let recency_bonus = chrono::DateTime::parse_from_rfc3339(updated_at)
+                    .ok()
+                    .map(|dt| {
+                        let days = now_ts
+                            .signed_duration_since(dt.with_timezone(&chrono::Utc))
+                            .num_days()
+                            .max(0) as f64;
+                        1.0 / (days + 1.0)
+                    })
+                    .unwrap_or(0.0);
+                let graph_boost = if graph_boosted_keys.contains(key.as_str()) {
+                    2.0
+                } else {
+                    0.0
+                };
+                (base_relevance + recency_bonus + graph_boost, m)
+            })
+            .collect();
+
+        // Sort descending by score; fall back to original order on equal scores.
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Fit top-scored memories into budget, skipping oversized entries.
+        const MAX_CONTENT_CHARS: usize = 1200; // ~300 tokens per entry cap
+        let mut mem_tokens_used = 0usize;
+        let mut mem_out = Vec::new();
+        let mut graph_connected_count = 0usize;
+        for (_score, (key, scope, content, confidence, updated_at)) in &scored {
+            let truncated_content = if content.len() > MAX_CONTENT_CHARS {
+                &content[..MAX_CONTENT_CHARS]
+            } else {
+                content.as_str()
+            };
+            let entry_chars =
+                key.len() + scope.len() + truncated_content.len() + updated_at.len() + 30;
+            let entry_tokens = entry_chars.div_ceil(CHARS_PER_TOKEN);
+            if mem_tokens_used + entry_tokens > mem_budget {
+                continue; // skip oversized, don't stop — smaller entries may still fit
+            }
+            mem_tokens_used += entry_tokens;
+            let is_graph_connected = graph_boosted_keys.contains(key.as_str());
+            if is_graph_connected {
+                graph_connected_count += 1;
+            }
+            mem_out.push(json!({
+                "key": key,
+                "scope": scope,
+                "content": truncated_content,
+                "confidence": confidence,
+                "updated_at": updated_at,
+                "graph_connected": is_graph_connected,
+            }));
+        }
+
+        // Compose session digest (text form, token-bounded).
+        let digest_text = self
+            .compose_digest(project, last_sessions, digest_budget)
+            .unwrap_or_default();
+        let digest_tokens = digest_text.len().div_ceil(CHARS_PER_TOKEN);
+
+        Ok(json!({
+            "memories": mem_out,
+            "session_digest": digest_text,
+            "token_estimate": mem_tokens_used + digest_tokens,
+            "relevance_context": top_context_terms,
+            "graph_connected": graph_connected_count,
+        }))
     }
 }
 

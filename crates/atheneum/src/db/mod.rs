@@ -54,6 +54,11 @@ const MIGRATIONS: &[(u32, &str, Migration)] = &[
         knowledge::migrate_v11_discoveries_session,
     ),
     (12, "chat-columns-fts", chat::migrate_v12_chat_columns_fts),
+    (
+        13,
+        "discovery-context-snapshot",
+        knowledge::migrate_v13_discovery_context_snapshot,
+    ),
 ];
 
 /// Apply any pending migrations to the connection. Idempotent — already-

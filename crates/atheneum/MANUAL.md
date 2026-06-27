@@ -112,14 +112,18 @@ When changing Atheneum itself, keep the docs and gates in sync:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --all-features -p atheneum -- -D warnings
-cargo test --all-features -p atheneum
+cargo clippy --all-targets -- -D warnings
+cargo test --workspace
+cargo deny check
+gitleaks detect --verbose --config .gitleaks.toml
+semgrep ci --oss-only --config .semgrep/rules/
 ```
 
 Rules:
 
 - Update `CHANGELOG.md` for every user-visible fix, behavior change, or workflow change.
 - Update `MANUAL.md` when you add or change a public function, CLI command, flag, or operator workflow.
+- Refresh `README.md`, `ARCHITECTURE.md`, and `API.md` before a release when public workflows or signatures changed.
 - Prefer adding the manual/changelog update in the same patch as the code change so the docs cannot drift.
 - A repo-local `.claude/` wrapper (if present on your machine) is not published — run it from the repo root for your own gating, but rely on the `cargo` commands above for the published check.
 

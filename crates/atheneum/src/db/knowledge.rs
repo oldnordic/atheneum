@@ -115,6 +115,24 @@ pub fn migrate_v11_discoveries_session(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
+pub fn migrate_v13_discovery_context_snapshot(tx: &Transaction<'_>) -> Result<()> {
+    let has_column: bool = {
+        let mut stmt = tx.prepare("PRAGMA table_info(discoveries)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        let mut found = false;
+        for row in rows {
+            if row? == "context_snapshot" {
+                found = true;
+            }
+        }
+        found
+    };
+    if !has_column {
+        tx.execute_batch("ALTER TABLE discoveries ADD COLUMN context_snapshot TEXT;")?;
+    }
+    Ok(())
+}
+
 fn backfill_discoveries(tx: &Transaction<'_>) -> Result<()> {
     let mut stmt = tx.prepare(
         "SELECT id, data FROM graph_entities

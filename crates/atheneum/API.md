@@ -158,6 +158,12 @@ Returns up to `last_n` sessions, newest first. Filter by parent_id for child ses
 
 Primary paginated session query. Uses SQL `LIMIT ? OFFSET ?` and is not cached.
 
+### `query_sessions_recent(project: Option<&str>, agent: Option<&str>, limit: i64, exclude_projects: &[String]) -> Result<Vec<SessionSummary>>`
+
+Operator-facing recent-session query with optional project and agent filters.
+`exclude_projects` hides noisy fallback buckets such as `tmp` and `Projects`
+without re-attributing rows, and the `LIMIT` is applied after exclusion.
+
 ```rust
 pub struct SessionSummary {
     pub session_id: String,
@@ -581,9 +587,12 @@ pub struct ClaudeTranscriptImportParams {
 
 FTS5 over all entities. Fast keyword search.
 
-### `lexical_search(query, k, project_id, entity_kind) -> Result<Vec<SearchResult>>`
+### `lexical_search(query, k, project_id, entity_kind, max_tokens) -> Result<Vec<SearchResult>>`
 
-HNSW index over hash-projected token vectors. Finds entities sharing tokens with `query`.
+Hash-projected lexical retrieval with optional HNSW acceleration when the
+`semantic-search` feature is enabled. Finds entities sharing tokens with
+`query`, then applies a provenance-aware rerank that favors authoritative
+`WikiPage` and `Discovery` style results in mixed corpora.
 **Lexical similarity only** -- no neural model, no synonym awareness. Synonyms with no token
 overlap score 0. Fast and dependency-free; good for symbol/identifier search.
 
@@ -628,6 +637,11 @@ Search + subgraph walk. Like `hopgraph_query` but without token budgeting.
 
 `--concise` emits compact Markdown instead of JSON, optimized for language-model context windows.
 
+### `thread_query(query, k, depth, project_id, max_tokens) -> Result<Vec<SubgraphView>>`
+
+Decision-chain retrieval. Seeds from `ReasoningLog` and `Discovery` lexical
+matches, then walks only `CausedBy` and `LedTo` edges under a token budget.
+
 ### `preview_navigate_query(query, k, depth, project_id, entity_kind) -> Result<NavigateQueryPlan>`
 
 Validate and repair a navigation query before execution. Trims whitespace, resolves entity-kind aliases (`memory` -> `Memory`, `wiki` -> `WikiPage`), rejects unknown kinds.
@@ -667,6 +681,31 @@ Merge all Discovery entities for a target into a single Knowledge entity with `D
 Consolidate all distinct discovery targets. Returns (target, knowledge_id) pairs.
 
 ---
+
+## Decisions And Memory
+
+### `decision_exists(session_id, sequence, target, source) -> Result<bool>`
+
+Dedup guard for transcript-backed decision capture. Returns true iff a
+`Decision` already exists for the exact `(session_id, sequence, target, source)`
+tuple.
+
+### `decision_exists_chosen(session_id, target, source, chosen) -> Result<bool>`
+
+Dedup guard for skill and manual decision capture where no stable transcript
+sequence exists. Keys on `(session_id, target, source, chosen)`.
+
+### `compose_memory_bootstrap(project, token_budget, last_sessions) -> Result<Value>`
+
+Build a bounded bootstrap packet containing a graph-aware ranked memory set,
+the session digest, a token estimate, and the top relevance terms harvested
+from recent discoveries.
+
+### `run_extract(config: &ExtractConfig) -> Result<ExtractStats>`
+
+Native `extract-decisions` entry point behind the `extract` feature. Resolves
+transcripts, runs either the LLM or heuristic backend, and stores `Decision`
+discoveries in-process unless `dry_run` is set.
 
 ## Graph Introspection
 

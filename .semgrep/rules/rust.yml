@@ -1,0 +1,11 @@
+rules:
+  - id: atheneum-rust-shell-command
+    message: Avoid spawning a shell with `sh -c` or `bash -c`; pass arguments directly where possible.
+    severity: WARNING
+    languages:
+      - rust
+    pattern-either:
+      - pattern: |
+          std::process::Command::new("sh").arg("-c").arg(...)
+      - pattern: |
+          std::process::Command::new("bash").arg("-c").arg(...)

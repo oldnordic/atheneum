@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-06-27
 ### Added
 
 - **`graph::extract_decisions` — native LLM decision backfill** (feature
@@ -72,6 +73,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gate instead. The `plugin/atheneum-decisions/` companion plugin was already
   portable (`${CLAUDE_PLUGIN_ROOT}`, `$ATHENEUM_DB`, `$HOME`,
   `$CLAUDE_CODE_SESSION_ID`) and ships unchanged.
+- **Lexical ranking now applies a first-pass provenance-aware reranker.**
+  Mixed-kind results still start from token overlap, but authoritative
+  `WikiPage` and `Discovery` style documents are boosted while
+  `CHANGELOG`, low-signal untitled pages, `File`, `Event`, and stray
+  `ReasoningLog` hits are demoted for architecture/capabilities queries.
+- **Workspace verification now runs from the repo root without path drift.**
+  Root `deny.toml`, `.gitleaks.toml`, and `.semgrep/rules/` files are now
+  checked in so the published gate commands work from the same directory as
+  the workspace `Cargo.toml`.
 
 ### Fixed
 
@@ -86,6 +96,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (sync-* project-id, sync-claude-transcript project/agent) error on a
   flag-looking value; optional slots followed by the option parser keep the
   existing flag-means-absent behavior. The option-parsing path is unchanged.
+- **Search regression coverage for mixed wiki corpora.** The semantic search
+  test suite now includes benchmark-style ranking cases that model the live
+  Atheneum wiki mix and assert that canonical architecture/capabilities pages
+  outrank changelog and transcript shadows.
+- **`compose_memory_bootstrap` is clippy-clean again.** The memory bootstrap
+  path now uses iterator flattening for `rusqlite` row iteration, local tuple
+  aliases for the ranked memory shape, and `div_ceil()` for token estimation.
 
 ## [0.9.0] — 2026-06-23
 

@@ -107,13 +107,17 @@ impl AtheneumGraph {
             .get("session_id")
             .and_then(|v| v.as_str())
             .map(String::from);
+        let context_snapshot_s = metadata
+            .get("context_snapshot")
+            .and_then(|v| v.as_str())
+            .map(String::from);
         let metadata_str = super::json_to_string(&metadata)?;
         let created_at = Utc::now().to_rfc3339();
         let sql_id = self.with_raw_connection(|conn| {
             conn.execute(
                 "INSERT INTO discoveries
-                    (agent_name, discovery_type, target, project_id, session_id, metadata, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    (agent_name, discovery_type, target, project_id, session_id, metadata, created_at, context_snapshot)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 rusqlite::params![
                     agent_s,
                     discovery_type_s,
@@ -121,7 +125,8 @@ impl AtheneumGraph {
                     project_id_s,
                     session_id_s,
                     metadata_str,
-                    created_at
+                    created_at,
+                    context_snapshot_s,
                 ],
             )?;
             Ok(conn.last_insert_rowid())

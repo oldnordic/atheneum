@@ -7,8 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+## [0.10.0] - 2026-06-27
 
+### Added
 - **`extract-decisions` native subcommand** — Rust port of the
   `~/.local/bin/extract-decisions` operator script, behind the `extract`
   Cargo feature (default off). `atheneum extract-decisions <db> [--all |
@@ -40,6 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   git-toplevel-basename fallback yields the dir basename). `LIMIT` applies
   after exclusion. `query_sessions_recent` gained an `exclude_projects`
   parameter (SQL `AND s.project NOT IN (...)`).
+- **Ranking benchmark manifest** — `docs/ranking-benchmark-manifest.json`
+  records mixed-corpus retrieval queries, expected authoritative hits, and
+  classes of results that should be demoted (`File`, `ReasoningLog`,
+  `CHANGELOG`, low-signal untitled pages). It exists so ranking work is tied
+  to explicit query expectations instead of “results feel better”.
 
 ### Changed
 
@@ -68,6 +74,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   test` gate instead. The `plugin/atheneum-decisions/` companion plugin was
   already portable (`${CLAUDE_PLUGIN_ROOT}`, `$ATHENEUM_DB`, `$HOME`,
   `$CLAUDE_CODE_SESSION_ID`) and ships unchanged.
+- **Lexical ranking now applies a first-pass provenance-aware reranker.**
+  Results are still seeded by token overlap, but mixed-kind ranking now boosts
+  `WikiPage`, `Discovery`, and canonical project-doc patterns
+  (`*-architecture.md`, `*-capabilities.md`, `*-cli-reference.md`) while
+  demoting weaker support entities such as `File`, `Event`, and
+  architecture-irrelevant `ReasoningLog` hits. Architecture/capabilities-style
+  queries also penalize `CHANGELOG`, `Kanban`, and low-signal untitled pages
+  so broad navigation favors authoritative project docs over operational or
+  transcript exhaust.
+- **Workspace verification now runs from the repo root without path drift.**
+  Root `deny.toml`, `.gitleaks.toml`, and `.semgrep/rules/` files were added so
+  `cargo deny check`, `gitleaks detect --config .gitleaks.toml`, and
+  `semgrep ci --config .semgrep/rules/` all execute against the workspace from
+  the same directory as `Cargo.toml`, instead of depending on crate-local paths
+  or missing config files.
 
 ### Fixed
 
@@ -86,6 +107,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on a flag-looking value; optional slots followed by the option parser keep
   the existing flag-means-absent behavior. `--json` and the option-parsing path
   are unchanged.
+- **Search regression coverage for mixed wiki corpora.** `semantic_search_tests`
+  now includes benchmark-style ranking cases that model the real Atheneum wiki
+  mix: canonical `WikiPage` beats transcript/file-style shadows, architecture
+  pages outrank changelog-style pages for architecture queries, and a small
+  hand-built mixed corpus exercises the demotion rules for low-signal untitled
+  pages. This locks the new reranker against the exact navigation failures that
+  showed up in the live 649-page Atheneum wiki.
+- **`compose_memory_bootstrap` is clippy-clean again.** The graph-aware memory
+  bootstrap path now uses iterator flattening for `rusqlite` row iteration,
+  factors the scored memory tuple into local type aliases, and replaces manual
+  token math with `div_ceil()`. This removes the repo’s `cargo clippy
+  --all-targets -D warnings` failures without changing bootstrap behavior.
+  A table-driven benchmark asserts expected top hits for
+  `rocmforge capabilities`, `atheneum architecture`, `constraint design`, and
+  `sovereign llm platform`.
+
+## [0.9.2] - 2026-06-24
+
+### Added
+- `compose_memory_bootstrap`: BFS graph traversal (depth-2, led_to/caused_by/related_to edges) boosts graph-connected memories by +2.0 in ranking
+- `compose_memory_bootstrap`: `graph_connected` count field in JSON output; each memory entry includes `graph_connected: bool`
+
+## [0.9.1] - 2026-06-24
+
+### Added
+- `compose_memory_bootstrap`: graph-aware relevance scoring via recent discovery targets
+- `compose_memory_bootstrap`: `relevance_context` field in JSON output (top 10 focus terms)
+- `discoveries` table: `context_snapshot TEXT` column (migration v13) for decision-with-context capture
+- `store_discovery`: accepts optional `context_snapshot` field in metadata
 
 ## [0.9.0] — 2026-06-23
 

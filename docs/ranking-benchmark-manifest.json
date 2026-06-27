@@ -1,0 +1,82 @@
+{
+  "name": "atheneum-ranking-benchmark",
+  "version": 1,
+  "created": "2026-06-27",
+  "purpose": "Track expected authoritative hits for mixed-corpus retrieval and navigation queries.",
+  "notes": [
+    "This manifest is intentionally corpus-shaped, not purely synthetic.",
+    "Expected hits represent authoritative targets, not the only acceptable matches.",
+    "Use this together with semantic_search_tests.rs when adjusting ranking."
+  ],
+  "queries": [
+    {
+      "query": "rocmforge capabilities",
+      "intent": "architecture_navigation",
+      "expected_top_1": [
+        "wiki/rocmforge-capabilities.md"
+      ],
+      "expected_top_3": [
+        "wiki/rocmforge-capabilities.md",
+        "wiki/rocmforge-architecture.md"
+      ],
+      "should_penalize": [
+        "wiki/rocmforge-CHANGELOG.md",
+        "File:*rocmforge-capabilities*",
+        "ReasoningLog:*rocmforge*"
+      ]
+    },
+    {
+      "query": "atheneum architecture",
+      "intent": "architecture_navigation",
+      "expected_top_1": [
+        "wiki/atheneum-architecture.md"
+      ],
+      "expected_top_3": [
+        "wiki/atheneum-architecture.md",
+        "wiki/atheneum-capabilities.md"
+      ],
+      "should_penalize": [
+        "wiki/atheneum-CHANGELOG.md",
+        "ReasoningLog:*atheneum*"
+      ]
+    },
+    {
+      "query": "constraint design",
+      "intent": "cross_project_concept",
+      "expected_top_3": [
+        "wiki/autoresearch-autonomous-agent-loop.md",
+        "wiki/dream-synthesis-2026-06-27.md"
+      ],
+      "should_penalize": [
+        "wiki/001-Untitled.md",
+        "Kanban:*"
+      ]
+    },
+    {
+      "query": "sovereign llm platform",
+      "intent": "cross_project_thesis",
+      "expected_top_3": [
+        "wiki/dream-synthesis-2026-06-27.md"
+      ],
+      "expected_supporting_hits": [
+        "wiki/rocmforge-architecture.md",
+        "wiki/graphtransformer-architecture.md",
+        "wiki/odincode-architecture.md"
+      ],
+      "should_penalize": [
+        "ReasoningLog:*sovereign llm platform*",
+        "File:*dream-synthesis*"
+      ]
+    },
+    {
+      "query": "graphtransformer trajectory retrieval semantics",
+      "intent": "stored_finding_lookup",
+      "expected_top_3": [
+        "claude: graphtransformer-trajectory-retrieval-semantics"
+      ],
+      "expected_kinds": [
+        "Discovery"
+      ]
+    }
+  ]
+}

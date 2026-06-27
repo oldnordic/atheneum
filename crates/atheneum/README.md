@@ -31,6 +31,13 @@ cargo add atheneum
 
 Atheneum is a library. Production use is via [agent-envoy](https://crates.io/crates/agent-envoy) which exposes all endpoints over HTTP (`envoy` binary). Direct embedding is for custom runtimes.
 
+## What's New In 0.10.0
+
+- Native `extract-decisions` now ships inside the crate behind the `extract` feature, with both Ollama-backed and `--heuristic` backfill modes.
+- `sessions-recent` can hide noisy non-repo buckets with repeatable `--exclude-project`.
+- Lexical search now reranks mixed corpora toward authoritative wiki/discovery documents instead of changelog and transcript noise.
+- The standard release gate now works from the repo root with checked-in `deny`, `gitleaks`, and `semgrep` config.
+
 ## Quickstart
 
 ```rust

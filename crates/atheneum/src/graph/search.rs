@@ -63,6 +63,123 @@ fn lexical_token_score(entity: &GraphEntity, tokens: &[String]) -> f32 {
     matched as f32 / tokens.len() as f32
 }
 
+fn entity_text_field<'a>(entity: &'a GraphEntity, key: &str) -> Option<&'a str> {
+    entity.data.get(key).and_then(|v| v.as_str())
+}
+
+fn matches_any_token(text: &str, tokens: &[String]) -> bool {
+    let lower = text.to_ascii_lowercase();
+    tokens.iter().any(|token| lower.contains(token))
+}
+
+fn architecture_like_query(tokens: &[String]) -> bool {
+    tokens.iter().any(|token| {
+        matches!(
+            token.as_str(),
+            "architecture" | "capabilities" | "capability" | "cli" | "reference"
+        )
+    })
+}
+
+fn changelog_like(entity: &GraphEntity) -> bool {
+    let name = entity.name.to_ascii_lowercase();
+    name.contains("changelog")
+}
+
+fn kanban_like(entity: &GraphEntity) -> bool {
+    let title = entity_text_field(entity, "title")
+        .unwrap_or(entity.name.as_str())
+        .to_ascii_lowercase();
+    title == "kanban" || title.contains("kanban")
+}
+
+fn untitled_like(entity: &GraphEntity) -> bool {
+    let title = entity_text_field(entity, "title").unwrap_or("");
+    let path = entity_text_field(entity, "path").unwrap_or(entity.name.as_str());
+    title.trim().is_empty()
+        || title.eq_ignore_ascii_case("untitled")
+        || path.to_ascii_lowercase().contains("untitled")
+}
+
+fn canonical_project_doc_bonus(entity: &GraphEntity, tokens: &[String]) -> f32 {
+    let mut bonus = 0.0;
+    let path = entity_text_field(entity, "path").unwrap_or(entity.name.as_str());
+    let title = entity_text_field(entity, "title").unwrap_or("");
+    let source = entity_text_field(entity, "source").unwrap_or("");
+    let path_lower = path.to_ascii_lowercase();
+    let title_lower = title.to_ascii_lowercase();
+    let source_lower = source.to_ascii_lowercase();
+
+    if path_lower.ends_with("-architecture.md") || title_lower.contains("architecture") {
+        bonus += 0.10;
+    }
+    if path_lower.ends_with("-capabilities.md") || title_lower.contains("capabilities") {
+        bonus += 0.10;
+    }
+    if path_lower.ends_with("-cli-reference.md") || title_lower.contains("cli reference") {
+        bonus += 0.08;
+    }
+    if !source_lower.is_empty() && matches_any_token(&source_lower, tokens) {
+        bonus += 0.05;
+    }
+
+    bonus
+}
+
+fn provenance_rank_adjustment(
+    entity: &GraphEntity,
+    tokens: &[String],
+    entity_kind: Option<&str>,
+) -> f32 {
+    let mut adjustment = 0.0;
+
+    // Only apply broad cross-kind preferences when the caller did not already
+    // constrain the result kind.
+    if entity_kind.is_none() {
+        adjustment += match entity.kind.as_str() {
+            "WikiPage" => 0.18,
+            "Discovery" => 0.12,
+            "Memory" => 0.06,
+            "ReasoningLog" => -0.08,
+            "File" => -0.18,
+            "Event" => -0.12,
+            _ => 0.0,
+        };
+    }
+
+    if entity.kind == "WikiPage" {
+        adjustment += canonical_project_doc_bonus(entity, tokens);
+
+        if untitled_like(entity) {
+            adjustment -= 0.20;
+        }
+    }
+
+    if architecture_like_query(tokens) {
+        if entity.kind == "WikiPage" {
+            let path = entity_text_field(entity, "path").unwrap_or(entity.name.as_str());
+            let title = entity_text_field(entity, "title").unwrap_or("");
+            let source = entity_text_field(entity, "source").unwrap_or("");
+            let combined = format!("{} {} {}", path, title, source).to_ascii_lowercase();
+            if matches_any_token(&combined, tokens) {
+                adjustment += 0.08;
+            }
+        }
+
+        if entity.kind == "ReasoningLog" {
+            adjustment -= 0.08;
+        }
+        if changelog_like(entity) {
+            adjustment -= 0.12;
+        }
+        if kanban_like(entity) {
+            adjustment -= 0.18;
+        }
+    }
+
+    adjustment
+}
+
 #[cfg(feature = "semantic-search")]
 fn search_config(dim: usize) -> Result<sqlitegraph::hnsw::HnswConfig> {
     HnswConfigBuilder::new()
@@ -276,7 +393,8 @@ impl AtheneumGraph {
             }
             let score = lexical_token_score(&entity, &tokens);
             if score > 0.0 {
-                fallback.push((entity, score));
+                let adjusted = score + provenance_rank_adjustment(&entity, &tokens, entity_kind);
+                fallback.push((entity, adjusted));
             }
         }
         fallback.sort_by(|(left, left_score), (right, right_score)| {

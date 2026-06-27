@@ -59,6 +59,12 @@ Every write goes to **both** layers:
 
 ### SQL Layer (atheneum-managed)
 
+In current releases, the SQL layer carries more than wiki/journal payloads. Hot
+coordination reads and migrations also depend on typed tables such as
+`sessions`, `event_log`, `discoveries`, `memory_entries`, `tasks`, and
+`handoffs`, plus the chat-navigation generated columns and FTS support added by
+migrations v11-v13.
+
 **wiki_pages** — Markdown wiki pages with YAML frontmatter
 | Column       | Type    | Description                          |
 |--------------|---------|--------------------------------------|
@@ -229,6 +235,14 @@ const MIGRATIONS: &[(u32, &str, Migration)] = &[
     (3, "knowledge-domain", knowledge::migrate_v3_knowledge),
     (4, "evidence-domain", evidence::migrate_v4_evidence),
     (5, "hook-compat", hook_compat::migrate_v5_hook_compat),
+    (6, "transcript-imports", transcripts::migrate_v6_transcripts),
+    (7, "memory-domain", memory::migrate_v7_memory),
+    (8, "planning-archive-fix", planning::migrate_v8_planning_archive_fix),
+    (9, "wiki-fts", wiki_fts::migrate_v9_wiki_fts),
+    (10, "wiki-fts-path", wiki_fts::migrate_v10_wiki_fts_path),
+    (11, "discoveries-session-id", knowledge::migrate_v11_discoveries_session),
+    (12, "chat-columns-fts", chat::migrate_v12_chat_columns_fts),
+    (13, "discovery-context-snapshot", knowledge::migrate_v13_discovery_context_snapshot),
 ];
 ```
 
@@ -237,6 +251,18 @@ To add a new table:
 2. Register it in `MIGRATIONS` with the next version number
 3. Add query methods to `AtheneumGraph`
 4. Add tests
+
+## Operational Hot Spots
+
+Recent Mirage hotspot analysis identifies a small set of complexity-heavy
+surfaces that dominate operator and release risk:
+
+| Function | Why It Matters |
+|----------|----------------|
+| `CrossRouter::open` | Cross-project routing bootstrap and federation |
+| `ensure_wiki_fts_healthy` | Self-repair path for wiki FTS corruption |
+| `open_wal` | SQLite/WAL open path for the core store |
+| `run` / `main` | CLI dispatch and flag parsing surface |
 
 ## Edge Types
 
