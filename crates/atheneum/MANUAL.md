@@ -41,6 +41,51 @@ let graph = AtheneumGraph::open_in_memory()?;
 
 The database schema is auto-migrated on `open()`. No separate migration step required.
 
+### Upgrading An Existing Atheneum DB
+
+For the main Atheneum knowledge database, upgrades are intended to be
+in-place. You should not need to recreate the database or re-ingest your wiki,
+memory, discovery, session, or task data just because the binary changed.
+
+What happens on open:
+
+- Forward-only SQL migrations are applied automatically.
+- Existing graph entities and typed SQL rows are preserved.
+- Additive schema changes such as new columns, indexes, generated columns, or
+  FTS tables are stamped onto the existing DB in place.
+- Wiki/memory/discovery content remains where it is; migration is not a
+  re-import pass.
+
+Recommended upgrade procedure:
+
+```bash
+# 1. Back up the database file first
+cp ~/.local/share/atheneum/atheneum.db ~/.local/share/atheneum/atheneum.db.bak
+
+# 2. Open it with the new binary (any normal read command is enough)
+atheneum graph-stats ~/.local/share/atheneum/atheneum.db
+
+# 3. Sanity-check the main data surfaces
+atheneum sessions-recent ~/.local/share/atheneum/atheneum.db --limit 5
+atheneum discoveries-recent ~/.local/share/atheneum/atheneum.db --limit 5
+atheneum memory-list ~/.local/share/atheneum/atheneum.db --limit 5
+```
+
+What you do **not** need to do in the normal case:
+
+- Recreate the Atheneum DB from scratch
+- Re-sync all wiki pages just because the schema version changed
+- Re-store memories or discoveries
+- Rebuild any HNSW index unless you explicitly use `semantic-search`
+
+When an extra maintenance step is useful:
+
+- If you explicitly enabled `semantic-search`, run `atheneum reindex <db>` to
+  rebuild the optional HNSW human-search index after an upgrade or large import.
+- If wiki full-text search was previously left inconsistent by an external
+  writer, Atheneum's open/health path can repair the FTS structures without a
+  full DB rebuild.
+
 ---
 
 ## Configuration
