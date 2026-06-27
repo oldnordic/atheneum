@@ -180,6 +180,33 @@ fn provenance_rank_adjustment(
     adjustment
 }
 
+fn rerank_results(
+    mut results: Vec<SearchResult>,
+    tokens: &[String],
+    entity_kind: Option<&str>,
+) -> Vec<SearchResult> {
+    for result in &mut results {
+        let entity = GraphEntity {
+            id: result.id,
+            kind: result.kind.clone(),
+            name: result.name.clone(),
+            file_path: None,
+            data: result.data.clone(),
+        };
+        result.score = lexical_token_score(&entity, tokens)
+            + provenance_rank_adjustment(&entity, tokens, entity_kind);
+    }
+
+    results.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    results
+}
+
 #[cfg(feature = "semantic-search")]
 fn search_config(dim: usize) -> Result<sqlitegraph::hnsw::HnswConfig> {
     HnswConfigBuilder::new()
@@ -393,8 +420,7 @@ impl AtheneumGraph {
             }
             let score = lexical_token_score(&entity, &tokens);
             if score > 0.0 {
-                let adjusted = score + provenance_rank_adjustment(&entity, &tokens, entity_kind);
-                fallback.push((entity, adjusted));
+                fallback.push((entity, score));
             }
         }
         fallback.sort_by(|(left, left_score), (right, right_score)| {
@@ -436,6 +462,7 @@ impl AtheneumGraph {
         max_tokens: Option<usize>,
     ) -> Result<Vec<SearchResult>> {
         self.runtime.record_search_query();
+        let tokens = query_tokens(query);
         let cache_key = QueryCacheKey::LexicalSearch {
             query: query.to_string(),
             k,
@@ -448,6 +475,8 @@ impl AtheneumGraph {
         {
             return Ok(results);
         }
+
+        let candidate_k = k.saturating_mul(3).max(k);
 
         #[cfg(feature = "semantic-search")]
         let results = {
@@ -486,22 +515,20 @@ impl AtheneumGraph {
                 }
             };
 
-            let results = hnsw_results.unwrap_or_default();
-            if results.len() >= k {
+            let seed_results = hnsw_results.unwrap_or_default();
+            if !seed_results.is_empty() {
                 self.runtime.record_hnsw_hit();
-                results
-            } else {
-                if !results.is_empty() {
-                    self.runtime.record_hnsw_hit();
-                }
-                self.runtime.record_hnsw_fallback_scan();
-                self.fallback_lexical_search(query, k, project_id, entity_kind, results)?
             }
+            self.runtime.record_hnsw_fallback_scan();
+            self.fallback_lexical_search(query, candidate_k, project_id, entity_kind, seed_results)?
         };
 
         #[cfg(not(feature = "semantic-search"))]
         let results =
-            self.fallback_lexical_search(query, k, project_id, entity_kind, Vec::new())?;
+            self.fallback_lexical_search(query, candidate_k, project_id, entity_kind, Vec::new())?;
+
+        let mut results = rerank_results(results, &tokens, entity_kind);
+        results.truncate(k);
 
         let results = if let Some(max_tokens) = max_tokens {
             let mut budget = max_tokens;
