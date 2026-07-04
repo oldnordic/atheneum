@@ -431,16 +431,22 @@ pub mod direct {
                 let views: Vec<Value> = results
                     .into_iter()
                     .map(|v| {
-                        // Filter metadata edges and cap output size.
-                        // Metadata edges (belongs_to_project, accessed, modified, observed_in)
-                        // are bookkeeping, not navigational signal. They dominate the
-                        // edge dump and obscure real relationships.
+                        // Filter metadata edges and low-signal entity types.
+                        // Metadata edges are bookkeeping. ToolCall/ReasoningLog
+                        // entities (84%+ of the graph) flood BFS traversal with
+                        // per-tool-call records that obscure real relationships.
                         const METADATA_EDGE_TYPES: &[&str] = &[
                             "belongs_to_project",
                             "accessed",
                             "modified",
                             "observed_in",
                             "created_in_session",
+                            "handled_by_tool",
+                        ];
+                        const NOISE_ENTITY_KINDS: &[&str] = &[
+                            "ToolCall",
+                            "ReasoningLog",
+                            "TestRun",
                         ];
                         let filtered_edges: Vec<Value> = v
                             .edges
@@ -455,10 +461,12 @@ pub mod direct {
                             })
                             .collect();
 
-                        // Summarize entities: just kind + name, not full data blob
+                        // Summarize entities: skip noise types, just kind + name
+                        let total_entities = v.entities.len();
                         let entity_summary: Vec<Value> = v
                             .entities
                             .into_iter()
+                            .filter(|e| !NOISE_ENTITY_KINDS.contains(&e.kind.as_str()))
                             .map(|e| {
                                 json!({
                                     "kind": e.kind,
@@ -466,6 +474,8 @@ pub mod direct {
                                 })
                             })
                             .collect();
+                        let noise_filtered =
+                            total_entities.saturating_sub(entity_summary.len());
 
                         json!({
                             "entry": {
@@ -475,7 +485,7 @@ pub mod direct {
                             "depth": v.depth,
                             "entities": entity_summary,
                             "edges": filtered_edges,
-                            "metadata_edges_filtered": true,
+                            "noise_filtered": noise_filtered,
                         })
                     })
                     .collect();
