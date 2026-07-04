@@ -734,7 +734,7 @@ impl AtheneumGraph {
             "session_digest": digest_text,
             "token_estimate": mem_tokens_used + digest_tokens,
             "relevance_context": top_context_terms,
-            "graph_connected": graph_connected_count,
+            "memories_graph_connected": graph_connected_count,
         }))
     }
 }

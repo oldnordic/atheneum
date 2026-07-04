@@ -683,3 +683,20 @@ _2 additional subgraphs omitted._
 - Evidence domain: audit trail, handoff records.
 - Wiki sync, journal sync, Logseq sync, Claude transcript import.
 - Graph navigation: causal chains, task assignment, event provenance.
+
+### fix(mcp): navigate noise + memory_bootstrap field rename
+
+navigate: filter metadata edge types (belongs_to_project, accessed, modified,
+observed_in, created_in_session) from output. Shape entities to kind+name
+only (was full data blob). Edge dump went from 82 noisy edges to 0 (all
+were metadata). Readable entity summaries replace raw dumps.
+
+memory_bootstrap: renamed field `graph_connected` to
+`memories_graph_connected`. The old name was ambiguous — it looked like a
+connectivity health check but actually counts how many returned memories
+are connected to Decision/Discovery entities via causal/related edges.
+
+Verified:
+- navigate(sqlitegraph native-v3, k=3, d=1): 18 entities, 0 noise edges
+- memory_bootstrap(Projects, 500): memories_graph_connected=0 (clear semantics)
+- Tests: 76 lib + 3 integration, all pass
