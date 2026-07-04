@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use atheneum_mcp::{AtheneumMcpServer, backend};
+use atheneum_mcp::{backend, AtheneumMcpServer};
 use rmcp::ServiceExt;
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -48,7 +48,14 @@ impl backend::Backend for MockBackend {
     async fn list_events(&self, _l: i64) -> anyhow::Result<serde_json::Value> {
         Ok(json!({"events": []}))
     }
-    async fn navigate(&self, _q: &str, _k: usize, _d: u32) -> anyhow::Result<serde_json::Value> {
+    async fn navigate(
+        &self,
+        _q: &str,
+        _k: usize,
+        _d: u32,
+        _o: usize,
+        _l: usize,
+    ) -> anyhow::Result<serde_json::Value> {
         Ok(json!({"entities": [], "plan": "test"}))
     }
     async fn graph_stats(&self) -> anyhow::Result<serde_json::Value> {
@@ -182,12 +189,10 @@ async fn mcp_server_initializes_and_lists_tools() {
 
     let init_response = recv_json(&mut client_reader).await;
     assert_eq!(init_response["id"], 1);
-    assert!(
-        init_response["result"]["serverInfo"]["name"]
-            .as_str()
-            .unwrap()
-            .contains("atheneum-mcp")
-    );
+    assert!(init_response["result"]["serverInfo"]["name"]
+        .as_str()
+        .unwrap()
+        .contains("atheneum-mcp"));
 
     // Initialized notification
     send_json(

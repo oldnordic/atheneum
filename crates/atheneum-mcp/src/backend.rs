@@ -58,7 +58,14 @@ pub trait Backend: Send + Sync + 'static {
     async fn query_memory(&self, params: QueryMemoryParams) -> Result<Value>;
     async fn list_sessions(&self, limit: i64) -> Result<Value>;
     async fn list_events(&self, limit: i64) -> Result<Value>;
-    async fn navigate(&self, query: &str, k: usize, depth: u32) -> Result<Value>;
+    async fn navigate(
+        &self,
+        query: &str,
+        k: usize,
+        depth: u32,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Value>;
     async fn graph_stats(&self) -> Result<Value>;
     // --- Phase 2 additions ---
     async fn search_memory(&self, query: &str, k: usize, project: Option<&str>) -> Result<Value>;
@@ -216,9 +223,16 @@ pub mod http {
             self.get_json(&path).await
         }
 
-        async fn navigate(&self, query: &str, k: usize, depth: u32) -> Result<Value> {
+        async fn navigate(
+            &self,
+            query: &str,
+            k: usize,
+            depth: u32,
+            offset: usize,
+            limit: usize,
+        ) -> Result<Value> {
             let path = format!(
-                "/atheneum/graph/navigate?q={}&k={}&depth={depth}",
+                "/atheneum/graph/navigate?q={}&k={}&depth={depth}&offset={offset}&limit={limit}",
                 encode(query),
                 k
             );
@@ -424,7 +438,14 @@ pub mod direct {
             })
         }
 
-        async fn navigate(&self, query: &str, k: usize, depth: u32) -> Result<Value> {
+        async fn navigate(
+            &self,
+            query: &str,
+            k: usize,
+            depth: u32,
+            offset: usize,
+            limit: usize,
+        ) -> Result<Value> {
             let graph = self.graph.lock().await;
             tokio::task::block_in_place(|| {
                 let results = graph.navigate(query, k, depth, None, None, None)?;
@@ -443,11 +464,8 @@ pub mod direct {
                             "created_in_session",
                             "handled_by_tool",
                         ];
-                        const NOISE_ENTITY_KINDS: &[&str] = &[
-                            "ToolCall",
-                            "ReasoningLog",
-                            "TestRun",
-                        ];
+                        const NOISE_ENTITY_KINDS: &[&str] =
+                            &["ToolCall", "ReasoningLog", "TestRun"];
                         let filtered_edges: Vec<Value> = v
                             .edges
                             .into_iter()
@@ -461,12 +479,20 @@ pub mod direct {
                             })
                             .collect();
 
-                        // Summarize entities: skip noise types, just kind + name
-                        let total_entities = v.entities.len();
-                        let entity_summary: Vec<Value> = v
+                        // Summarize entities: skip noise types, paginate the rest
+                        let v_total_entities_len = v.entities.len();
+                        let total_signal: Vec<_> = v
                             .entities
                             .into_iter()
                             .filter(|e| !NOISE_ENTITY_KINDS.contains(&e.kind.as_str()))
+                            .collect();
+                        let total_signal_count = total_signal.len();
+                        let noise_filtered =
+                            v_total_entities_len.saturating_sub(total_signal_count);
+                        let paged: Vec<Value> = total_signal
+                            .into_iter()
+                            .skip(offset)
+                            .take(limit)
                             .map(|e| {
                                 json!({
                                     "kind": e.kind,
@@ -474,8 +500,8 @@ pub mod direct {
                                 })
                             })
                             .collect();
-                        let noise_filtered =
-                            total_entities.saturating_sub(entity_summary.len());
+                        let returned = paged.len();
+                        let has_more = offset + returned < total_signal_count;
 
                         json!({
                             "entry": {
@@ -483,9 +509,13 @@ pub mod direct {
                                 "name": v.entry.name,
                             },
                             "depth": v.depth,
-                            "entities": entity_summary,
+                            "entities": paged,
                             "edges": filtered_edges,
                             "noise_filtered": noise_filtered,
+                            "total_signal_entities": total_signal_count,
+                            "offset": offset,
+                            "limit": limit,
+                            "has_more": has_more,
                         })
                     })
                     .collect();

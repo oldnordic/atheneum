@@ -4,10 +4,10 @@
 //! input schemas directly as JSON Schema objects — no `schemars` dependency
 //! is required.
 
-use rmcp::ErrorData as McpError;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::model::{CallToolResult, Content, JsonObject, Tool};
-use serde_json::{Map, Value, json};
+use rmcp::ErrorData as McpError;
+use serde_json::{json, Map, Value};
 
 use crate::AtheneumMcpServer;
 
@@ -352,8 +352,10 @@ fn navigate() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServe
         "type": "object",
         "properties": {
             "query": { "type": "string", "description": "Natural language navigation query" },
-            "k": { "type": "integer", "minimum": 1, "maximum": 50, "default": 10, "description": "Number of results" },
-            "depth": { "type": "integer", "minimum": 1, "maximum": 5, "default": 2, "description": "BFS depth for subgraph traversal" }
+            "k": { "type": "integer", "minimum": 1, "maximum": 50, "default": 10, "description": "Number of entry-point results" },
+            "depth": { "type": "integer", "minimum": 1, "maximum": 5, "default": 2, "description": "BFS depth for subgraph traversal" },
+            "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Entity offset for pagination (skip first N signal entities)" },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50, "description": "Max signal entities to return per view (pagination)" }
         },
         "required": ["query"]
     });
@@ -362,7 +364,7 @@ fn navigate() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServe
     rmcp::handler::server::router::tool::ToolRoute::new_dyn(
         Tool::new(
             "navigate",
-            "Navigate the knowledge graph using natural language.",
+            "Navigate the knowledge graph using natural language. Results are paginated — use offset/limit to page through entities.",
             schema,
         ),
         |ctx: rmcp::handler::server::tool::ToolCallContext<'_, AtheneumMcpServer>| {
@@ -371,7 +373,9 @@ fn navigate() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServe
                 let query = args["query"].as_str().unwrap_or("").to_string();
                 let k = args["k"].as_u64().unwrap_or(10) as usize;
                 let depth = args["depth"].as_u64().unwrap_or(2) as u32;
-                let result = ctx.service.backend.navigate(&query, k, depth).await;
+                let offset = args["offset"].as_u64().unwrap_or(0) as usize;
+                let limit = args["limit"].as_u64().unwrap_or(50) as usize;
+                let result = ctx.service.backend.navigate(&query, k, depth, offset, limit).await;
                 match result {
                     Ok(v) => json_result(v),
                     Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),

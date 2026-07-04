@@ -6,11 +6,11 @@
 pub mod backend;
 pub mod tools;
 
-use rmcp::ErrorData as McpError;
-use rmcp::handler::server::ServerHandler;
 use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::ServerHandler;
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
 use rmcp::service::{RequestContext, RoleServer};
+use rmcp::ErrorData as McpError;
 
 /// The MCP server instance.
 pub struct AtheneumMcpServer {
@@ -45,8 +45,8 @@ impl ServerHandler for AtheneumMcpServer {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> impl std::future::Future<Output = Result<rmcp::model::ListToolsResult, McpError>>
-    + rmcp::service::MaybeSendFuture
-    + '_ {
+           + rmcp::service::MaybeSendFuture
+           + '_ {
         std::future::ready(Ok(rmcp::model::ListToolsResult {
             tools: self.router.list_all(),
             next_cursor: None,
@@ -59,8 +59,8 @@ impl ServerHandler for AtheneumMcpServer {
         request: rmcp::model::CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> impl std::future::Future<Output = Result<rmcp::model::CallToolResult, McpError>>
-    + rmcp::service::MaybeSendFuture
-    + '_ {
+           + rmcp::service::MaybeSendFuture
+           + '_ {
         let ctx = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         async move {
             self.router
@@ -110,7 +110,14 @@ mod tests {
         async fn list_events(&self, _l: i64) -> anyhow::Result<Value> {
             Ok(Value::Null)
         }
-        async fn navigate(&self, _q: &str, _k: usize, _d: u32) -> anyhow::Result<Value> {
+        async fn navigate(
+            &self,
+            _q: &str,
+            _k: usize,
+            _d: u32,
+            _o: usize,
+            _l: usize,
+        ) -> anyhow::Result<Value> {
             Ok(Value::Null)
         }
         async fn graph_stats(&self) -> anyhow::Result<Value> {
