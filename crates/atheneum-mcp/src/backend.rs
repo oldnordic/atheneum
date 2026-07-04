@@ -431,11 +431,51 @@ pub mod direct {
                 let views: Vec<Value> = results
                     .into_iter()
                     .map(|v| {
+                        // Filter metadata edges and cap output size.
+                        // Metadata edges (belongs_to_project, accessed, modified, observed_in)
+                        // are bookkeeping, not navigational signal. They dominate the
+                        // edge dump and obscure real relationships.
+                        const METADATA_EDGE_TYPES: &[&str] = &[
+                            "belongs_to_project",
+                            "accessed",
+                            "modified",
+                            "observed_in",
+                            "created_in_session",
+                        ];
+                        let filtered_edges: Vec<Value> = v
+                            .edges
+                            .into_iter()
+                            .filter(|e| !METADATA_EDGE_TYPES.contains(&e.edge_type.as_str()))
+                            .map(|e| {
+                                json!({
+                                    "type": e.edge_type,
+                                    "from_id": e.from_id,
+                                    "to_id": e.to_id,
+                                })
+                            })
+                            .collect();
+
+                        // Summarize entities: just kind + name, not full data blob
+                        let entity_summary: Vec<Value> = v
+                            .entities
+                            .into_iter()
+                            .map(|e| {
+                                json!({
+                                    "kind": e.kind,
+                                    "name": e.name,
+                                })
+                            })
+                            .collect();
+
                         json!({
-                            "entry": v.entry,
+                            "entry": {
+                                "kind": v.entry.kind,
+                                "name": v.entry.name,
+                            },
                             "depth": v.depth,
-                            "entities": v.entities,
-                            "edges": v.edges,
+                            "entities": entity_summary,
+                            "edges": filtered_edges,
+                            "metadata_edges_filtered": true,
                         })
                     })
                     .collect();
