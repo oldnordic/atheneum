@@ -24,6 +24,7 @@ anyhow = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
+shellexpand = "3.1"
 
 # HTTP mode deps
 reqwest = { version = "0.12", features = ["json"], optional = true }
@@ -32,7 +33,7 @@ reqwest = { version = "0.12", features = ["json"], optional = true }
 atheneum = { path = "../atheneum", optional = true }
 
 [features]
-default = ["http"]
+default = ["direct"]
 http = ["dep:reqwest"]
 direct = ["dep:atheneum"]
 

@@ -703,7 +703,7 @@ pub struct Neighbors {
 }
 
 /// Subgraph extracted around an entry point by BFS traversal.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SubgraphView {
     pub entry: GraphEntity,
     pub depth: u32,

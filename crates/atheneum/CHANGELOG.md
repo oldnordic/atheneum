@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`wiki-search` CLI command**: Full-text search over wiki pages via FTS5.
+  Previously 661 wiki pages were unsearchable from the CLI.
+- **`decision-search` CLI command**: Content search over Decision discoveries
+  by target/chosen/why text. Previously 381 decisions were only listable
+  chronologically, not searchable by content.
+
+### Fixed
+
+- **`query-wiki` partial path matching**: Falls back to `LIKE '%<path>%'`
+  contains-match when exact path returns no results.
+- **`memory-bootstrap` excludes session noise**: Filters `scope NOT LIKE
+  'session:%'` so low-confidence chat logs don't crowd out durable memories.
+- **`journal_sections` populated**: Ran `sync-journal` — 17 sections ingested.
+
 ## [0.10.0] — 2026-06-27
 ### Added
 

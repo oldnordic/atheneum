@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use atheneum_mcp::{backend, AtheneumMcpServer};
+use atheneum_mcp::{AtheneumMcpServer, backend};
 use rmcp::ServiceExt;
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -36,7 +36,10 @@ impl backend::Backend for MockBackend {
     ) -> anyhow::Result<serde_json::Value> {
         Ok(json!({"memory_id": 7}))
     }
-    async fn query_memory(&self, _q: &str, _k: usize) -> anyhow::Result<serde_json::Value> {
+    async fn query_memory(
+        &self,
+        _p: backend::QueryMemoryParams,
+    ) -> anyhow::Result<serde_json::Value> {
         Ok(json!({"results": []}))
     }
     async fn list_sessions(&self, _l: i64) -> anyhow::Result<serde_json::Value> {
@@ -50,6 +53,87 @@ impl backend::Backend for MockBackend {
     }
     async fn graph_stats(&self) -> anyhow::Result<serde_json::Value> {
         Ok(json!({"entity_count": 0, "edge_count": 0, "kinds": []}))
+    }
+    async fn search_memory(
+        &self,
+        _q: &str,
+        _k: usize,
+        _p: Option<&str>,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(json!({"results": []}))
+    }
+    async fn list_memory(
+        &self,
+        _s: Option<&str>,
+        _p: Option<&str>,
+        _o: usize,
+        _l: usize,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(json!({"items": []}))
+    }
+    async fn memory_bootstrap(
+        &self,
+        _p: Option<&str>,
+        _t: usize,
+        _l: i64,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(json!({"memories": []}))
+    }
+    async fn query_wiki(&self, _path: &str) -> anyhow::Result<serde_json::Value> {
+        Ok(json!({"found": false}))
+    }
+    async fn wiki_search(
+        &self,
+        _q: &str,
+        _p: Option<&str>,
+        _l: usize,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(json!({"results": []}))
+    }
+    async fn discoveries_recent(
+        &self,
+        _p: Option<&str>,
+        _a: Option<&str>,
+        _s: Option<&str>,
+        _t: Option<&str>,
+        _l: i64,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(json!({"discoveries": []}))
+    }
+    async fn decision_search(
+        &self,
+        _q: &str,
+        _p: Option<&str>,
+        _l: i64,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(json!({"decisions": []}))
+    }
+    async fn thread(
+        &self,
+        _q: &str,
+        _k: usize,
+        _d: u32,
+        _p: Option<&str>,
+        _t: usize,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(json!([]))
+    }
+    async fn session_digest(&self, _p: Option<&str>, _l: i64) -> anyhow::Result<serde_json::Value> {
+        Ok(json!({"digest": {}}))
+    }
+    async fn get_entity(&self, _id: i64) -> anyhow::Result<serde_json::Value> {
+        Ok(json!({"entity": null}))
+    }
+    async fn get_neighbors(&self, _id: i64) -> anyhow::Result<serde_json::Value> {
+        Ok(json!({"outgoing": [], "incoming": []}))
+    }
+    async fn dream(
+        &self,
+        _s: Option<&str>,
+        _p: Option<&str>,
+        _d: bool,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(json!({"findings": []}))
     }
 }
 
@@ -98,10 +182,12 @@ async fn mcp_server_initializes_and_lists_tools() {
 
     let init_response = recv_json(&mut client_reader).await;
     assert_eq!(init_response["id"], 1);
-    assert!(init_response["result"]["serverInfo"]["name"]
-        .as_str()
-        .unwrap()
-        .contains("atheneum-mcp"));
+    assert!(
+        init_response["result"]["serverInfo"]["name"]
+            .as_str()
+            .unwrap()
+            .contains("atheneum-mcp")
+    );
 
     // Initialized notification
     send_json(
@@ -129,7 +215,9 @@ async fn mcp_server_initializes_and_lists_tools() {
     assert!(names.contains(&"graph_stats"));
     assert!(names.contains(&"search"));
     assert!(names.contains(&"navigate"));
-    assert_eq!(tools.len(), 9);
+    assert!(names.contains(&"wiki_search"));
+    assert!(names.contains(&"decision_search"));
+    assert_eq!(tools.len(), 21);
 
     // Call graph_stats tool
     send_json(
@@ -331,7 +419,7 @@ async fn mcp_direct_backend_round_trip() {
             "method": "tools/call",
             "params": {
                 "name": "query_memory",
-                "arguments": { "query": "User prefers dark mode", "k": 5 }
+                "arguments": { "key": "User prefers dark mode", "k": 5 }
             }
         }),
     )

@@ -9,9 +9,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlitegraph::GraphEntity;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use super::{AtheneumGraph, EdgeType};
+use super::{AtheneumGraph, EdgeType, WikiPage};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -396,48 +396,92 @@ impl AtheneumGraph {
             }
         }
 
-        // Phase 2: DEDUPLICATE — pairwise Jaccard on body
-        let mut merged_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for i in 0..pages.len() {
-            let pi = &pages[i];
-            if merged_paths.contains(&pi.path) {
-                continue;
+        // Phase 2: DEDUPLICATE — two-pass approach
+        // Pass 2a: Exact dedup via hash (eliminate 7% upfront, O(n))
+        let mut seen_hashes: HashSet<u64> = HashSet::new();
+        let mut merged_paths: HashSet<String> = HashSet::new();
+        let mut deduped_pages: Vec<&WikiPage> = Vec::new();
+
+        eprintln!("Pass 2a: Exact dedup ({} pages)...", pages.len());
+        for page in &pages {
+            let hash = seahash::hash(page.body.as_bytes());
+            if seen_hashes.contains(&hash) {
+                // Exact duplicate found
+                findings.push(DreamFinding {
+                    phase: DreamPhase::Deduplicate,
+                    entity_ids: vec![page.id],
+                    description: format!("Exact duplicate: '{}'", page.path),
+                    action_taken: None,
+                });
+                merged_paths.insert(page.path.clone());
+            } else {
+                seen_hashes.insert(hash);
+                deduped_pages.push(page);
             }
-            for pj in pages.iter().skip(i + 1) {
-                if merged_paths.contains(&pj.path) {
+        }
+        eprintln!("Pass 2a complete: {} unique pages", deduped_pages.len());
+
+        // Pass 2b: Batched Jaccard similarity on deduped set
+        const BATCH_SIZE: usize = 50;
+        let total_batches = (deduped_pages.len() + BATCH_SIZE - 1) / BATCH_SIZE;
+
+        for batch_num in 0..total_batches {
+            let batch_start = batch_num * BATCH_SIZE;
+            let batch_end = (batch_start + BATCH_SIZE).min(deduped_pages.len());
+
+            eprintln!(
+                "Pass 2b: Batch {}/{}: pages {}-{}",
+                batch_num + 1,
+                total_batches,
+                batch_start,
+                batch_end - 1
+            );
+
+            // Only Jaccard compare within this batch
+            for i in batch_start..batch_end {
+                let pi = &deduped_pages[i];
+                if merged_paths.contains(&pi.path) {
                     continue;
                 }
-                let sim = jaccard_similarity(&pi.body, &pj.body);
-                if sim >= config.dedup_threshold {
-                    let mut action = None;
-                    if mode == DreamMode::AutoMerge {
-                        let _ = self.insert_edge(
-                            pj.id,
-                            pi.id,
-                            EdgeType::SupersededBy,
-                            serde_json::json!({
-                                "reason": "wiki_dream_dedup",
-                                "similarity": sim as f32,
-                            }),
-                        );
-                        merged_paths.insert(pj.path.clone());
-                        action = Some(format!(
-                            "superseded {} -> {} (sim={:.2})",
-                            pj.id, pi.id, sim
-                        ));
+
+                // Compare only against pages in THIS batch (skip i+1 to batch_end)
+                for pj in deduped_pages.iter().skip(i + 1).take(batch_end - i - 1) {
+                    if merged_paths.contains(&pj.path) {
+                        continue;
                     }
-                    findings.push(DreamFinding {
-                        phase: DreamPhase::Deduplicate,
-                        entity_ids: vec![pi.id, pj.id],
-                        description: format!(
-                            "Near-duplicate pages (Jaccard {:.2}): '{}' and '{}'",
-                            sim, pi.path, pj.path
-                        ),
-                        action_taken: action,
-                    });
+                    let sim = jaccard_similarity(&pi.body, &pj.body);
+                    if sim >= config.dedup_threshold {
+                        let mut action = None;
+                        if mode == DreamMode::AutoMerge {
+                            let _ = self.insert_edge(
+                                pj.id,
+                                pi.id,
+                                EdgeType::SupersededBy,
+                                serde_json::json!({
+                                    "reason": "wiki_dream_dedup",
+                                    "similarity": sim as f32,
+                                }),
+                            );
+                            merged_paths.insert(pj.path.clone());
+                            action = Some(format!(
+                                "superseded {} -> {} (sim={:.2})",
+                                pj.id, pi.id, sim
+                            ));
+                        }
+                        findings.push(DreamFinding {
+                            phase: DreamPhase::Deduplicate,
+                            entity_ids: vec![pi.id, pj.id],
+                            description: format!(
+                                "Near-duplicate pages (Jaccard {:.2}): '{}' and '{}'",
+                                sim, pi.path, pj.path
+                            ),
+                            action_taken: action,
+                        });
+                    }
                 }
             }
         }
+        eprintln!("Pass 2b complete: {} batches processed", total_batches);
 
         // Phase 3: STALE — old page with short body (stub likely abandoned)
         let now = Utc::now();

@@ -428,6 +428,70 @@ impl AtheneumGraph {
         })
     }
 
+    /// Content search over Decision discoveries by target/chosen/why text.
+    ///
+    /// Unlike `recent_discoveries` (chronological list), this searches the
+    /// decision's text fields for a user query. Uses LIKE for substring
+    /// matching across `target`, `chosen`, and `why` fields in the entity JSON.
+    /// Results are ranked by relevance (target match > chosen match > why match).
+    pub fn search_decisions(
+        &self,
+        query: &str,
+        project_id: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<GraphEntity>> {
+        let pattern = format!("%{}%", query);
+        let project_id_owned = project_id.map(|s| s.to_string());
+
+        super::with_graph_conn(&self.inner, move |conn| {
+            // Search Decision discoveries by target, chosen, or why text.
+            // Score: target match = 3, chosen match = 2, why match = 1.
+            let sql = "SELECT id, kind, name, file_path, data,
+                              (CASE WHEN json_extract(data, '$.target') LIKE ?1 THEN 3 ELSE 0 END
+                             + CASE WHEN json_extract(data, '$.chosen') LIKE ?1 THEN 2 ELSE 0 END
+                             + CASE WHEN json_extract(data, '$.why') LIKE ?1 THEN 1 ELSE 0 END) as relevance
+                       FROM graph_entities
+                       WHERE kind = 'Discovery'
+                         AND json_extract(data, '$.discovery_type') = 'Decision'
+                         AND (json_extract(data, '$.target') LIKE ?1
+                              OR json_extract(data, '$.chosen') LIKE ?1
+                              OR json_extract(data, '$.why') LIKE ?1)";
+
+            let sql = if let Some(_pid) = &project_id_owned {
+                format!("{} AND (json_extract(data, '$.project_id') = ?2 OR json_extract(data, '$.project') = ?2)", sql)
+            } else {
+                sql.to_string()
+            };
+            let sql = format!("{} ORDER BY relevance DESC, id DESC LIMIT ?", sql);
+
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+            params.push(Box::new(pattern.clone()));
+            if let Some(pid) = &project_id_owned {
+                params.push(Box::new(pid.clone()));
+                params.push(Box::new(pid.clone()));
+            }
+            params.push(Box::new(limit));
+
+            let mut stmt = conn.prepare_cached(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                Ok(GraphEntity {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    name: row.get(2)?,
+                    file_path: row.get(3)?,
+                    data: serde_json::from_str(row.get_ref(4)?.as_str()?)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
+                })
+            })?;
+
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+    }
+
     /// Dedup guard for live decision capture (Phase 4 watcher) and the
     /// post-hoc extractor (Phase 3). Returns true iff a Decision row already
     /// exists for this exact `(session_id, sequence, target, source)` quadruple

@@ -6,11 +6,11 @@
 pub mod backend;
 pub mod tools;
 
-use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::ErrorData as McpError;
 use rmcp::handler::server::ServerHandler;
+use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
 use rmcp::service::{RequestContext, RoleServer};
-use rmcp::ErrorData as McpError;
 
 /// The MCP server instance.
 pub struct AtheneumMcpServer {
@@ -45,8 +45,8 @@ impl ServerHandler for AtheneumMcpServer {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> impl std::future::Future<Output = Result<rmcp::model::ListToolsResult, McpError>>
-           + rmcp::service::MaybeSendFuture
-           + '_ {
+    + rmcp::service::MaybeSendFuture
+    + '_ {
         std::future::ready(Ok(rmcp::model::ListToolsResult {
             tools: self.router.list_all(),
             next_cursor: None,
@@ -59,8 +59,8 @@ impl ServerHandler for AtheneumMcpServer {
         request: rmcp::model::CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> impl std::future::Future<Output = Result<rmcp::model::CallToolResult, McpError>>
-           + rmcp::service::MaybeSendFuture
-           + '_ {
+    + rmcp::service::MaybeSendFuture
+    + '_ {
         let ctx = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         async move {
             self.router
@@ -101,7 +101,7 @@ mod tests {
         async fn store_memory(&self, _p: backend::StoreMemoryParams) -> anyhow::Result<Value> {
             Ok(Value::Null)
         }
-        async fn query_memory(&self, _q: &str, _k: usize) -> anyhow::Result<Value> {
+        async fn query_memory(&self, _p: backend::QueryMemoryParams) -> anyhow::Result<Value> {
             Ok(Value::Null)
         }
         async fn list_sessions(&self, _l: i64) -> anyhow::Result<Value> {
@@ -114,6 +114,87 @@ mod tests {
             Ok(Value::Null)
         }
         async fn graph_stats(&self) -> anyhow::Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn search_memory(
+            &self,
+            _q: &str,
+            _k: usize,
+            _p: Option<&str>,
+        ) -> anyhow::Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn list_memory(
+            &self,
+            _s: Option<&str>,
+            _p: Option<&str>,
+            _o: usize,
+            _l: usize,
+        ) -> anyhow::Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn memory_bootstrap(
+            &self,
+            _p: Option<&str>,
+            _t: usize,
+            _l: i64,
+        ) -> anyhow::Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn query_wiki(&self, _path: &str) -> anyhow::Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn wiki_search(
+            &self,
+            _q: &str,
+            _p: Option<&str>,
+            _l: usize,
+        ) -> anyhow::Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn discoveries_recent(
+            &self,
+            _p: Option<&str>,
+            _a: Option<&str>,
+            _s: Option<&str>,
+            _t: Option<&str>,
+            _l: i64,
+        ) -> anyhow::Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn decision_search(
+            &self,
+            _q: &str,
+            _p: Option<&str>,
+            _l: i64,
+        ) -> anyhow::Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn thread(
+            &self,
+            _q: &str,
+            _k: usize,
+            _d: u32,
+            _p: Option<&str>,
+            _t: usize,
+        ) -> anyhow::Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn session_digest(&self, _p: Option<&str>, _l: i64) -> anyhow::Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn get_entity(&self, _id: i64) -> anyhow::Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn get_neighbors(&self, _id: i64) -> anyhow::Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn dream(
+            &self,
+            _s: Option<&str>,
+            _p: Option<&str>,
+            _d: bool,
+        ) -> anyhow::Result<Value> {
             Ok(Value::Null)
         }
     }
@@ -132,10 +213,11 @@ mod tests {
     }
 
     #[test]
-    fn all_nine_tools_registered() {
+    fn all_twenty_tools_registered() {
         let server = mock_server();
         let tools = server.router.list_all();
         let names: Vec<_> = tools.iter().map(|t| t.name.as_ref()).collect();
+        // Original 9
         assert!(names.contains(&"store_discovery"));
         assert!(names.contains(&"query_knowledge"));
         assert!(names.contains(&"search"));
@@ -145,7 +227,20 @@ mod tests {
         assert!(names.contains(&"list_events"));
         assert!(names.contains(&"navigate"));
         assert!(names.contains(&"graph_stats"));
-        assert_eq!(tools.len(), 9);
+        // Phase 3 additions
+        assert!(names.contains(&"search_memory"));
+        assert!(names.contains(&"list_memory"));
+        assert!(names.contains(&"memory_bootstrap"));
+        assert!(names.contains(&"query_wiki"));
+        assert!(names.contains(&"wiki_search"));
+        assert!(names.contains(&"discoveries_recent"));
+        assert!(names.contains(&"decision_search"));
+        assert!(names.contains(&"thread"));
+        assert!(names.contains(&"session_digest"));
+        assert!(names.contains(&"get_entity"));
+        assert!(names.contains(&"get_neighbors"));
+        assert!(names.contains(&"dream"));
+        assert_eq!(tools.len(), 21);
     }
 
     #[test]

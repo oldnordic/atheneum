@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### fix(wiki): wiki_search returns empty when project filter given
+
+Root cause: all 661 wiki pages have `project_id = NULL` (unscoped). The FTS
+and name-search SQL used `wp.project_id = ?` which matches zero rows when
+project_id is NULL (SQL NULL comparison semantics: `NULL = 'Projects'` is
+NULL/false).
+
+Fix: changed both `search_wiki_pages_fts` and `search_wiki_pages_by_name`
+SQL to `(wp.project_id = ?2 OR wp.project_id IS NULL OR wp.project_id = '')`.
+Unscoped wiki pages now match any project filter.
+
+Verified:
+- `wiki_search(query="sqlitegraph native-v3", project="Projects")`: 3 results (was 0)
+- `wiki_search(query="sqlitegraph native-v3")`: 3 results (unchanged)
+
+### atheneum-mcp — memory contract fix
+
+- **query_memory is now explicitly an exact key lookup** (`atheneum-mcp/backend.rs`):
+  matches the direct graph API. Was documented as semantic retrieval but
+  implemented as key lookup — now the contract is honest.
+- **store_memory accepts optional key, scope, project** (`atheneum-mcp/backend.rs`):
+  instead of forcing an implicit content-derived key and implicit agent scope.
+  Callers can now partition memory by scope/project.
+- **query_memory accepts optional scope and project filters** plus deprecated
+  `query` as a backward-compatible alias for `key`.
+
+### Added
+
+- **`wiki-search` CLI command** (`crates/atheneum/src/main.rs`,
+  `crates/atheneum/src/graph/wiki.rs`): Full-text search over wiki pages using
+  the existing `wiki_pages_fts` FTS5 index. Previously, 661 wiki pages were
+  completely unsearchable from the CLI — `query-wiki` required the exact full
+  filesystem path. The new `wiki-search <db> <query> [--project P] [--limit N]`
+  command queries the FTS5 index and falls back to name-based matching when FTS
+  returns no hits.
+
+- **`decision-search` CLI command** (`crates/atheneum/src/main.rs`,
+  `crates/atheneum/src/graph/discovery.rs`): Content search over Decision
+  discoveries by `target`, `chosen`, and `why` text fields. Previously, 381
+  decisions were only reachable via `discoveries-recent --type Decision`
+  (chronological list, not searchable by content).
+
+### Fixed
+
+- **`query-wiki` now supports partial path matching** (`crates/atheneum/src/
+  graph/wiki.rs`): Previously required the exact full filesystem path. Now falls
+  back to a `LIKE '%<path>%'` contains-match when exact match returns no results.
+
+- **`memory-bootstrap` excludes session-scoped noise** (`crates/atheneum/src/
+  graph/memory.rs`): Previously fetched ALL entries including low-confidence
+  session-scoped chat logs (scope LIKE `session:%`) that crowded out durable
+  memories in the token budget. Now filters `scope NOT LIKE 'session:%'`.
+
+- **`journal_sections` table populated**: Was empty (0 rows) because
+  `sync-journal` had never been run. Ran sync — 17 journal sections ingested.
+
 ## [0.10.0] - 2026-06-27
 
 ### Added

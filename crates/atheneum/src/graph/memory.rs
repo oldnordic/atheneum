@@ -606,7 +606,10 @@ impl AtheneumGraph {
             })
             .unwrap_or_default();
 
-        // Fetch all candidate memories.
+        // Fetch all candidate memories — exclude session-scoped turn-by-turn
+        // chat logs (scope LIKE 'session:%') which are low-confidence noise that
+        // crowds out durable memories in the token budget. Keep durable scopes:
+        // memory, reference, user, project, finding, preference, risk.
         let memories: Vec<MemoryEntry> = self.with_raw_connection(|conn| {
             let mut out = Vec::new();
             if let Some(pid) = project {
@@ -614,6 +617,7 @@ impl AtheneumGraph {
                     "SELECT key, scope, content, confidence, COALESCE(updated_at, created_at)
                          FROM memory_entries
                          WHERE COALESCE(project_id, '') = ?1
+                         AND scope NOT LIKE 'session:%'
                          LIMIT 200",
                 )?;
                 for row in s.query_map(rusqlite::params![pid], |r| {
@@ -631,6 +635,7 @@ impl AtheneumGraph {
                 let mut s = conn.prepare_cached(
                     "SELECT key, scope, content, confidence, COALESCE(updated_at, created_at)
                          FROM memory_entries
+                         WHERE scope NOT LIKE 'session:%'
                          LIMIT 200",
                 )?;
                 for row in s.query_map([], |r| {

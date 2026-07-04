@@ -203,6 +203,97 @@ fn run() -> anyhow::Result<()> {
                 }
             }
         }
+        "wiki-search" => {
+            if args.len() < 4 {
+                eprintln!(
+                    "Usage: atheneum wiki-search <db-path> <query> [--project P] [--limit N]"
+                );
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let query = positional(&args, 3, "query")?;
+            let opts = parse_options(&args[4..])?;
+            let limit = parse_i64_option(opts.limit.as_deref(), "limit")?.unwrap_or(10) as usize;
+            let graph = AtheneumGraph::open(&db_path)?;
+            let results = graph.search_wiki_pages(query, opts.project.as_deref(), 0, limit)?;
+            if opts.json {
+                print_json(json!({
+                    "query": query,
+                    "project": opts.project,
+                    "count": results.len(),
+                    "results": results.iter().map(|r| json!({
+                        "id": r.id,
+                        "path": r.path,
+                        "title": r.title,
+                        "excerpt": r.excerpt,
+                        "score": r.score,
+                        "project_id": r.project_id,
+                    })).collect::<Vec<_>>(),
+                }))?;
+            } else {
+                if results.is_empty() {
+                    stdoutln(format_args!("No wiki pages matched: {}", query))?;
+                } else {
+                    stdoutln(format_args!(
+                        "_{} wiki page(s) matched_ `{}`\n",
+                        results.len(),
+                        query
+                    ))?;
+                    for r in &results {
+                        let title = r.title.as_deref().unwrap_or("(untitled)");
+                        stdoutln(format_args!("- **{}** (`{}`)", title, r.path))?;
+                        if !r.excerpt.is_empty() {
+                            stdoutln(format_args!(
+                                "  _{}_",
+                                r.excerpt.chars().take(120).collect::<String>()
+                            ))?;
+                        }
+                    }
+                }
+            }
+        }
+        "decision-search" => {
+            if args.len() < 4 {
+                eprintln!(
+                    "Usage: atheneum decision-search <db-path> <query> [--project P] [--limit N]"
+                );
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let query = positional(&args, 3, "query")?;
+            let opts = parse_options(&args[4..])?;
+            let limit = parse_i64_option(opts.limit.as_deref(), "limit")?.unwrap_or(10);
+            let graph = AtheneumGraph::open(&db_path)?;
+            let decisions = graph.search_decisions(query, opts.project.as_deref(), limit)?;
+            if opts.json {
+                print_json(json!({
+                    "query": query,
+                    "project": opts.project,
+                    "count": decisions.len(),
+                    "decisions": decisions.iter().map(entity_to_json).collect::<Vec<_>>(),
+                }))?;
+            } else {
+                if decisions.is_empty() {
+                    stdoutln(format_args!("No decisions matched: {}\n", query))?;
+                } else {
+                    stdoutln(format_args!(
+                        "_{} decision(s) matched_ `{}`\n",
+                        decisions.len(),
+                        query
+                    ))?;
+                    for d in &decisions {
+                        let target = d.data.get("target").and_then(|v| v.as_str()).unwrap_or("?");
+                        let chosen = d.data.get("chosen").and_then(|v| v.as_str()).unwrap_or("");
+                        let agent = d.data.get("agent").and_then(|v| v.as_str()).unwrap_or("?");
+                        stdoutln(format_args!("## [{}] `{}` — {}", agent, target, chosen))?;
+                        if let Some(why) = d.data.get("why").and_then(|v| v.as_str()) {
+                            let preview: String = why.chars().take(200).collect();
+                            stdoutln(format_args!("  _why_: {}", preview))?;
+                        }
+                    }
+                }
+            }
+        }
         "query-journal" => {
             if args.len() < 4 {
                 eprintln!("Usage: atheneum query-journal <db-path> <path>");
@@ -1538,7 +1629,11 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     )?;
     writeln!(
         writer,
-        "  query-wiki <db-path> <path>             Query a wiki page by path"
+        "  query-wiki <db-path> <path>             Query a wiki page by path (supports partial path suffix)"
+    )?;
+    writeln!(
+        writer,
+        "  wiki-search <db-path> <query> [--project P] [--limit N]  Full-text search wiki pages via FTS5"
     )?;
     writeln!(
         writer,
@@ -1575,6 +1670,10 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     writeln!(
         writer,
         "  discoveries-recent <db-path> [--project P] [--agent A] [--session S] [--type T] [--limit N]  Recent discoveries (filter by session and/or discovery type)"
+    )?;
+    writeln!(
+        writer,
+        "  decision-search <db-path> <query> [--project P] [--limit N]  Search decisions by content (target/chosen/why)"
     )?;
     writeln!(
         writer,

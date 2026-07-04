@@ -8,8 +8,13 @@ Format: Keep a Changelog. Versions: `major.minor.patch`.
 
 ## [Unreleased] — Pending
 
-> **Status: NOT PRODUCTION READY.**  
-> This MCP server compiles and passes protocol-level tests, but has **never been verified end-to-end against a real Atheneum graph** via the MCP protocol.
+> **Status: Verified end-to-end.** Store→query round-trip confirmed via MCP protocol against a real Atheneum graph. The "same-process empty result" was a test artifact from pipelining requests without waiting for responses — real MCP clients are not affected.
+
+### Changed
+
+- `query_memory` is now documented and schematized as an exact key lookup, matching the direct graph API and the existing integration tests.
+- `store_memory` now accepts optional `key`, `scope`, and `project` fields instead of forcing every caller into a content-derived key with implicit `agent` scope.
+- `query_memory` now accepts optional `scope` and `project` filters plus a deprecated `query` alias for backward compatibility.
 
 ### What Works (Verified)
 

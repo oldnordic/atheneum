@@ -34,7 +34,7 @@ fn kanban_update_re() -> &'static Regex {
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct WikiPage {
     pub id: i64,
     pub path: String,
@@ -435,7 +435,7 @@ impl AtheneumGraph {
                 "SELECT id, path, title, content_hash, body, wikilinks, project_id, metadata, created_at, updated_at
                  FROM wiki_pages WHERE path = ?1"
             )?;
-            let row = stmt.query_row(rusqlite::params![path], |r| {
+            let row_mapper = |r: &rusqlite::Row| -> rusqlite::Result<WikiPage> {
                 let wikilinks_str: Option<String> = r.get(5)?;
                 let wikilinks = wikilinks_str
                     .and_then(|s| serde_json::from_str(&s).ok())
@@ -456,8 +456,23 @@ impl AtheneumGraph {
                     created_at: r.get(8)?,
                     updated_at: r.get(9)?,
                 })
-            });
-            match row {
+            };
+            // 1. Try exact path match.
+            match stmt.query_row(rusqlite::params![path], row_mapper) {
+                Ok(page) => return Ok(Some(page)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => {}
+                Err(e) => return Err(e.into()),
+            }
+            // 2. Fallback: partial path match (contains). Handles user typing
+            //    "magellan.md" or "post-mortem-watch-mode" when the stored path
+            //    is the full filesystem path. ORDER BY shortest path to prefer
+            //    the most specific match.
+            let pattern = format!("%{}%", path);
+            let mut stmt2 = conn.prepare_cached(
+                "SELECT id, path, title, content_hash, body, wikilinks, project_id, metadata, created_at, updated_at
+                 FROM wiki_pages WHERE path LIKE ?1 ORDER BY length(path) ASC LIMIT 1"
+            )?;
+            match stmt2.query_row(rusqlite::params![pattern], row_mapper) {
                 Ok(page) => Ok(Some(page)),
                 Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                 Err(e) => Err(e.into()),
@@ -714,7 +729,7 @@ impl AtheneumGraph {
                  FROM wiki_pages_fts
                  INNER JOIN wiki_pages wp ON wiki_pages_fts.rowid = wp.id
                  WHERE wiki_pages_fts MATCH ?1
-                   AND wp.project_id = ?2
+                   AND (wp.project_id = ?2 OR wp.project_id IS NULL OR wp.project_id = '')
                  ORDER BY rank
                  LIMIT ?3 OFFSET ?4"
             } else {
@@ -769,7 +784,7 @@ impl AtheneumGraph {
                  FROM graph_entities ge
                  INNER JOIN wiki_pages wp ON ge.name = wp.path
                  WHERE ge.kind = 'WikiPage'
-                   AND wp.project_id = ?1
+                   AND (wp.project_id = ?1 OR wp.project_id IS NULL OR wp.project_id = '')
                    AND (wp.title LIKE ?2 OR wp.path LIKE ?2 OR wp.body LIKE ?2)
                  ORDER BY wp.path"
             } else {

@@ -7,6 +7,7 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
+#[cfg(feature = "http")]
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -27,9 +28,21 @@ pub struct StoreDiscoveryParams {
 /// Parameters for storing a memory entry.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StoreMemoryParams {
+    pub key: Option<String>,
     pub content: String,
     pub tags: Vec<String>,
     pub importance: i64,
+    pub scope: Option<String>,
+    pub project: Option<String>,
+}
+
+/// Parameters for querying a memory entry by key.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct QueryMemoryParams {
+    pub key: String,
+    pub scope: Option<String>,
+    pub project: Option<String>,
+    pub k: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -42,11 +55,59 @@ pub trait Backend: Send + Sync + 'static {
     async fn query_knowledge(&self, target: &str, project: Option<&str>) -> Result<Value>;
     async fn search(&self, query: &str, k: usize, project: Option<&str>) -> Result<Value>;
     async fn store_memory(&self, params: StoreMemoryParams) -> Result<Value>;
-    async fn query_memory(&self, query: &str, k: usize) -> Result<Value>;
+    async fn query_memory(&self, params: QueryMemoryParams) -> Result<Value>;
     async fn list_sessions(&self, limit: i64) -> Result<Value>;
     async fn list_events(&self, limit: i64) -> Result<Value>;
     async fn navigate(&self, query: &str, k: usize, depth: u32) -> Result<Value>;
     async fn graph_stats(&self) -> Result<Value>;
+    // --- Phase 2 additions ---
+    async fn search_memory(&self, query: &str, k: usize, project: Option<&str>) -> Result<Value>;
+    async fn list_memory(
+        &self,
+        scope: Option<&str>,
+        project: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Value>;
+    async fn memory_bootstrap(
+        &self,
+        project: Option<&str>,
+        tokens: usize,
+        last_sessions: i64,
+    ) -> Result<Value>;
+    async fn query_wiki(&self, path: &str) -> Result<Value>;
+    async fn wiki_search(&self, query: &str, project: Option<&str>, limit: usize) -> Result<Value>;
+    async fn discoveries_recent(
+        &self,
+        project: Option<&str>,
+        agent: Option<&str>,
+        session: Option<&str>,
+        dtype: Option<&str>,
+        limit: i64,
+    ) -> Result<Value>;
+    async fn decision_search(
+        &self,
+        query: &str,
+        project: Option<&str>,
+        limit: i64,
+    ) -> Result<Value>;
+    async fn thread(
+        &self,
+        query: &str,
+        k: usize,
+        depth: u32,
+        project: Option<&str>,
+        tokens: usize,
+    ) -> Result<Value>;
+    async fn session_digest(&self, project: Option<&str>, last_sessions: i64) -> Result<Value>;
+    async fn get_entity(&self, id: i64) -> Result<Value>;
+    async fn get_neighbors(&self, id: i64) -> Result<Value>;
+    async fn dream(
+        &self,
+        scope: Option<&str>,
+        project: Option<&str>,
+        dry_run: bool,
+    ) -> Result<Value>;
 }
 
 // ---------------------------------------------------------------------------
@@ -138,7 +199,7 @@ pub mod http {
             ))
         }
 
-        async fn query_memory(&self, _query: &str, _k: usize) -> Result<Value> {
+        async fn query_memory(&self, _params: QueryMemoryParams) -> Result<Value> {
             Err(anyhow::anyhow!(
                 "query_memory requires direct backend (memory has no HTTP endpoint in envoy). \
                  Run with --features direct or set ATHENEUM_DIRECT=1"
@@ -167,6 +228,64 @@ pub mod http {
         async fn graph_stats(&self) -> Result<Value> {
             self.get_json("/atheneum/graph/stats").await
         }
+
+        // Phase 2 additions — not available via HTTP bridge.
+        async fn search_memory(&self, _q: &str, _k: usize, _p: Option<&str>) -> Result<Value> {
+            Err(not_direct("search_memory"))
+        }
+        async fn list_memory(
+            &self,
+            _s: Option<&str>,
+            _p: Option<&str>,
+            _o: usize,
+            _l: usize,
+        ) -> Result<Value> {
+            Err(not_direct("list_memory"))
+        }
+        async fn memory_bootstrap(&self, _p: Option<&str>, _t: usize, _l: i64) -> Result<Value> {
+            Err(not_direct("memory_bootstrap"))
+        }
+        async fn query_wiki(&self, _path: &str) -> Result<Value> {
+            Err(not_direct("query_wiki"))
+        }
+        async fn wiki_search(&self, _q: &str, _p: Option<&str>, _l: usize) -> Result<Value> {
+            Err(not_direct("wiki_search"))
+        }
+        async fn discoveries_recent(
+            &self,
+            _p: Option<&str>,
+            _a: Option<&str>,
+            _s: Option<&str>,
+            _t: Option<&str>,
+            _l: i64,
+        ) -> Result<Value> {
+            Err(not_direct("discoveries_recent"))
+        }
+        async fn decision_search(&self, _q: &str, _p: Option<&str>, _l: i64) -> Result<Value> {
+            Err(not_direct("decision_search"))
+        }
+        async fn thread(
+            &self,
+            _q: &str,
+            _k: usize,
+            _d: u32,
+            _p: Option<&str>,
+            _t: usize,
+        ) -> Result<Value> {
+            Err(not_direct("thread"))
+        }
+        async fn session_digest(&self, _p: Option<&str>, _l: i64) -> Result<Value> {
+            Err(not_direct("session_digest"))
+        }
+        async fn get_entity(&self, _id: i64) -> Result<Value> {
+            Err(not_direct("get_entity"))
+        }
+        async fn get_neighbors(&self, _id: i64) -> Result<Value> {
+            Err(not_direct("get_neighbors"))
+        }
+        async fn dream(&self, _s: Option<&str>, _p: Option<&str>, _d: bool) -> Result<Value> {
+            Err(not_direct("dream"))
+        }
     }
 }
 
@@ -189,6 +308,12 @@ pub mod direct {
         pub fn new(graph: Arc<tokio::sync::Mutex<AtheneumGraph>>) -> Self {
             Self { graph }
         }
+    }
+
+    /// Convenience: wrap a raw AtheneumGraph into a DirectBackend usable as
+    /// a `dyn Backend` trait object (used by main.rs).
+    pub fn direct_from_graph(graph: AtheneumGraph) -> DirectBackend {
+        DirectBackend::new(Arc::new(tokio::sync::Mutex::new(graph)))
     }
 
     #[async_trait]
@@ -234,14 +359,16 @@ pub mod direct {
         }
 
         async fn store_memory(&self, params: StoreMemoryParams) -> Result<Value> {
-            // Derive a stable key from content since the tool schema does not expose
-            // an explicit key field. Truncate to 64 chars to keep keys readable.
-            let key = if params.content.len() > 64 {
-                format!("{}…", &params.content[..63])
-            } else {
-                params.content.clone()
-            };
-            let scope = "agent";
+            // Preserve legacy behavior when callers omit `key`: derive a stable
+            // exact-lookup key from the content.
+            let key = params.key.unwrap_or_else(|| {
+                if params.content.len() > 64 {
+                    format!("{}…", &params.content[..63])
+                } else {
+                    params.content.clone()
+                }
+            });
+            let scope = params.scope.unwrap_or_else(|| "agent".to_string());
             let confidence = (params.importance as f64 / 10.0).clamp(0.0, 1.0);
             let graph = self.graph.lock().await;
             tokio::task::block_in_place(|| {
@@ -250,22 +377,33 @@ pub mod direct {
                 } else {
                     Some(params.tags.as_slice())
                 };
-                let id =
-                    graph.store_memory(&key, &params.content, scope, confidence, None, tags)?;
+                let id = graph.store_memory(
+                    &key,
+                    &params.content,
+                    &scope,
+                    confidence,
+                    params.project.as_deref(),
+                    tags,
+                )?;
                 Ok(json!({
                     "memory_id": id,
                     "key": key,
                     "scope": scope,
                     "confidence": confidence,
+                    "project": params.project,
                     "tags": params.tags,
                 }))
             })
         }
 
-        async fn query_memory(&self, query: &str, _k: usize) -> Result<Value> {
+        async fn query_memory(&self, params: QueryMemoryParams) -> Result<Value> {
             let graph = self.graph.lock().await;
             tokio::task::block_in_place(|| {
-                let results = graph.query_memory(query, None, None)?;
+                let results = graph.query_memory(
+                    &params.key,
+                    params.scope.as_deref(),
+                    params.project.as_deref(),
+                )?;
                 Ok(serde_json::to_value(results)?)
             })
         }
@@ -320,6 +458,164 @@ pub mod direct {
                 }))
             })
         }
+
+        async fn search_memory(
+            &self,
+            query: &str,
+            k: usize,
+            project: Option<&str>,
+        ) -> Result<Value> {
+            let graph = self.graph.lock().await;
+            tokio::task::block_in_place(|| {
+                let results = graph.lexical_search(query, k, project, Some("Memory"), None)?;
+                Ok(serde_json::to_value(results)?)
+            })
+        }
+
+        async fn list_memory(
+            &self,
+            scope: Option<&str>,
+            project: Option<&str>,
+            offset: usize,
+            limit: usize,
+        ) -> Result<Value> {
+            let graph = self.graph.lock().await;
+            tokio::task::block_in_place(|| {
+                let results = graph.list_memory_page(scope, project, offset, limit)?;
+                Ok(serde_json::to_value(results)?)
+            })
+        }
+
+        async fn memory_bootstrap(
+            &self,
+            project: Option<&str>,
+            tokens: usize,
+            last_sessions: i64,
+        ) -> Result<Value> {
+            let graph = self.graph.lock().await;
+            tokio::task::block_in_place(|| {
+                graph.compose_memory_bootstrap(project, tokens, last_sessions)
+            })
+        }
+
+        async fn query_wiki(&self, path: &str) -> Result<Value> {
+            let graph = self.graph.lock().await;
+            tokio::task::block_in_place(|| match graph.get_wiki_page(path)? {
+                Some(page) => Ok(serde_json::to_value(page)?),
+                None => Ok(json!({ "found": false, "path": path })),
+            })
+        }
+
+        async fn wiki_search(
+            &self,
+            query: &str,
+            project: Option<&str>,
+            limit: usize,
+        ) -> Result<Value> {
+            let graph = self.graph.lock().await;
+            tokio::task::block_in_place(|| {
+                let results = graph.search_wiki_pages(query, project, 0, limit)?;
+                Ok(serde_json::to_value(results)?)
+            })
+        }
+
+        async fn discoveries_recent(
+            &self,
+            project: Option<&str>,
+            agent: Option<&str>,
+            session: Option<&str>,
+            dtype: Option<&str>,
+            limit: i64,
+        ) -> Result<Value> {
+            let graph = self.graph.lock().await;
+            tokio::task::block_in_place(|| {
+                let results = graph.recent_discoveries(project, agent, session, dtype, limit)?;
+                Ok(serde_json::to_value(results)?)
+            })
+        }
+
+        async fn decision_search(
+            &self,
+            query: &str,
+            project: Option<&str>,
+            limit: i64,
+        ) -> Result<Value> {
+            let graph = self.graph.lock().await;
+            tokio::task::block_in_place(|| {
+                let results = graph.search_decisions(query, project, limit)?;
+                Ok(serde_json::to_value(results)?)
+            })
+        }
+
+        async fn thread(
+            &self,
+            query: &str,
+            k: usize,
+            depth: u32,
+            project: Option<&str>,
+            tokens: usize,
+        ) -> Result<Value> {
+            let graph = self.graph.lock().await;
+            tokio::task::block_in_place(|| {
+                let views = graph.thread_query(query, k, depth, project, tokens)?;
+                let out: Vec<Value> = views
+                    .iter()
+                    .map(|v| {
+                        json!({
+                            "entry": v.entry,
+                            "depth": v.depth,
+                            "entities": v.entities,
+                            "edges": v.edges,
+                        })
+                    })
+                    .collect();
+                Ok(Value::Array(out))
+            })
+        }
+
+        async fn session_digest(&self, project: Option<&str>, last_sessions: i64) -> Result<Value> {
+            let graph = self.graph.lock().await;
+            tokio::task::block_in_place(|| graph.compose_digest_json(project, last_sessions))
+        }
+
+        async fn get_entity(&self, id: i64) -> Result<Value> {
+            let graph = self.graph.lock().await;
+            tokio::task::block_in_place(|| {
+                let entity = graph.get_entity(id)?;
+                Ok(serde_json::to_value(entity)?)
+            })
+        }
+
+        async fn get_neighbors(&self, id: i64) -> Result<Value> {
+            let graph = self.graph.lock().await;
+            tokio::task::block_in_place(|| {
+                let outgoing = graph.outgoing_edges(id)?;
+                let incoming = graph.incoming_edges(id)?;
+                Ok(json!({
+                    "outgoing": outgoing,
+                    "incoming": incoming,
+                }))
+            })
+        }
+
+        async fn dream(
+            &self,
+            scope: Option<&str>,
+            project: Option<&str>,
+            dry_run: bool,
+        ) -> Result<Value> {
+            let graph = self.graph.lock().await;
+            tokio::task::block_in_place(|| {
+                let mode = if dry_run {
+                    atheneum::DreamMode::DryRun
+                } else {
+                    atheneum::DreamMode::AutoMerge
+                };
+                let config = atheneum::DreamConfig::default();
+                let report = graph.dream_pass(mode, scope, project, &config)?;
+                Ok(serde_json::to_value(report)?)
+            })
+        }
     }
 }
 
@@ -327,6 +623,14 @@ pub mod direct {
 // Helper: minimal percent-encoding for query strings
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "http")]
+fn not_direct(op: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{op} requires the direct backend (set ATHENEUM_BACKEND=direct or compile with --features direct)"
+    )
+}
+
+#[cfg(feature = "http")]
 fn encode(s: &str) -> String {
     let needs_encoding = s
         .bytes()
