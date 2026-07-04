@@ -210,14 +210,23 @@ impl AtheneumGraph {
             .next()
             .unwrap_or(15000);
 
-        let without_sharing = agent_count * estimated_file_tokens;
-        let with_sharing = estimated_file_tokens + (agent_count - 1).max(0) * 2500;
-        let saved = without_sharing.saturating_sub(with_sharing);
-        let percentage_reduction = if without_sharing > 0 {
-            (saved as f64 / without_sharing as f64) * 100.0
-        } else {
-            0.0
-        };
+        // Token savings only makes sense when there are actual discoveries
+        // from multiple agents. Without discoveries, report zeros instead of
+        // negative savings (saved = 0 - with_sharing = -15000).
+        let (without_sharing, with_sharing, saved, percentage_reduction) =
+            if agent_count == 0 || discoveries.is_empty() {
+                (0i64, 0i64, 0i64, 0.0f64)
+            } else {
+                let without = agent_count * estimated_file_tokens;
+                let with = estimated_file_tokens + (agent_count - 1).max(0) * 2500;
+                let s = without.saturating_sub(with);
+                let pct = if without > 0 {
+                    (s as f64 / without as f64) * 100.0
+                } else {
+                    0.0
+                };
+                (without, with, s, pct)
+            };
 
         let mut value = json!({
             "target": target,
@@ -326,14 +335,20 @@ impl AtheneumGraph {
             .filter_map(|t| t.as_i64())
             .next()
             .unwrap_or(15000);
-        let without_sharing = agent_count * estimated_file_tokens;
-        let with_sharing = estimated_file_tokens + (agent_count - 1).max(0) * 2500;
-        let saved = without_sharing.saturating_sub(with_sharing);
-        let percentage_reduction = if without_sharing > 0 {
-            (saved as f64 / without_sharing as f64) * 100.0
-        } else {
-            0.0
-        };
+        let (without_sharing, with_sharing, saved, percentage_reduction) =
+            if agent_count == 0 || discoveries.is_empty() {
+                (0i64, 0i64, 0i64, 0.0f64)
+            } else {
+                let without = agent_count * estimated_file_tokens;
+                let with = estimated_file_tokens + (agent_count - 1).max(0) * 2500;
+                let s = without.saturating_sub(with);
+                let pct = if without > 0 {
+                    (s as f64 / without as f64) * 100.0
+                } else {
+                    0.0
+                };
+                (without, with, s, pct)
+            };
 
         let mut value = json!({
             "target": target,

@@ -700,3 +700,19 @@ Verified:
 - navigate(sqlitegraph native-v3, k=3, d=1): 18 entities, 0 noise edges
 - memory_bootstrap(Projects, 500): memories_graph_connected=0 (clear semantics)
 - Tests: 76 lib + 3 integration, all pass
+
+### fix(mcp): navigate noise filter + query_knowledge negative token savings
+
+navigate: added NOISE_ENTITY_KINDS filter (ToolCall, ReasoningLog, TestRun)
+and handled_by_tool to metadata edge types. ToolCall entities are 84% of
+the graph (121,590 of 144k) and flood BFS traversal. At depth=2, 355,343
+noise entities filtered (96%). Signal entities now Session/File/Project/
+Agent only. Output includes noise_filtered count.
+
+query_knowledge: token_savings.saved was -15000 when no discoveries match.
+Root cause: agent_count=0 → without_sharing=0, with_sharing=15000 (default
+file token estimate), saved = 0 - 15000 = -15000. Fix: guard the entire
+calculation — when agent_count=0 or discoveries empty, report all zeros.
+Fixed in both query_knowledge and query_knowledge_in_project.
+
+Verified: saved=0 (was -15000). 76 lib tests pass.
