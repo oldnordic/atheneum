@@ -24,7 +24,7 @@ pub use graph::{
     DisambiguationResult, DiscoveryPreview, DreamConfig, DreamFinding, DreamMode, DreamPhase,
     DreamReport, EdgeType, EntityType, HandoffPreview, JournalSection, KanbanStatus, KanbanUpdate,
     LintConfig, LintReport, MaintainConfig, MaintainReport, MemoryPatch, MemoryPreview, NavigateQueryPlan,
-    ProvenanceData, QueryIntent, ResolvedEntity, UpsertAction, UpsertResult,
+    ProvenanceData, QueryIntent, ResolvedEntity, SeedMemory, UpsertAction, UpsertResult,
     RuntimeStats,
     SearchResult, WikiPage, WikiSearchResult,
 };

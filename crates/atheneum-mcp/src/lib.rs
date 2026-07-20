@@ -28,15 +28,37 @@ impl AtheneumMcpServer {
 
 impl ServerHandler for AtheneumMcpServer {
     fn get_info(&self) -> ServerInfo {
+        let instructions = tokio::runtime::Handle::try_current().map(|handle| {
+            if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread {
+                // block_in_place is not allowed on CurrentThread runtime
+                return "".to_string();
+            }
+            tokio::task::block_in_place(|| {
+                handle.block_on(async {
+                    match self.backend.seed_memory(crate::backend::SeedMemoryParams { project: None, tokens: Some(400) }).await {
+                        Ok(v) => v["instructions"].as_str().unwrap_or("").to_string(),
+                        Err(_) => "".to_string(),
+                    }
+                })
+            })
+        }).unwrap_or_default();
+
+        let final_instructions = if instructions.is_empty() {
+            "Atheneum MCP server: tools for agent memory, knowledge graph, search, and navigation.".to_string()
+        } else {
+            format!(
+                "Atheneum MCP server: tools for agent memory, knowledge graph, search, and navigation.\n\n\
+                 Current Knowledge Base Context:\n{}",
+                instructions
+            )
+        };
+
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(
                 "atheneum-mcp",
                 env!("CARGO_PKG_VERSION"),
             ))
-            .with_instructions(
-                "Atheneum MCP server: tools for agent memory, knowledge graph, \
-                 search, and navigation.",
-            )
+            .with_instructions(&final_instructions)
             .with_protocol_version(rmcp::model::ProtocolVersion::V_2025_03_26)
     }
 
@@ -47,11 +69,29 @@ impl ServerHandler for AtheneumMcpServer {
     ) -> impl std::future::Future<Output = Result<rmcp::model::ListToolsResult, McpError>>
            + rmcp::service::MaybeSendFuture
            + '_ {
-        std::future::ready(Ok(rmcp::model::ListToolsResult {
-            tools: self.router.list_all(),
-            next_cursor: None,
-            meta: None,
-        }))
+        async move {
+            let mut tools = self.router.list_all();
+            if let Ok(seed) = self.backend.seed_memory(crate::backend::SeedMemoryParams { project: None, tokens: Some(400) }).await {
+                if let Some(instructions) = seed["instructions"].as_str() {
+                    for tool in &mut tools {
+                        if tool.name == "navigate" || tool.name == "query_memory" || tool.name == "search" {
+                            let original = tool.description.as_ref().map(|c| c.as_ref()).unwrap_or("");
+                            let enriched = format!(
+                                "{}\n\nCurrent Knowledge Base Context:\n{}",
+                                original,
+                                instructions
+                            );
+                            tool.description = Some(std::borrow::Cow::Owned(enriched));
+                        }
+                    }
+                }
+            }
+            Ok(rmcp::model::ListToolsResult {
+                tools,
+                next_cursor: None,
+                meta: None,
+            })
+        }
     }
 
     fn call_tool(
@@ -112,6 +152,12 @@ mod tests {
         }
         async fn maintain(&self, _p: backend::MaintainParams) -> anyhow::Result<Value> {
             Ok(Value::Null)
+        }
+        async fn seed_memory(&self, _p: backend::SeedMemoryParams) -> anyhow::Result<Value> {
+            Ok(serde_json::json!({
+                "instructions": "Mock instructions",
+                "token_estimate": 10
+            }))
         }
         async fn list_sessions(&self, _l: i64) -> anyhow::Result<Value> {
             Ok(Value::Null)
@@ -259,7 +305,8 @@ mod tests {
         assert!(names.contains(&"get_neighbors"));
         assert!(names.contains(&"dream"));
         assert!(names.contains(&"maintain"));
-        assert_eq!(tools.len(), 24);
+        assert!(names.contains(&"seed_memory"));
+        assert_eq!(tools.len(), 25);
     }
 
     #[test]

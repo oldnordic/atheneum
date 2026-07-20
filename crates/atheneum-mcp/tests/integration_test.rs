@@ -66,6 +66,15 @@ impl backend::Backend for MockBackend {
     async fn list_sessions(&self, _l: i64) -> anyhow::Result<serde_json::Value> {
         Ok(json!({"sessions": []}))
     }
+    async fn seed_memory(
+        &self,
+        _p: backend::SeedMemoryParams,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(json!({
+            "instructions": "Mock seed instructions",
+            "token_estimate": 15
+        }))
+    }
     async fn list_events(&self, _l: i64) -> anyhow::Result<serde_json::Value> {
         Ok(json!({"events": []}))
     }
@@ -245,7 +254,8 @@ async fn mcp_server_initializes_and_lists_tools() {
     assert!(names.contains(&"decision_search"));
     assert!(names.contains(&"add_memory"));
     assert!(names.contains(&"maintain"));
-    assert_eq!(tools.len(), 24);
+    assert!(names.contains(&"seed_memory"));
+    assert_eq!(tools.len(), 25);
 
     // Call graph_stats tool
     send_json(
@@ -616,6 +626,28 @@ async fn mcp_direct_backend_round_trip() {
     let maintain_text = maintain_resp["result"]["content"][0]["text"].as_str().unwrap();
     let maintain_val: serde_json::Value = serde_json::from_str(maintain_text).unwrap();
     assert_eq!(maintain_val["broken_links_resolved"].as_u64(), Some(0));
+
+    // 3g. seed_memory
+    send_json(
+        &mut client_writer,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 104,
+            "method": "tools/call",
+            "params": {
+                "name": "seed_memory",
+                "arguments": {
+                    "tokens": 400
+                }
+            }
+        }),
+    )
+    .await;
+    let seed_resp = recv_json(&mut client_reader).await;
+    assert_eq!(seed_resp["id"], 104);
+    let seed_text = seed_resp["result"]["content"][0]["text"].as_str().unwrap();
+    let seed_val: serde_json::Value = serde_json::from_str(seed_text).unwrap();
+    assert!(seed_val["instructions"].as_str().is_some());
 
     // 4. store_discovery
     send_json(

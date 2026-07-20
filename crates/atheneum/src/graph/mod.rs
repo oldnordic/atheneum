@@ -31,6 +31,7 @@ pub mod navigation;
 pub mod ontology;
 pub mod planning;
 pub mod search;
+pub mod seed;
 pub mod types;
 pub mod watch;
 pub mod wiki;
@@ -44,6 +45,7 @@ pub use extract_decisions::{run_extract, ExtractConfig, ExtractMode, ExtractStat
 pub use navigation::{estimate_entity_tokens, truncate_subgraph};
 pub use planning::{KanbanStatus, KanbanUpdate};
 pub use lint::{BrokenLinkMode, LintConfig, LintReport, MaintainConfig, MaintainReport};
+pub use seed::SeedMemory;
 pub use types::ProvenanceData;
 pub use types::{
     ActionRecord, ActionTrace, AppliedKanbanUpdate, AtheneumError, BlockerType,

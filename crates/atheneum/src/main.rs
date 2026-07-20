@@ -1486,6 +1486,18 @@ fn run() -> anyhow::Result<()> {
             }, apply)?;
             print_json(serde_json::to_value(&report)?)?;
         }
+        "seed-memory" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum seed-memory <db-path> [--project P] [--tokens N]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let opts = parse_options(&args[3..])?;
+            let tokens = parse_usize_option(opts.tokens.as_deref(), "tokens")?.unwrap_or(800);
+            let graph = AtheneumGraph::open(&db_path)?;
+            let seed = graph.seed_memory(opts.project.as_deref(), tokens)?;
+            print_json(serde_json::to_value(&seed)?)?;
+        }
         "config" => {
             if args.len() < 3 {
                 eprintln!("Usage: atheneum config <init|show> [args]");

@@ -79,6 +79,13 @@ pub struct MaintainParams {
     pub rewire_threshold: Option<f64>,
 }
 
+/// Parameters for seeding/bootstrapping memory.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SeedMemoryParams {
+    pub project: Option<String>,
+    pub tokens: Option<usize>,
+}
+
 #[cfg(any(feature = "direct", test))]
 const METADATA_EDGE_TYPES: &[&str] = &[
     "belongs_to_project",
@@ -114,6 +121,7 @@ pub trait Backend: Send + Sync + 'static {
     async fn update_memory(&self, params: UpdateMemoryParams) -> Result<Value>;
     async fn add_memory(&self, params: AddMemoryParams) -> Result<Value>;
     async fn maintain(&self, params: MaintainParams) -> Result<Value>;
+    async fn seed_memory(&self, params: SeedMemoryParams) -> Result<Value>;
     async fn query_memory(&self, params: QueryMemoryParams) -> Result<Value>;
     async fn list_sessions(&self, limit: i64) -> Result<Value>;
     async fn list_events(&self, limit: i64) -> Result<Value>;
@@ -359,6 +367,12 @@ pub mod http {
                 "maintain requires direct backend. \
                  Run with --features direct or set ATHENEUM_DIRECT=1"
             ))
+        }
+        async fn seed_memory(&self, _params: SeedMemoryParams) -> Result<Value> {
+            Ok(json!({
+                "instructions": "HttpBackend connected. Run query/navigate to discover knowledge.",
+                "token_estimate": 10
+            }))
         }
 
         async fn query_memory(&self, _params: QueryMemoryParams) -> Result<Value> {
@@ -645,6 +659,13 @@ pub mod direct {
                     stale_superseded_days,
                 }, apply)?;
                 Ok(serde_json::to_value(report)?)
+            })
+        }
+        async fn seed_memory(&self, params: SeedMemoryParams) -> Result<Value> {
+            let graph = self.graph.lock().await;
+            tokio::task::block_in_place(|| {
+                let seed = graph.seed_memory(params.project.as_deref(), params.tokens.unwrap_or(800))?;
+                Ok(serde_json::to_value(seed)?)
             })
         }
 

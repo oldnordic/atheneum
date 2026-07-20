@@ -41,6 +41,7 @@ pub fn register_all(router: &mut ToolRouter<AtheneumMcpServer>) {
     router.add_route(get_neighbors());
     router.add_route(dream());
     router.add_route(maintain());
+    router.add_route(seed_memory());
 }
 
 // ---------------------------------------------------------------------------
@@ -994,6 +995,39 @@ fn maintain() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServe
                     rewire_threshold,
                 };
                 match ctx.service.backend.maintain(params).await {
+                    Ok(v) => json_result(v),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            })
+        },
+    )
+}
+
+fn seed_memory() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServer> {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "project": { "type": "string", "description": "Optional project scope" },
+            "tokens": { "type": "integer", "default": 800, "description": "Token budget for the seed summary" }
+        }
+    });
+    let schema: Map<String, Value> = schema.as_object().unwrap().clone();
+    rmcp::handler::server::router::tool::ToolRoute::new_dyn(
+        Tool::new(
+            "seed_memory",
+            "Generate a compact seed summary of standard instructions, active concepts, and recent memories to bootstrap the client model.",
+            schema,
+        ),
+        |ctx: rmcp::handler::server::tool::ToolCallContext<'_, AtheneumMcpServer>| {
+            Box::pin(async move {
+                let args = extract_args(ctx.arguments);
+                let project = args["project"].as_str().map(String::from);
+                let tokens = args["tokens"].as_u64().map(|v| v as usize);
+                let params = crate::backend::SeedMemoryParams {
+                    project,
+                    tokens,
+                };
+                match ctx.service.backend.seed_memory(params).await {
                     Ok(v) => json_result(v),
                     Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
                 }
