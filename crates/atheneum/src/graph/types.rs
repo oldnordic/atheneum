@@ -332,6 +332,25 @@ pub struct MemoryPreview {
     pub disambiguation: Option<DisambiguationResult>,
 }
 
+/// Patch applied by [`AtheneumGraph::update_memory`]. All fields optional; only
+/// `Some` fields are written. Tags merge by default; pass `replace_tags: true`
+/// to overwrite the existing tag list entirely.
+#[derive(Debug, Clone, Default)]
+pub struct MemoryPatch {
+    pub content: Option<String>,
+    pub importance: Option<i64>,
+    pub tags: Option<Vec<String>>,
+    pub replace_tags: bool,
+}
+
+impl MemoryPatch {
+    /// Returns true if no field would change anything. [`AtheneumGraph::update_memory`]
+    /// treats an empty patch as a no-op and returns the current memory preview.
+    pub fn is_empty(&self) -> bool {
+        self.content.is_none() && self.importance.is_none() && self.tags.is_none()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HandoffPreview {
     pub proposed_name: String,

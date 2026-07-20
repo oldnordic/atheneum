@@ -23,7 +23,8 @@ pub use graph::{
     AtheneumGraph, ClaudeTranscriptImportParams, ClaudeTranscriptImportSummary,
     DisambiguationResult, DiscoveryPreview, DreamConfig, DreamFinding, DreamMode, DreamPhase,
     DreamReport, EdgeType, EntityType, HandoffPreview, JournalSection, KanbanStatus, KanbanUpdate,
-    MemoryPreview, NavigateQueryPlan, ProvenanceData, QueryIntent, ResolvedEntity, RuntimeStats,
+    MemoryPatch, MemoryPreview, NavigateQueryPlan, ProvenanceData, QueryIntent, ResolvedEntity,
+    RuntimeStats,
     SearchResult, WikiPage, WikiSearchResult,
 };
 

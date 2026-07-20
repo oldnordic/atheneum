@@ -1298,6 +1298,61 @@ fn run() -> anyhow::Result<()> {
             )?;
             print_json(json!({"memory_id": id, "key": key, "scope": scope}))?;
         }
+        "memory-update" => {
+            // Story A2 (spec FR-1). Patches an existing Memory entity in place.
+            // `--content` replaces the body; `--importance N` (1..10) remaps to
+            // confidence exactly as `memory-store` does. `--tags a,b` merges by
+            // default; pass `--replace-tags` to overwrite.
+            if args.len() < 4 {
+                eprintln!(
+                    "Usage: atheneum memory-update <db-path> --id N [--content \"...\"] \\\
+                     [--importance 1..10] [--tags a,b --replace-tags]"
+                );
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let opts = parse_options(&args[3..])?;
+            let id_str = opts
+                .id
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("--id <N> is required"))?;
+            let id = parse_i64_arg(id_str, "id")?;
+            let patch = atheneum::MemoryPatch {
+                content: opts.content.clone(),
+                importance: opts
+                    .importance
+                    .as_deref()
+                    .map(|s| {
+                        s.parse::<i64>().map_err(|e| {
+                            anyhow::anyhow!("invalid --importance '{}': {}", s, e)
+                        })
+                    })
+                    .transpose()?,
+                tags: opts
+                    .tags
+                    .as_deref()
+                    .map(|s| s.split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect()),
+                replace_tags: opts.replace_tags,
+            };
+            if patch.is_empty() {
+                anyhow::bail!(
+                    "memory-update requires at least one of --content, --importance, --tags"
+                );
+            }
+            let graph = AtheneumGraph::open(&db_path)?;
+            let returned = graph.update_memory(id, &patch)?;
+            let entity = graph.get_entity(returned)?;
+            print_json(json!({
+                "memory_id": returned,
+                "key": entity.name,
+                "scope": entity.data.get("scope").and_then(|v| v.as_str()),
+                "content": entity.data.get("content").and_then(|v| v.as_str()),
+                "confidence": entity.data.get("confidence").and_then(|v| v.as_f64()),
+                "updated_at": entity.data.get("updated_at").and_then(|v| v.as_str()),
+                "content_hash": entity.data.get("content_hash").and_then(|v| v.as_str()),
+                "tags": entity.data.get("tags"),
+            }))?;
+        }
         "memory-get" => {
             if args.len() < 4 {
                 eprintln!("Usage: atheneum memory-get <db-path> <key> [--scope S] [--project P]");
@@ -1868,8 +1923,13 @@ struct CliOptions {
     kinds: Option<String>,
     role: Option<String>,
     search: Option<String>,
+    importance: Option<String>,
+    tags: Option<String>,
+    id: Option<String>,
+    content: Option<String>,
     walk: bool,
     only_decisions: bool,
+    replace_tags: bool,
     dry_run: bool,
     auto_merge: bool,
     concise: bool,
@@ -1946,6 +2006,9 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
         } else if args[i] == "--only-decisions" {
             opts.only_decisions = true;
             i += 1;
+        } else if args[i] == "--replace-tags" {
+            opts.replace_tags = true;
+            i += 1;
         } else if args[i] == "--once" {
             opts.once = true;
             i += 1;
@@ -1984,6 +2047,10 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
                 "--kinds" => opts.kinds = Some(value),
                 "--role" => opts.role = Some(value),
                 "--search" => opts.search = Some(value),
+                "--importance" => opts.importance = Some(value),
+                "--tags" => opts.tags = Some(value),
+                "--id" => opts.id = Some(value),
+                "--content" => opts.content = Some(value),
                 "--interval" => opts.interval = Some(value),
                 "--exclude-project" => opts.exclude_projects.push(value),
                 other => anyhow::bail!("unknown option: {}", other),

@@ -360,3 +360,249 @@ fn test_preview_memory_includes_exact_match_even_when_fuzzy_score_is_low() {
         "exact matches should be merged into candidate results"
     );
 }
+
+// ===== update_memory tests (Story A1, spec FR-1) =====
+
+#[test]
+fn test_update_memory_replaces_content_and_recomputes_hash() {
+    use atheneum::MemoryPatch;
+
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    let id = graph
+        .store_memory("city", "Hyderabad", "user", 1.0, None, None)
+        .expect("seed memory");
+
+    let original = graph.get_entity(id).unwrap();
+    let original_hash = original
+        .data
+        .get("content_hash")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let returned = graph
+        .update_memory(id, &MemoryPatch { content: Some("Bangalore".into()), ..Default::default() })
+        .expect("update_memory");
+    assert_eq!(returned, id, "update_memory must return the same id");
+
+    let updated = graph.get_entity(id).unwrap();
+    assert_eq!(
+        updated.data.get("content").and_then(|v| v.as_str()),
+        Some("Bangalore"),
+        "content must be replaced"
+    );
+    assert_eq!(updated.name, "city", "key is preserved");
+    assert_eq!(
+        updated.data.get("scope").and_then(|v| v.as_str()),
+        Some("user"),
+        "scope is preserved"
+    );
+    assert_eq!(
+        updated.data.get("confidence").and_then(|v| v.as_f64()),
+        Some(1.0),
+        "confidence is preserved when not patched"
+    );
+
+    let new_hash = updated
+        .data
+        .get("content_hash")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    assert_ne!(original_hash, new_hash, "content hash must change");
+    assert_ne!(original_hash.as_deref(), Some("Bangalore"));
+}
+
+#[test]
+fn test_update_memory_empty_patch_is_noop() {
+    use atheneum::MemoryPatch;
+
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    let id = graph
+        .store_memory("tz", "UTC+0", "user", 0.8, None, None)
+        .expect("seed memory");
+    let before = graph.get_entity(id).unwrap();
+
+    let returned = graph
+        .update_memory(id, &MemoryPatch::default())
+        .expect("empty patch");
+    assert_eq!(returned, id);
+
+    let after = graph.get_entity(id).unwrap();
+    assert_eq!(before.data, after.data, "empty patch must not touch data");
+}
+
+#[test]
+fn test_update_memory_importance_maps_to_confidence() {
+    use atheneum::MemoryPatch;
+
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    let id = graph
+        .store_memory("note", "x", "agent", 1.0, None, None)
+        .expect("seed memory");
+
+    graph
+        .update_memory(id, &MemoryPatch { importance: Some(5), ..Default::default() })
+        .unwrap();
+
+    let updated = graph.get_entity(id).unwrap();
+    assert_eq!(
+        updated.data.get("confidence").and_then(|v| v.as_f64()),
+        Some(0.5),
+        "importance=5 must map to confidence=0.5 (matches store_memory scale)"
+    );
+}
+
+#[test]
+fn test_update_memory_merges_tags_by_default() {
+    use atheneum::MemoryPatch;
+
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    let id = graph
+        .store_memory(
+            "note",
+            "x",
+            "agent",
+            1.0,
+            None,
+            Some(&["alpha".to_string(), "beta".to_string()]),
+        )
+        .expect("seed memory");
+
+    graph
+        .update_memory(
+            id,
+            &MemoryPatch {
+                tags: Some(vec!["beta".into(), "gamma".into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let updated = graph.get_entity(id).unwrap();
+    let tags: Vec<String> = updated
+        .data
+        .get("tags")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    assert_eq!(tags, vec!["alpha", "beta", "gamma"], "tags merge, dedup, preserve order");
+}
+
+#[test]
+fn test_update_memory_replace_tags_overwrites() {
+    use atheneum::MemoryPatch;
+
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    let id = graph
+        .store_memory(
+            "note",
+            "x",
+            "agent",
+            1.0,
+            None,
+            Some(&["alpha".to_string(), "beta".to_string()]),
+        )
+        .expect("seed memory");
+
+    graph
+        .update_memory(
+            id,
+            &MemoryPatch {
+                tags: Some(vec!["gamma".into(), "delta".into()]),
+                replace_tags: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let updated = graph.get_entity(id).unwrap();
+    let tags: Vec<String> = updated
+        .data
+        .get("tags")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    assert_eq!(tags, vec!["gamma", "delta"], "replace_tags overwrites");
+}
+
+#[test]
+fn test_update_memory_rejects_non_memory_entity() {
+    use atheneum::MemoryPatch;
+
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    // An Agent entity, not a Memory.
+    let id = graph.insert_agent("bot", serde_json::json!({})).expect("insert agent");
+
+    let err = graph
+        .update_memory(id, &MemoryPatch { content: Some("x".into()), ..Default::default() })
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("Entity not found") || err.to_string().contains(&id.to_string()),
+        "non-Memory id must be rejected with EntityNotFound, got: {err}"
+    );
+}
+
+#[test]
+fn test_update_memory_rejects_missing_id() {
+    use atheneum::MemoryPatch;
+
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    let err = graph
+        .update_memory(999999, &MemoryPatch { content: Some("x".into()), ..Default::default() })
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("Entity not found") || err.to_string().contains("999999"),
+        "missing id must be rejected with EntityNotFound, got: {err}"
+    );
+}
+
+#[test]
+fn test_update_memory_query_memory_reflects_new_content() {
+    // Round-trip: store → update → query returns only the new content.
+    use atheneum::MemoryPatch;
+
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    let id = graph
+        .store_memory("city", "Hyderabad", "user", 1.0, None, None)
+        .expect("seed memory");
+
+    graph
+        .update_memory(id, &MemoryPatch { content: Some("Bangalore".into()), ..Default::default() })
+        .unwrap();
+
+    let found = graph.query_memory("city", None, None).expect("query");
+    assert_eq!(found.len(), 1, "no duplicate memory created");
+    assert_eq!(
+        found[0].data.get("content").and_then(|v| v.as_str()),
+        Some("Bangalore"),
+        "query must reflect patched content"
+    );
+}
+
+#[test]
+fn test_update_memory_mirrors_to_memory_entries_table() {
+    // The dual-write path: graph_entities AND memory_entries must both reflect
+    // the update, mirroring store_memory's contract.
+    use atheneum::MemoryPatch;
+
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    let id = graph
+        .store_memory("city", "Hyderabad", "user", 1.0, None, None)
+        .expect("seed memory");
+
+    graph
+        .update_memory(id, &MemoryPatch { content: Some("Bangalore".into()), ..Default::default() })
+        .unwrap();
+
+    let row: (String, f64) = graph
+        .with_raw_connection(|conn| {
+            conn.query_row(
+                "SELECT content, confidence FROM memory_entries WHERE key = ?1 AND scope = ?2",
+                params!["city", "user"],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)),
+            )
+            .map_err(anyhow::Error::from)
+        })
+        .expect("memory_entries row must exist");
+    assert_eq!(row.0, "Bangalore", "memory_entries.content must be updated");
+    assert_eq!(row.1, 1.0, "confidence preserved in memory_entries");
+}

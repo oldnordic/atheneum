@@ -259,6 +259,165 @@ impl AtheneumGraph {
         Ok(memory_id)
     }
 
+    /// Patch an existing Memory entity in place. Only fields set on `patch` are
+    /// written; the rest are preserved. An empty patch is a no-op and returns
+    /// the id of the existing memory. Recomputes the content hash, mirrors the
+    /// change into the `memory_entries` SQL table (same dual-write path as
+    /// [`store_memory`](Self::store_memory)), re-indexes the entity for search,
+    /// and invalidates the memory cache.
+    ///
+    /// Errors with [`AtheneumError::EntityNotFound`] if `id` does not refer to
+    /// a kind=`Memory` entity.
+    pub fn update_memory(&self, id: i64, patch: &super::MemoryPatch) -> Result<i64> {
+        let entity = self.get_entity(id).map_err(|_| super::AtheneumError::EntityNotFound(id))?;
+        if entity.kind != EntityType::Memory.as_str() {
+            return Err(super::AtheneumError::EntityNotFound(id).into());
+        }
+
+        // Empty patch: no-op, return current id.
+        if patch.is_empty() {
+            return Ok(id);
+        }
+
+        let mut data = entity.data.clone();
+        let obj = data
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("Memory {} data is not a JSON object", id))?;
+
+        let key = obj
+            .get("key")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .ok_or_else(|| anyhow::anyhow!("Memory {} missing 'key' field", id))?;
+        let scope = obj
+            .get("scope")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .ok_or_else(|| anyhow::anyhow!("Memory {} missing 'scope' field", id))?;
+        let project_id = obj
+            .get("project_id")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        let mut content = obj
+            .get("content")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .ok_or_else(|| anyhow::anyhow!("Memory {} missing 'content' field", id))?;
+        let mut confidence = obj
+            .get("confidence")
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| anyhow::anyhow!("Memory {} missing 'confidence' field", id))?;
+
+        if let Some(ref new_content) = patch.content {
+            content = new_content.clone();
+        }
+        if let Some(importance) = patch.importance {
+            // Mirror store_memory's 1..10 importance → 0..1 confidence mapping.
+            confidence = (importance as f64 / 10.0).clamp(0.0, 1.0);
+        }
+
+        // Tags: merge by default, or replace when replace_tags is set.
+        let merged_tags: Option<Vec<String>> = if let Some(ref new_tags) = patch.tags {
+            if patch.replace_tags {
+                Some(new_tags.clone())
+            } else {
+                let mut existing: Vec<String> = obj
+                    .get("tags")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for t in new_tags {
+                    if !existing.iter().any(|e| e == t) {
+                        existing.push(t.clone());
+                    }
+                }
+                Some(existing)
+            }
+        } else {
+            obj.get("tags")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        };
+
+        // Preserve created_at + sql_id.
+        let created_at = obj
+            .get("created_at")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .ok_or_else(|| anyhow::anyhow!("Memory {} missing 'created_at' field", id))?;
+        let sql_id = obj.get("sql_id").and_then(|v| v.as_i64()).unwrap_or(0);
+        let now = Utc::now().to_rfc3339();
+
+        // Mirror into the memory_entries SQL table (same dual-write path as
+        // store_memory). If the row is missing — e.g. from a legacy import —
+        // insert it rather than silently losing the write.
+        self.with_raw_connection(|conn| {
+            let updated = conn.execute(
+                "UPDATE memory_entries
+                 SET content = ?1, confidence = ?2, updated_at = ?3
+                 WHERE key = ?4 AND scope = ?5
+                   AND COALESCE(project_id, '') = COALESCE(?6, '')",
+                params![&content, confidence, &now, &key, &scope, project_id.as_deref()],
+            )?;
+            if updated == 0 {
+                self.runtime.record_memory_row_repair();
+                conn.execute(
+                    "INSERT INTO memory_entries
+                        (key, scope, content, confidence, project_id, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![&key, &scope, &content, confidence, project_id.as_deref(), &created_at, &now],
+                )?;
+            }
+            Ok::<_, anyhow::Error>(())
+        })?;
+
+        // Rebuild the entity data, recompute hash, write back.
+        let mut new_data = json!({
+            "sql_id": sql_id,
+            "key": key,
+            "scope": scope,
+            "content": content,
+            "confidence": confidence,
+            "created_at": created_at,
+            "updated_at": now,
+        });
+        if let (Some(pid), Some(o)) = (project_id.as_deref(), new_data.as_object_mut()) {
+            o.insert("project_id".to_string(), Value::String(pid.to_string()));
+        }
+        if let (Some(tags), Some(o)) = (merged_tags.as_ref(), new_data.as_object_mut()) {
+            o.insert("tags".to_string(), json!(tags));
+        }
+        let hash = super::hashing::content_hash_excluding(
+            &new_data,
+            &["created_at", "updated_at", "sql_id", "content_hash"],
+        )?;
+        if let Some(o) = new_data.as_object_mut() {
+            o.insert("content_hash".to_string(), Value::String(hash));
+        }
+
+        self.update_entity_data(id, &new_data)?;
+
+        let indexed = GraphEntity {
+            id,
+            kind: EntityType::Memory.as_str().to_string(),
+            name: key,
+            file_path: None,
+            data: new_data.clone(),
+        };
+        if let Err(e) = self.add_entity_to_search_index(&indexed) {
+            eprintln!("[atheneum] memory re-index warning: {}", e);
+        }
+
+        self.runtime.record_memory_write();
+        self.runtime.bump_generation(CacheDomain::Memory);
+        Ok(id)
+    }
+
     /// Query memory by key and optional scope/project.
     pub fn query_memory(
         &self,
