@@ -36,6 +36,27 @@ impl backend::Backend for MockBackend {
     ) -> anyhow::Result<serde_json::Value> {
         Ok(json!({"memory_id": 7}))
     }
+    async fn update_memory(
+        &self,
+        p: backend::UpdateMemoryParams,
+    ) -> anyhow::Result<serde_json::Value> {
+        // Mirror the contract: empty patch is an error surfaced by the direct
+        // backend; here we just echo the id so the integration test can assert
+        // the route + schema are wired.
+        Ok(json!({"memory_id": p.id, "echoed": true}))
+    }
+    async fn add_memory(
+        &self,
+        p: backend::AddMemoryParams,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(json!({"memory_id": 8, "concept": p.concept, "action": "CREATED"}))
+    }
+    async fn maintain(
+        &self,
+        p: backend::MaintainParams,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(json!({"orphans_rewired": 0, "broken_links_resolved": 0, "contradictions_superseded": 0, "stale_superseded_pruned": 0, "apply": p.apply}))
+    }
     async fn query_memory(
         &self,
         _p: backend::QueryMemoryParams,
@@ -222,7 +243,9 @@ async fn mcp_server_initializes_and_lists_tools() {
     assert!(names.contains(&"navigate"));
     assert!(names.contains(&"wiki_search"));
     assert!(names.contains(&"decision_search"));
-    assert_eq!(tools.len(), 21);
+    assert!(names.contains(&"add_memory"));
+    assert!(names.contains(&"maintain"));
+    assert_eq!(tools.len(), 24);
 
     // Call graph_stats tool
     send_json(
@@ -437,6 +460,162 @@ async fn mcp_direct_backend_round_trip() {
         !results.is_empty(),
         "query_memory should find stored memory by key"
     );
+    let memory_id = results[0]["id"].as_i64().expect("memory entity has id");
+
+    // 3b. update_memory — patch content + tags in place, assert no duplicate row
+    send_json(
+        &mut client_writer,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "tools/call",
+            "params": {
+                "name": "update_memory",
+                "arguments": {
+                    "id": memory_id,
+                    "content": "User prefers light mode",
+                    "tags": ["preference", "ui", "updated"],
+                }
+            }
+        }),
+    )
+    .await;
+    let upd_resp = recv_json(&mut client_reader).await;
+    assert_eq!(upd_resp["id"], 99);
+    let upd_text = upd_resp["result"]["content"][0]["text"].as_str().unwrap();
+    let upd: serde_json::Value = serde_json::from_str(upd_text).unwrap();
+    assert_eq!(
+        upd["memory_id"].as_i64(),
+        Some(memory_id),
+        "update_memory must return the same id (no duplicate)"
+    );
+    assert_eq!(
+        upd["content"].as_str(),
+        Some("User prefers light mode"),
+        "content must be patched"
+    );
+    assert_eq!(
+        upd["tags"].as_array().map(|a| a.len()),
+        Some(3),
+        "tags must be merged"
+    );
+
+    // 3c. query_memory again — exactly one row, with the new content
+    send_json(
+        &mut client_writer,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 100,
+            "method": "tools/call",
+            "params": {
+                "name": "query_memory",
+                "arguments": { "key": "User prefers dark mode", "k": 5 }
+            }
+        }),
+    )
+    .await;
+    let qmem2_resp = recv_json(&mut client_reader).await;
+    let qmem2_text = qmem2_resp["result"]["content"][0]["text"].as_str().unwrap();
+    let qmem2: serde_json::Value = serde_json::from_str(qmem2_text).unwrap();
+    let results2 = qmem2.as_array().unwrap();
+    assert_eq!(
+        results2.len(),
+        1,
+        "no duplicate memory row after update_memory"
+    );
+    assert_eq!(
+        results2[0]["data"]["content"].as_str(),
+        Some("User prefers light mode"),
+        "query must reflect patched content"
+    );
+
+    // 3d. add_memory — create concept + memory
+    send_json(
+        &mut client_writer,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 101,
+            "method": "tools/call",
+            "params": {
+                "name": "add_memory",
+                "arguments": {
+                    "concept": "Editor Preference",
+                    "body_patch": "Vim mode",
+                    "link_from": memory_id,
+                    "link_both_ways": true,
+                }
+            }
+        }),
+    )
+    .await;
+    let add_resp = recv_json(&mut client_reader).await;
+    assert_eq!(add_resp["id"], 101);
+    let add_text = add_resp["result"]["content"][0]["text"].as_str().unwrap();
+    let add_val: serde_json::Value = serde_json::from_str(add_text).unwrap();
+    assert_eq!(
+        add_val["action"].as_str(),
+        Some("CREATED"),
+        "should create concept and memory"
+    );
+    let editor_memory_id = add_val["memory_id"].as_i64().unwrap();
+
+    // 3e. add_memory — enrich existing concept memory
+    send_json(
+        &mut client_writer,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 102,
+            "method": "tools/call",
+            "params": {
+                "name": "add_memory",
+                "arguments": {
+                    "concept": "Editor Preference",
+                    "body_patch": "Use absolute line numbers",
+                }
+            }
+        }),
+    )
+    .await;
+    let enrich_resp = recv_json(&mut client_reader).await;
+    assert_eq!(enrich_resp["id"], 102);
+    let enrich_text = enrich_resp["result"]["content"][0]["text"].as_str().unwrap();
+    let enrich_val: serde_json::Value = serde_json::from_str(enrich_text).unwrap();
+    assert_eq!(
+        enrich_val["action"].as_str(),
+        Some("ENRICHED"),
+        "should enrich existing concept memory"
+    );
+    assert_eq!(enrich_val["memory_id"].as_i64().unwrap(), editor_memory_id);
+    assert_eq!(
+        enrich_val["content"].as_str(),
+        Some("Vim mode\nUse absolute line numbers"),
+        "content must be enriched"
+    );
+
+    // 3f. maintain
+    send_json(
+        &mut client_writer,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 103,
+            "method": "tools/call",
+            "params": {
+                "name": "maintain",
+                "arguments": {
+                    "apply": true,
+                    "stale_superseded_days": 15,
+                    "broken_link_mode": "sever",
+                    "rewire_threshold": 0.5,
+                }
+            }
+        }),
+    )
+    .await;
+    let maintain_resp = recv_json(&mut client_reader).await;
+    assert_eq!(maintain_resp["id"], 103);
+    let maintain_text = maintain_resp["result"]["content"][0]["text"].as_str().unwrap();
+    let maintain_val: serde_json::Value = serde_json::from_str(maintain_text).unwrap();
+    assert_eq!(maintain_val["broken_links_resolved"].as_u64(), Some(0));
 
     // 4. store_discovery
     send_json(

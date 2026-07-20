@@ -1362,7 +1362,7 @@ fn run() -> anyhow::Result<()> {
             let key = positional(&args, 3, "key")?;
             let opts = parse_options(&args[4..])?;
             let graph = AtheneumGraph::open(&db_path)?;
-            let items = graph.query_memory(key, opts.scope.as_deref(), opts.project.as_deref())?;
+            let items = graph.query_memory(key, opts.scope.as_deref(), opts.project.as_deref(), opts.include_superseded)?;
             print_json(json!({
                 "key": key,
                 "count": items.len(),
@@ -1447,6 +1447,43 @@ fn run() -> anyhow::Result<()> {
             };
             let report: DreamReport =
                 graph.wiki_dream_pass(mode, opts.project.as_deref(), &DreamConfig::default())?;
+            print_json(serde_json::to_value(&report)?)?;
+        }
+        "lint" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum lint <db-path> [--stale-days N]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let opts = parse_options(&args[3..])?;
+            let graph = AtheneumGraph::open(&db_path)?;
+            let stale_superseded_days = parse_i64_option(opts.stale_days.as_deref(), "stale-days")?.unwrap_or(30);
+            let report = graph.lint_graph(&atheneum::LintConfig { stale_superseded_days })?;
+            print_json(serde_json::to_value(&report)?)?;
+        }
+        "maintain" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum maintain <db-path> [--apply] [--stale-days N] [--rewire-threshold F] [--broken-link-mode <stub|sever>]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let opts = parse_options(&args[3..])?;
+            let graph = AtheneumGraph::open(&db_path)?;
+            let stale_superseded_days = parse_i64_option(opts.stale_days.as_deref(), "stale-days")?.unwrap_or(30);
+            let rewire_threshold = opts.rewire_threshold.as_deref()
+                .map(|s| s.parse::<f64>().map_err(|e| anyhow::anyhow!("invalid rewire-threshold '{}': {}", s, e)))
+                .transpose()?
+                .unwrap_or(0.3);
+            let broken_link_mode = match opts.broken_link_mode.as_deref() {
+                Some("sever") => atheneum::BrokenLinkMode::Sever,
+                _ => atheneum::BrokenLinkMode::Stub,
+            };
+            let apply = opts.apply && !opts.dry_run;
+            let report = graph.maintain(&atheneum::MaintainConfig {
+                rewire_threshold,
+                broken_link_mode,
+                stale_superseded_days,
+            }, apply)?;
             print_json(serde_json::to_value(&report)?)?;
         }
         "config" => {
@@ -1935,6 +1972,11 @@ struct CliOptions {
     concise: bool,
     json: bool,
     once: bool,
+    include_superseded: bool,
+    apply: bool,
+    stale_days: Option<String>,
+    rewire_threshold: Option<String>,
+    broken_link_mode: Option<String>,
     interval: Option<String>,
     exclude_projects: Vec<String>,
 }
@@ -2012,6 +2054,12 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
         } else if args[i] == "--once" {
             opts.once = true;
             i += 1;
+        } else if args[i] == "--include-superseded" {
+            opts.include_superseded = true;
+            i += 1;
+        } else if args[i] == "--apply" {
+            opts.apply = true;
+            i += 1;
         } else if args[i] == "--config-dir" {
             // Multi-valued flag consumed by `watch-decisions`; skipped here so
             // it isn't rejected as unknown. The arm re-scans the raw args.
@@ -2038,6 +2086,9 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
                 "--status" => opts.status = Some(value),
                 "--scope" => opts.scope = Some(value),
                 "--confidence" => opts.confidence = Some(value),
+                "--stale-days" => opts.stale_days = Some(value),
+                "--rewire-threshold" => opts.rewire_threshold = Some(value),
+                "--broken-link-mode" => opts.broken_link_mode = Some(value),
                 "--max-tokens" => opts.max_tokens = Some(value),
                 "--atheneum-db" => opts.atheneum_db = Some(value),
                 "--language" => opts.language = Some(value),

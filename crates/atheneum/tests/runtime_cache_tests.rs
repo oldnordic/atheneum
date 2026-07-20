@@ -9,7 +9,7 @@ fn query_memory_uses_cache_and_invalidates_on_store() {
         .expect("store memory");
 
     let first = graph
-        .query_memory("timezone", Some("user"), None)
+        .query_memory("timezone", Some("user"), None, false)
         .expect("first query");
     assert_eq!(first.len(), 1);
 
@@ -19,7 +19,7 @@ fn query_memory_uses_cache_and_invalidates_on_store() {
     assert_eq!(stats_after_first.cache_misses, 1);
 
     let second = graph
-        .query_memory("timezone", Some("user"), None)
+        .query_memory("timezone", Some("user"), None, false)
         .expect("second query");
     assert_eq!(second.len(), 1);
 
@@ -33,7 +33,7 @@ fn query_memory_uses_cache_and_invalidates_on_store() {
         .expect("update memory");
 
     let refreshed = graph
-        .query_memory("timezone", Some("user"), None)
+        .query_memory("timezone", Some("user"), None, false)
         .expect("query after invalidation");
     assert_eq!(
         refreshed[0]

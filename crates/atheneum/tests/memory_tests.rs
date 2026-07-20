@@ -33,7 +33,7 @@ fn test_query_memory_by_key() {
         .unwrap();
 
     let found = graph
-        .query_memory("timezone", None, None)
+        .query_memory("timezone", None, None, false)
         .expect("query_memory");
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].name, "timezone");
@@ -49,7 +49,7 @@ fn test_query_memory_filters_scope() {
         .store_memory("api_key", "xyz789", "project", 1.0, Some("projA"), None)
         .unwrap();
 
-    let user_only = graph.query_memory("api_key", Some("user"), None).unwrap();
+    let user_only = graph.query_memory("api_key", Some("user"), None, false).unwrap();
     assert_eq!(user_only.len(), 1);
     assert_eq!(
         user_only[0].data.get("scope").and_then(|v| v.as_str()),
@@ -75,7 +75,7 @@ fn test_query_memory_filters_project() {
         .unwrap();
 
     let p1_only = graph
-        .query_memory("convention", Some("project"), Some("p1"))
+        .query_memory("convention", Some("project"), Some("p1"), false)
         .unwrap();
     assert_eq!(p1_only.len(), 1);
     assert_eq!(
@@ -168,7 +168,7 @@ fn test_store_memory_upsert_updates_content() {
 
     assert_eq!(id1, id2, "upsert should return same entity id");
 
-    let items = graph.query_memory("prefers_concise", None, None).unwrap();
+    let items = graph.query_memory("prefers_concise", None, None, false).unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(
         items[0].data.get("content").and_then(|v| v.as_str()),
@@ -231,10 +231,10 @@ fn test_store_memory_upsert_with_project_scope() {
 
     // Same key, different project — should be separate entities
     let p1 = graph
-        .query_memory("convention", Some("project"), Some("p1"))
+        .query_memory("convention", Some("project"), Some("p1"), false)
         .unwrap();
     let p2 = graph
-        .query_memory("convention", Some("project"), Some("p2"))
+        .query_memory("convention", Some("project"), Some("p2"), false)
         .unwrap();
     assert_eq!(p1.len(), 1);
     assert_eq!(p2.len(), 1);
@@ -245,7 +245,7 @@ fn test_store_memory_upsert_with_project_scope() {
         .store_memory("convention", "use eyre", "project", 1.0, Some("p1"), None)
         .unwrap();
     let p1_updated = graph
-        .query_memory("convention", Some("project"), Some("p1"))
+        .query_memory("convention", Some("project"), Some("p1"), false)
         .unwrap();
     assert_eq!(p1_updated.len(), 1);
     assert_eq!(
@@ -569,7 +569,7 @@ fn test_update_memory_query_memory_reflects_new_content() {
         .update_memory(id, &MemoryPatch { content: Some("Bangalore".into()), ..Default::default() })
         .unwrap();
 
-    let found = graph.query_memory("city", None, None).expect("query");
+    let found = graph.query_memory("city", None, None, false).expect("query");
     assert_eq!(found.len(), 1, "no duplicate memory created");
     assert_eq!(
         found[0].data.get("content").and_then(|v| v.as_str()),
@@ -605,4 +605,101 @@ fn test_update_memory_mirrors_to_memory_entries_table() {
         .expect("memory_entries row must exist");
     assert_eq!(row.0, "Bangalore", "memory_entries.content must be updated");
     assert_eq!(row.1, 1.0, "confidence preserved in memory_entries");
+}
+
+#[test]
+fn test_upsert_memory_by_concept_new_concept() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    graph.seed_standard_ontology().unwrap();
+    let result = graph
+        .upsert_memory_by_concept("Rust Style Guide", "Use clippy before committing.", None, true)
+        .expect("upsert");
+    assert_eq!(result.action, atheneum::UpsertAction::Created);
+
+    // Assert one Concept and one Memory exist
+    let concept_id = graph
+        .find_entity_id_by_kind_and_name(EntityType::Concept.as_str(), "Rust Style Guide")
+        .expect("find concept")
+        .expect("should exist");
+    let memory = graph.get_entity(result.memory_id).expect("get memory");
+    assert_eq!(memory.kind, EntityType::Memory.as_str());
+
+    // Assert attached_to edge is present
+    let edges = graph.outgoing_edges(result.memory_id).expect("edges");
+    let attached = edges
+        .iter()
+        .any(|e| e.edge_type == "attached_to" && e.to_id == concept_id);
+    assert!(attached, "should have attached_to edge");
+
+    let rev_edges = graph.incoming_edges(result.memory_id).expect("edges");
+    let has_memory = rev_edges
+        .iter()
+        .any(|e| e.edge_type == "has_memory" && e.from_id == concept_id);
+    assert!(has_memory, "should have has_memory reciprocal edge");
+}
+
+#[test]
+fn test_upsert_memory_by_concept_enrich_existing() {
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    let res1 = graph
+        .upsert_memory_by_concept("SQL Style", "Use lowercase for keywords.", None, true)
+        .unwrap();
+    assert_eq!(res1.action, atheneum::UpsertAction::Created);
+
+    let res2 = graph
+        .upsert_memory_by_concept("SQL Style", "Avoid SELECT *.", None, true)
+        .unwrap();
+    assert_eq!(res2.action, atheneum::UpsertAction::Enriched);
+    assert_eq!(res1.memory_id, res2.memory_id);
+
+    let memory = graph.get_entity(res1.memory_id).unwrap();
+    let content = memory.data.get("content").and_then(|v| v.as_str()).unwrap();
+    assert_eq!(content, "Use lowercase for keywords.\nAvoid SELECT *.");
+}
+
+#[test]
+fn test_insert_edge_pair_and_validation() {
+    use atheneum::graph::EdgeType;
+    let graph = AtheneumGraph::open_in_memory().expect("open");
+    graph.seed_standard_ontology().unwrap();
+
+    let concept_id = graph.upsert_concept("Rust", &serde_json::json!({})).unwrap();
+    let memory_id = graph
+        .store_memory("pref", "Use rustup", "project", 1.0, None, None)
+        .unwrap();
+
+    let (fwd, rev) = graph
+        .insert_edge_pair(
+            memory_id,
+            concept_id,
+            EdgeType::AttachedTo,
+            serde_json::json!({}),
+            EdgeType::HasMemory,
+            serde_json::json!({}),
+        )
+        .expect("valid pair insert");
+    assert!(fwd > 0);
+    assert!(rev > 0);
+
+    let out = graph.outgoing_edges(memory_id).unwrap();
+    assert!(out.iter().any(|e| e.edge_type == "attached_to" && e.to_id == concept_id));
+
+    let incoming = graph.incoming_edges(memory_id).unwrap();
+    assert!(incoming.iter().any(|e| e.edge_type == "has_memory" && e.from_id == concept_id));
+
+    // Test invalid reciprocal validation
+    let err = graph
+        .insert_edge_pair(
+            memory_id,
+            concept_id,
+            EdgeType::AttachedTo,
+            serde_json::json!({}),
+            EdgeType::AttachedTo, // Invalid: Concept -> Concept is not valid for AttachedTo
+            serde_json::json!({}),
+        )
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("Edge validation failed"),
+        "invalid reciprocal type must fail validation, got: {err}"
+    );
 }

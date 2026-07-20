@@ -25,6 +25,7 @@ pub mod handoff;
 mod hashing;
 pub mod knowledge;
 pub mod magellan_bridge;
+pub mod lint;
 pub mod memory;
 pub mod navigation;
 pub mod ontology;
@@ -42,13 +43,14 @@ pub use dream::{DreamConfig, DreamFinding, DreamMode, DreamPhase, DreamReport};
 pub use extract_decisions::{run_extract, ExtractConfig, ExtractMode, ExtractStats};
 pub use navigation::{estimate_entity_tokens, truncate_subgraph};
 pub use planning::{KanbanStatus, KanbanUpdate};
+pub use lint::{BrokenLinkMode, LintConfig, LintReport, MaintainConfig, MaintainReport};
 pub use types::ProvenanceData;
 pub use types::{
     ActionRecord, ActionTrace, AppliedKanbanUpdate, AtheneumError, BlockerType,
     ClaudeTranscriptImportParams, ClaudeTranscriptImportSummary, CommitParams,
     DisambiguationResult, DiscoveryPreview, EdgeType, EndSessionParams, EntityType,
     FileAccessParams, FileWriteParams, FixChainParams, GraphStats, HandoffPreview, MemoryPatch,
-    MemoryPreview,
+    MemoryPreview, UpsertAction, UpsertResult,
     NavigateQueryPlan, Neighbors, OntologyClassInfo, OntologyPropertyInfo, PromptParams,
     QueryIntent, RecordEventParams, RelationEndpoint, RelationHint, RequirementStatus,
     ResolvedEntity, SearchResult, SessionParams, SessionProgressParams, SessionSummary,
@@ -471,6 +473,20 @@ impl AtheneumGraph {
         Ok(edge_id)
     }
 
+    pub fn insert_edge_pair(
+        &self,
+        from_id: i64,
+        to_id: i64,
+        edge_type: EdgeType,
+        data: Value,
+        reciprocal_type: EdgeType,
+        reciprocal_data: Value,
+    ) -> Result<(i64, i64)> {
+        let fwd_id = self.insert_edge(from_id, to_id, edge_type, data)?;
+        let rev_id = self.insert_edge(to_id, from_id, reciprocal_type, reciprocal_data)?;
+        Ok((fwd_id, rev_id))
+    }
+
     /// Batch insert entities in a single transaction. Updates the in-memory
     /// entity ID index. Much faster than individual inserts for >1 item.
     pub fn batch_insert_entities(&self, entities: &[GraphEntity]) -> Result<Vec<i64>> {
@@ -590,7 +606,7 @@ impl AtheneumGraph {
         })
     }
 
-    pub(super) fn find_entity_id_by_kind_and_name(
+    pub fn find_entity_id_by_kind_and_name(
         &self,
         kind: &str,
         name: &str,

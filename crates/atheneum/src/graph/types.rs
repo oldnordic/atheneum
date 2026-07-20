@@ -119,6 +119,10 @@ pub enum EdgeType {
     SupersededBy,
     /// Dream: merged entry points to the consolidation that absorbed it.
     ConsolidatedFrom,
+    AttachedTo,
+    HasMemory,
+    Verifies,
+    Supersedes,
 }
 
 impl EdgeType {
@@ -151,6 +155,10 @@ impl EdgeType {
             EdgeType::DerivedFrom => "derived_from",
             EdgeType::SupersededBy => "superseded_by",
             EdgeType::ConsolidatedFrom => "consolidated_from",
+            EdgeType::AttachedTo => "attached_to",
+            EdgeType::HasMemory => "has_memory",
+            EdgeType::Verifies => "verifies",
+            EdgeType::Supersedes => "supersedes",
         }
     }
 
@@ -183,6 +191,10 @@ impl EdgeType {
             "derived_from" => EdgeType::DerivedFrom,
             "superseded_by" => EdgeType::SupersededBy,
             "consolidated_from" => EdgeType::ConsolidatedFrom,
+            "attached_to" => EdgeType::AttachedTo,
+            "has_memory" => EdgeType::HasMemory,
+            "verifies" => EdgeType::Verifies,
+            "supersedes" => EdgeType::Supersedes,
             _ => return None,
         })
     }
@@ -216,6 +228,10 @@ impl EdgeType {
             EdgeType::DerivedFrom,
             EdgeType::SupersededBy,
             EdgeType::ConsolidatedFrom,
+            EdgeType::AttachedTo,
+            EdgeType::HasMemory,
+            EdgeType::Verifies,
+            EdgeType::Supersedes,
         ]
     }
 }
@@ -330,6 +346,19 @@ pub struct MemoryPreview {
     pub candidate_matches: Vec<SearchResult>,
     /// Vector-based disambiguation analysis using ATH-15 resolve.
     pub disambiguation: Option<DisambiguationResult>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum UpsertAction {
+    Enriched,
+    Created,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct UpsertResult {
+    pub memory_id: i64,
+    pub action: UpsertAction,
 }
 
 /// Patch applied by [`AtheneumGraph::update_memory`]. All fields optional; only

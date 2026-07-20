@@ -31,6 +31,7 @@ pub(crate) enum QueryCacheKey {
         key: String,
         scope: Option<String>,
         project_id: Option<String>,
+        include_superseded: bool,
     },
     ListMemory {
         scope: Option<String>,

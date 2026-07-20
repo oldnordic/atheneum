@@ -104,6 +104,15 @@ mod tests {
         async fn query_memory(&self, _p: backend::QueryMemoryParams) -> anyhow::Result<Value> {
             Ok(Value::Null)
         }
+        async fn update_memory(&self, _p: backend::UpdateMemoryParams) -> anyhow::Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn add_memory(&self, _p: backend::AddMemoryParams) -> anyhow::Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn maintain(&self, _p: backend::MaintainParams) -> anyhow::Result<Value> {
+            Ok(Value::Null)
+        }
         async fn list_sessions(&self, _l: i64) -> anyhow::Result<Value> {
             Ok(Value::Null)
         }
@@ -229,6 +238,8 @@ mod tests {
         assert!(names.contains(&"query_knowledge"));
         assert!(names.contains(&"search"));
         assert!(names.contains(&"store_memory"));
+        assert!(names.contains(&"update_memory"));
+        assert!(names.contains(&"add_memory"));
         assert!(names.contains(&"query_memory"));
         assert!(names.contains(&"list_sessions"));
         assert!(names.contains(&"list_events"));
@@ -247,7 +258,8 @@ mod tests {
         assert!(names.contains(&"get_entity"));
         assert!(names.contains(&"get_neighbors"));
         assert!(names.contains(&"dream"));
-        assert_eq!(tools.len(), 21);
+        assert!(names.contains(&"maintain"));
+        assert_eq!(tools.len(), 24);
     }
 
     #[test]

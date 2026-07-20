@@ -20,6 +20,8 @@ pub fn register_all(router: &mut ToolRouter<AtheneumMcpServer>) {
     router.add_route(query_knowledge());
     router.add_route(search());
     router.add_route(store_memory());
+    router.add_route(update_memory());
+    router.add_route(add_memory());
     router.add_route(query_memory());
     router.add_route(list_sessions());
     router.add_route(list_events());
@@ -38,6 +40,7 @@ pub fn register_all(router: &mut ToolRouter<AtheneumMcpServer>) {
     router.add_route(get_entity());
     router.add_route(get_neighbors());
     router.add_route(dream());
+    router.add_route(maintain());
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +236,127 @@ fn store_memory() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpS
 }
 
 // ---------------------------------------------------------------------------
+// Tool: update_memory
+// ---------------------------------------------------------------------------
+
+fn update_memory() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServer> {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "id": { "type": "integer", "description": "ID of the Memory entity to patch (required)." },
+            "content": { "type": "string", "description": "New content body. If omitted, content is unchanged." },
+            "importance": { "type": "integer", "minimum": 1, "maximum": 10, "description": "Re-maps to confidence (importance/10) on the same scale as store_memory. If omitted, confidence is unchanged." },
+            "tags": { "type": "array", "items": { "type": "string" }, "description": "Tags to merge into the existing list (or replace when replace_tags=true)." },
+            "replace_tags": { "type": "boolean", "default": false, "description": "If true, overwrite the tag list instead of merging." }
+        },
+        "required": ["id"]
+    });
+    let schema: Map<String, Value> = schema.as_object().unwrap().clone();
+
+    rmcp::handler::server::router::tool::ToolRoute::new_dyn(
+        Tool::new(
+            "update_memory",
+            "Patch an existing memory entry in place. Only the fields you provide are written; \
+             tags merge by default (pass replace_tags=true to overwrite). Use this instead of \
+             store_memory when correcting or enriching an existing memory, so you don't spawn a \
+             duplicate row. At least one of content/importance/tags must be set.",
+            schema,
+        ),
+        |ctx: rmcp::handler::server::tool::ToolCallContext<'_, AtheneumMcpServer>| {
+            Box::pin(async move {
+                let args = extract_args(ctx.arguments);
+                let id = match args["id"].as_i64() {
+                    Some(v) => v,
+                    None => {
+                        return Ok(CallToolResult::error(vec![Content::text(
+                            "update_memory requires `id` (integer)",
+                        )]))
+                    }
+                };
+                let params = crate::backend::UpdateMemoryParams {
+                    id,
+                    content: args["content"].as_str().map(String::from),
+                    importance: args["importance"].as_i64(),
+                    tags: args["tags"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        }),
+                    replace_tags: args["replace_tags"].as_bool(),
+                };
+                let result = ctx.service.backend.update_memory(params).await;
+                match result {
+                    Ok(v) => json_result(v),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            })
+        },
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Tool: add_memory
+// ---------------------------------------------------------------------------
+
+fn add_memory() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServer> {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "concept": { "type": "string", "description": "The name of the Concept entity to attach memory to (required)." },
+            "body_patch": { "type": "string", "description": "Fact/memory details to enrich the concept memory with (required)." },
+            "link_from": { "type": "integer", "description": "Optional ID of an existing entity to link to this memory." },
+            "link_both_ways": { "type": "boolean", "default": true, "description": "If true, links both ways between the memory and link_from (requires link_from)." }
+        },
+        "required": ["concept", "body_patch"]
+    });
+    let schema: Map<String, Value> = schema.as_object().unwrap().clone();
+
+    rmcp::handler::server::router::tool::ToolRoute::new_dyn(
+        Tool::new(
+            "add_memory",
+            "Add a fact to a concept. If a memory is already attached to this concept, \
+             the new fact is appended to it in place. If not, a new memory is created and attached. \
+             Optionally links the memory to another existing entity (e.g. current tool call or task) either one-way or both-ways.",
+            schema,
+        ),
+        |ctx: rmcp::handler::server::tool::ToolCallContext<'_, AtheneumMcpServer>| {
+            Box::pin(async move {
+                let args = extract_args(ctx.arguments);
+                let concept = match args["concept"].as_str() {
+                    Some(v) => v.to_string(),
+                    None => {
+                        return Ok(CallToolResult::error(vec![Content::text(
+                            "add_memory requires `concept` (string)",
+                        )]))
+                    }
+                };
+                let body_patch = match args["body_patch"].as_str() {
+                    Some(v) => v.to_string(),
+                    None => {
+                        return Ok(CallToolResult::error(vec![Content::text(
+                            "add_memory requires `body_patch` (string)",
+                        )]))
+                    }
+                };
+                let params = crate::backend::AddMemoryParams {
+                    concept,
+                    body_patch,
+                    link_from: args["link_from"].as_i64(),
+                    link_both_ways: args["link_both_ways"].as_bool(),
+                };
+                let result = ctx.service.backend.add_memory(params).await;
+                match result {
+                    Ok(v) => json_result(v),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            })
+        },
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Tool: query_memory
 // ---------------------------------------------------------------------------
 
@@ -244,7 +368,8 @@ fn query_memory() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpS
             "query": { "type": "string", "description": "Deprecated alias for `key` kept for backward compatibility." },
             "scope": { "type": "string", "description": "Optional scope filter for exact lookup." },
             "project": { "type": "string", "description": "Optional project filter for project-scoped memory." },
-            "k": { "type": "integer", "minimum": 1, "maximum": 100, "default": 10, "description": "Number of results" }
+            "k": { "type": "integer", "minimum": 1, "maximum": 100, "default": 10, "description": "Number of results" },
+            "include_superseded": { "type": "boolean", "description": "Optional flag to include superseded memory entries." }
         }
     });
     let schema: Map<String, Value> = schema.as_object().unwrap().clone();
@@ -269,11 +394,13 @@ fn query_memory() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpS
                     )]));
                 }
                 let k = args["k"].as_u64().unwrap_or(10) as usize;
+                let include_superseded = args["include_superseded"].as_bool();
                 let params = crate::backend::QueryMemoryParams {
                     key,
                     scope: args["scope"].as_str().map(ToString::to_string),
                     project: args["project"].as_str().map(ToString::to_string),
                     k,
+                    include_superseded,
                 };
                 let result = ctx.service.backend.query_memory(params).await;
                 match result {
@@ -828,6 +955,45 @@ fn dream() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServer> 
                     .dream(scope.as_deref(), project.as_deref(), dry_run)
                     .await
                 {
+                    Ok(v) => json_result(v),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            })
+        },
+    )
+}
+
+fn maintain() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServer> {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "apply": { "type": "boolean", "default": false, "description": "If true, execute mutative repairs. If false, dry-run only." },
+            "stale_superseded_days": { "type": "integer", "default": 30, "description": "Number of days before superseded memories are pruned" },
+            "broken_link_mode": { "type": "string", "enum": ["stub", "sever"], "default": "stub", "description": "Broken link repair strategy" },
+            "rewire_threshold": { "type": "number", "default": 0.3, "description": "Orphan concept similarity threshold (0.0 to 1.0)" }
+        }
+    });
+    let schema: Map<String, Value> = schema.as_object().unwrap().clone();
+    rmcp::handler::server::router::tool::ToolRoute::new_dyn(
+        Tool::new(
+            "maintain",
+            "Perform database health checks and automatic repairs (orphan concept rewiring, broken link stubbing, memory contradiction superseding, stale row pruning).",
+            schema,
+        ),
+        |ctx: rmcp::handler::server::tool::ToolCallContext<'_, AtheneumMcpServer>| {
+            Box::pin(async move {
+                let args = extract_args(ctx.arguments);
+                let apply = args["apply"].as_bool();
+                let stale_superseded_days = args["stale_superseded_days"].as_i64();
+                let broken_link_mode = args["broken_link_mode"].as_str().map(String::from);
+                let rewire_threshold = args["rewire_threshold"].as_f64();
+                let params = crate::backend::MaintainParams {
+                    apply,
+                    stale_superseded_days,
+                    broken_link_mode,
+                    rewire_threshold,
+                };
+                match ctx.service.backend.maintain(params).await {
                     Ok(v) => json_result(v),
                     Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
                 }

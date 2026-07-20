@@ -319,6 +319,30 @@ impl AtheneumGraph {
                 "Memory",
                 "Memory entry was consolidated into another memory entry",
             ),
+            (
+                EdgeType::AttachedTo,
+                "Memory",
+                "Concept",
+                "Memory is attached to a concept",
+            ),
+            (
+                EdgeType::HasMemory,
+                "Concept",
+                "Memory",
+                "Concept has an attached memory",
+            ),
+            (
+                EdgeType::Verifies,
+                "TestRun",
+                "ANY",
+                "Test run verifies an entity or session",
+            ),
+            (
+                EdgeType::Supersedes,
+                "Memory",
+                "Memory",
+                "Memory entry supersedes an older memory entry",
+            ),
         ];
         for (edge_type, domain, range, description) in STANDARD_PROPERTIES {
             self.define_property(edge_type.as_str(), domain, range, Some(description))?;

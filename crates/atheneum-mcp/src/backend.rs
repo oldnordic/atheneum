@@ -47,6 +47,36 @@ pub struct QueryMemoryParams {
     pub scope: Option<String>,
     pub project: Option<String>,
     pub k: usize,
+    pub include_superseded: Option<bool>,
+}
+
+/// Parameters for patching a memory entry in place. Mirrors the underlying
+/// `atheneum::MemoryPatch`. `id` is required; all other fields optional.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct UpdateMemoryParams {
+    pub id: i64,
+    pub content: Option<String>,
+    pub importance: Option<i64>,
+    pub tags: Option<Vec<String>>,
+    pub replace_tags: Option<bool>,
+}
+
+/// Parameters for adding/upserting a memory entry by concept.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AddMemoryParams {
+    pub concept: String,
+    pub body_patch: String,
+    pub link_from: Option<i64>,
+    pub link_both_ways: Option<bool>,
+}
+
+/// Parameters for running graph maintenance.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MaintainParams {
+    pub apply: Option<bool>,
+    pub stale_superseded_days: Option<i64>,
+    pub broken_link_mode: Option<String>,
+    pub rewire_threshold: Option<f64>,
 }
 
 #[cfg(any(feature = "direct", test))]
@@ -81,6 +111,9 @@ pub trait Backend: Send + Sync + 'static {
     async fn query_knowledge(&self, target: &str, project: Option<&str>) -> Result<Value>;
     async fn search(&self, query: &str, k: usize, project: Option<&str>) -> Result<Value>;
     async fn store_memory(&self, params: StoreMemoryParams) -> Result<Value>;
+    async fn update_memory(&self, params: UpdateMemoryParams) -> Result<Value>;
+    async fn add_memory(&self, params: AddMemoryParams) -> Result<Value>;
+    async fn maintain(&self, params: MaintainParams) -> Result<Value>;
     async fn query_memory(&self, params: QueryMemoryParams) -> Result<Value>;
     async fn list_sessions(&self, limit: i64) -> Result<Value>;
     async fn list_events(&self, limit: i64) -> Result<Value>;
@@ -308,6 +341,26 @@ pub mod http {
             ))
         }
 
+        async fn update_memory(&self, _params: UpdateMemoryParams) -> Result<Value> {
+            Err(anyhow::anyhow!(
+                "update_memory requires direct backend (memory has no HTTP endpoint in envoy). \
+                 Run with --features direct or set ATHENEUM_DIRECT=1"
+            ))
+        }
+
+        async fn add_memory(&self, _params: AddMemoryParams) -> Result<Value> {
+            Err(anyhow::anyhow!(
+                "add_memory requires direct backend (memory has no HTTP endpoint in envoy). \
+                 Run with --features direct or set ATHENEUM_DIRECT=1"
+            ))
+        }
+        async fn maintain(&self, _params: MaintainParams) -> Result<Value> {
+            Err(anyhow::anyhow!(
+                "maintain requires direct backend. \
+                 Run with --features direct or set ATHENEUM_DIRECT=1"
+            ))
+        }
+
         async fn query_memory(&self, _params: QueryMemoryParams) -> Result<Value> {
             Err(anyhow::anyhow!(
                 "query_memory requires direct backend (memory has no HTTP endpoint in envoy). \
@@ -512,6 +565,58 @@ pub mod direct {
             })
         }
 
+        async fn update_memory(&self, params: UpdateMemoryParams) -> Result<Value> {
+            let patch = atheneum::MemoryPatch {
+                content: params.content,
+                importance: params.importance,
+                tags: params.tags,
+                replace_tags: params.replace_tags.unwrap_or(false),
+            };
+            let graph = self.graph.lock().await;
+            tokio::task::block_in_place(|| {
+                if patch.is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "update_memory requires at least one of: content, importance, tags"
+                    ));
+                }
+                let id = graph.update_memory(params.id, &patch)?;
+                let entity = graph.get_entity(id)?;
+                Ok(json!({
+                    "memory_id": id,
+                    "key": entity.name,
+                    "scope": entity.data.get("scope").and_then(|v| v.as_str()),
+                    "content": entity.data.get("content").and_then(|v| v.as_str()),
+                    "confidence": entity.data.get("confidence").and_then(|v| v.as_f64()),
+                    "updated_at": entity.data.get("updated_at").and_then(|v| v.as_str()),
+                    "content_hash": entity.data.get("content_hash").and_then(|v| v.as_str()),
+                    "tags": entity.data.get("tags"),
+                }))
+            })
+        }
+
+        async fn add_memory(&self, params: AddMemoryParams) -> Result<Value> {
+            let graph = self.graph.lock().await;
+            tokio::task::block_in_place(|| {
+                let result = graph.upsert_memory_by_concept(
+                    &params.concept,
+                    &params.body_patch,
+                    params.link_from,
+                    params.link_both_ways.unwrap_or(true),
+                )?;
+                let entity = graph.get_entity(result.memory_id)?;
+                Ok(json!({
+                    "memory_id": result.memory_id,
+                    "action": result.action,
+                    "key": entity.name,
+                    "scope": entity.data.get("scope").and_then(|v| v.as_str()),
+                    "content": entity.data.get("content").and_then(|v| v.as_str()),
+                    "confidence": entity.data.get("confidence").and_then(|v| v.as_f64()),
+                    "updated_at": entity.data.get("updated_at").and_then(|v| v.as_str()),
+                    "tags": entity.data.get("tags"),
+                }))
+            })
+        }
+
         async fn query_memory(&self, params: QueryMemoryParams) -> Result<Value> {
             let graph = self.graph.lock().await;
             tokio::task::block_in_place(|| {
@@ -519,8 +624,27 @@ pub mod direct {
                     &params.key,
                     params.scope.as_deref(),
                     params.project.as_deref(),
+                    params.include_superseded.unwrap_or(false),
                 )?;
                 Ok(serde_json::to_value(results)?)
+            })
+        }
+        async fn maintain(&self, params: MaintainParams) -> Result<Value> {
+            let graph = self.graph.lock().await;
+            tokio::task::block_in_place(|| {
+                let stale_superseded_days = params.stale_superseded_days.unwrap_or(30);
+                let rewire_threshold = params.rewire_threshold.unwrap_or(0.3);
+                let broken_link_mode = match params.broken_link_mode.as_deref() {
+                    Some("sever") => atheneum::BrokenLinkMode::Sever,
+                    _ => atheneum::BrokenLinkMode::Stub,
+                };
+                let apply = params.apply.unwrap_or(false);
+                let report = graph.maintain(&atheneum::MaintainConfig {
+                    rewire_threshold,
+                    broken_link_mode,
+                    stale_superseded_days,
+                }, apply)?;
+                Ok(serde_json::to_value(report)?)
             })
         }
 

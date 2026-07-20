@@ -565,7 +565,7 @@ impl AtheneumGraph {
         self.find_entity_id_by_kind_and_name("WikiPage", path)
     }
 
-    pub(super) fn find_entity_id_by_kind_and_wikilink(
+    pub fn find_entity_id_by_kind_and_wikilink(
         &self,
         kind: &str,
         wikilink: &str,
@@ -583,16 +583,18 @@ impl AtheneumGraph {
                 return Ok(exact);
             }
             // Try path suffix match (e.g. "Dest" matches "wiki/dest.md")
-            let suffix = format!("%{}.md", wikilink.to_lowercase());
+            let suffix_space = format!("%{}.md", wikilink.to_lowercase());
+            let suffix_under = format!("%{}.md", wikilink.to_lowercase().replace(' ', "_"));
             let suffix2 = wikilink.to_lowercase();
             let result: Option<i64> = conn
                 .query_row(
                     "SELECT id FROM graph_entities WHERE kind = ?1 AND (
                         LOWER(name) LIKE ?2 OR
-                        LOWER(json_extract(data, '$.path')) LIKE ?3 OR
-                        LOWER(json_extract(data, '$.title')) = ?4
+                        LOWER(name) LIKE ?3 OR
+                        LOWER(json_extract(data, '$.path')) LIKE ?4 OR
+                        LOWER(json_extract(data, '$.title')) = ?5
                     ) LIMIT 1",
-                    rusqlite::params![kind, suffix, suffix2, suffix2],
+                    rusqlite::params![kind, suffix_space, suffix_under, suffix2, suffix2],
                     |r| r.get(0),
                 )
                 .ok();

@@ -56,7 +56,7 @@ impl AtheneumGraph {
             );
         }
 
-        let exact_matches = self.query_memory(key, Some(scope), project_id)?;
+        let exact_matches = self.query_memory(key, Some(scope), project_id, false)?;
         let candidate_matches = self.preview_entity_candidates(
             &format!("{key} {content}"),
             k,
@@ -418,18 +418,127 @@ impl AtheneumGraph {
         Ok(id)
     }
 
+    pub fn upsert_memory_by_concept(
+        &self,
+        concept_name: &str,
+        body_patch: &str,
+        link_from: Option<i64>,
+        link_both_ways: bool,
+    ) -> Result<super::UpsertResult> {
+        // 1. Find or create the Concept entity
+        let (concept_id, is_new_concept) = if let Some(id) = self.find_entity_id_by_kind_and_name(
+            EntityType::Concept.as_str(),
+            concept_name,
+        )? {
+            (id, false)
+        } else {
+            let concept_id = self.upsert_concept(concept_name, &json!({}))?;
+            (concept_id, true)
+        };
+
+        // 2. Scan outgoing/incoming edges of Concept to find attached memories
+        let mut attached_memories = Vec::new();
+        if !is_new_concept {
+            for edge in self.outgoing_edges(concept_id)? {
+                if edge.edge_type == super::EdgeType::HasMemory.as_str() {
+                    let to_entity = self.get_entity(edge.to_id)?;
+                    if to_entity.kind == EntityType::Memory.as_str() {
+                        attached_memories.push(to_entity);
+                    }
+                }
+            }
+            for edge in self.incoming_edges(concept_id)? {
+                if edge.edge_type == super::EdgeType::AttachedTo.as_str() {
+                    let from_entity = self.get_entity(edge.from_id)?;
+                    if from_entity.kind == EntityType::Memory.as_str() {
+                        attached_memories.push(from_entity);
+                    }
+                }
+            }
+            attached_memories.sort_by_key(|e| e.id);
+            attached_memories.dedup_by_key(|e| e.id);
+        }
+
+        // 3. Enrich if exactly one memory exists, else create new
+        let (memory_id, action) = if attached_memories.len() == 1 {
+            let memory = &attached_memories[0];
+            let old_content = memory
+                .data
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let new_content = if old_content.is_empty() {
+                body_patch.to_string()
+            } else {
+                format!("{}\n{}", old_content, body_patch)
+            };
+            
+            let patch = super::MemoryPatch {
+                content: Some(new_content),
+                ..Default::default()
+            };
+            let mid = self.update_memory(memory.id, &patch)?;
+            (mid, super::UpsertAction::Enriched)
+        } else {
+            // Create new Memory
+            let mid = self.store_memory(
+                concept_name,
+                body_patch,
+                "project",
+                0.5,
+                None,
+                None,
+            )?;
+            // Link bidirectionally concept <-> memory
+            self.insert_edge_pair(
+                mid,
+                concept_id,
+                super::EdgeType::AttachedTo,
+                json!({}),
+                super::EdgeType::HasMemory,
+                json!({}),
+            )?;
+            (mid, super::UpsertAction::Created)
+        };
+
+        // 4. Optionally link to reference entity `link_from`
+        if let Some(lf_id) = link_from {
+            if link_both_ways {
+                self.insert_edge_pair(
+                    memory_id,
+                    lf_id,
+                    super::EdgeType::RelatedTo,
+                    json!({}),
+                    super::EdgeType::RelatedTo,
+                    json!({}),
+                )?;
+            } else {
+                self.insert_edge(
+                    memory_id,
+                    lf_id,
+                    super::EdgeType::RelatedTo,
+                    json!({}),
+                )?;
+            }
+        }
+
+        Ok(super::UpsertResult { memory_id, action })
+    }
+
     /// Query memory by key and optional scope/project.
     pub fn query_memory(
         &self,
         key: &str,
         scope: Option<&str>,
         project_id: Option<&str>,
+        include_superseded: bool,
     ) -> Result<Vec<GraphEntity>> {
         self.runtime.record_memory_query();
         let cache_key = QueryCacheKey::QueryMemory {
             key: key.to_string(),
             scope: scope.map(str::to_string),
             project_id: project_id.map(str::to_string),
+            include_superseded,
         };
         if let Some(QueryCacheValue::Entities(entries)) =
             self.runtime.cache_get(&cache_key, CacheDomain::Memory)
@@ -439,14 +548,20 @@ impl AtheneumGraph {
 
         let out = super::with_graph_conn(&self.inner, |conn| {
             let mut out = Vec::new();
+            let query_sql = |base_sql: &str| {
+                if include_superseded {
+                    base_sql.to_string()
+                } else {
+                    format!("{} AND json_extract(data, '$.superseded_at') IS NULL", base_sql)
+                }
+            };
             match (scope, project_id) {
                 (Some(s), Some(pid)) => {
-                    let mut stmt = conn.prepare_cached(
-                        "SELECT id, kind, name, file_path, data FROM graph_entities
-                         WHERE kind = ?1 AND name = ?2
-                           AND json_extract(data, '$.scope') = ?3
-                           AND json_extract(data, '$.project_id') = ?4",
-                    )?;
+                    let sql = query_sql("SELECT id, kind, name, file_path, data FROM graph_entities
+                          WHERE kind = ?1 AND name = ?2
+                            AND json_extract(data, '$.scope') = ?3
+                            AND json_extract(data, '$.project_id') = ?4");
+                    let mut stmt = conn.prepare(&sql)?;
                     let rows = stmt.query_map(
                         params![EntityType::Memory.as_str(), key, s, pid],
                         row_to_entity,
@@ -456,11 +571,10 @@ impl AtheneumGraph {
                     }
                 }
                 (Some(s), None) => {
-                    let mut stmt = conn.prepare_cached(
-                        "SELECT id, kind, name, file_path, data FROM graph_entities
-                         WHERE kind = ?1 AND name = ?2
-                           AND json_extract(data, '$.scope') = ?3",
-                    )?;
+                    let sql = query_sql("SELECT id, kind, name, file_path, data FROM graph_entities
+                          WHERE kind = ?1 AND name = ?2
+                            AND json_extract(data, '$.scope') = ?3");
+                    let mut stmt = conn.prepare(&sql)?;
                     let rows = stmt
                         .query_map(params![EntityType::Memory.as_str(), key, s], row_to_entity)?;
                     for row in rows {
@@ -468,11 +582,10 @@ impl AtheneumGraph {
                     }
                 }
                 (None, Some(pid)) => {
-                    let mut stmt = conn.prepare_cached(
-                        "SELECT id, kind, name, file_path, data FROM graph_entities
-                         WHERE kind = ?1 AND name = ?2
-                           AND json_extract(data, '$.project_id') = ?3",
-                    )?;
+                    let sql = query_sql("SELECT id, kind, name, file_path, data FROM graph_entities
+                          WHERE kind = ?1 AND name = ?2
+                            AND json_extract(data, '$.project_id') = ?3");
+                    let mut stmt = conn.prepare(&sql)?;
                     let rows = stmt.query_map(
                         params![EntityType::Memory.as_str(), key, pid],
                         row_to_entity,
@@ -482,10 +595,9 @@ impl AtheneumGraph {
                     }
                 }
                 (None, None) => {
-                    let mut stmt = conn.prepare_cached(
-                        "SELECT id, kind, name, file_path, data FROM graph_entities
-                         WHERE kind = ?1 AND name = ?2",
-                    )?;
+                    let sql = query_sql("SELECT id, kind, name, file_path, data FROM graph_entities
+                          WHERE kind = ?1 AND name = ?2");
+                    let mut stmt = conn.prepare(&sql)?;
                     let rows =
                         stmt.query_map(params![EntityType::Memory.as_str(), key], row_to_entity)?;
                     for row in rows {

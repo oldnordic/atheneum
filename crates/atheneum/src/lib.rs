@@ -20,10 +20,11 @@ pub use config::{
 };
 
 pub use graph::{
-    AtheneumGraph, ClaudeTranscriptImportParams, ClaudeTranscriptImportSummary,
+    AtheneumGraph, BrokenLinkMode, ClaudeTranscriptImportParams, ClaudeTranscriptImportSummary,
     DisambiguationResult, DiscoveryPreview, DreamConfig, DreamFinding, DreamMode, DreamPhase,
     DreamReport, EdgeType, EntityType, HandoffPreview, JournalSection, KanbanStatus, KanbanUpdate,
-    MemoryPatch, MemoryPreview, NavigateQueryPlan, ProvenanceData, QueryIntent, ResolvedEntity,
+    LintConfig, LintReport, MaintainConfig, MaintainReport, MemoryPatch, MemoryPreview, NavigateQueryPlan,
+    ProvenanceData, QueryIntent, ResolvedEntity, UpsertAction, UpsertResult,
     RuntimeStats,
     SearchResult, WikiPage, WikiSearchResult,
 };
