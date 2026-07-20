@@ -568,6 +568,31 @@ impl AtheneumGraph {
             finished_at,
         })
     }
+
+    pub fn dream_if_idle(&self, threshold_secs: u64) -> Result<Option<DreamReport>> {
+        let last_write: Option<String> = self.with_raw_connection(|conn| {
+            let mut stmt = conn.prepare("SELECT MAX(updated_at) FROM memory_entries")?;
+            let mut rows = stmt.query([])?;
+            if let Some(row) = rows.next()? {
+                let s: Option<String> = row.get(0)?;
+                Ok(s)
+            } else {
+                Ok(None)
+            }
+        })?;
+
+        if let Some(lw) = last_write {
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&lw) {
+                let elapsed = chrono::Utc::now().signed_duration_since(dt.with_timezone(&chrono::Utc));
+                if elapsed.num_seconds() < threshold_secs as i64 {
+                    return Ok(None);
+                }
+            }
+        }
+
+        let report = self.dream_pass(DreamMode::AutoMerge, None, None, &DreamConfig::default())?;
+        Ok(Some(report))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -949,5 +974,21 @@ mod tests {
             1,
             "should detect contradiction between scopes"
         );
+    }
+
+    #[test]
+    fn test_dream_if_idle() {
+        let graph = AtheneumGraph::open_in_memory().unwrap();
+        
+        // Seed a memory with current timestamp
+        graph.store_memory("key", "val1", "user", 1.0, None, None).unwrap();
+        
+        // dream_if_idle with threshold=10 should return None (just written)
+        let res = graph.dream_if_idle(10).unwrap();
+        assert!(res.is_none());
+        
+        // dream_if_idle with threshold=0 should run
+        let res2 = graph.dream_if_idle(0).unwrap();
+        assert!(res2.is_some());
     }
 }
