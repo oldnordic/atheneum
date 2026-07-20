@@ -9,7 +9,11 @@ use anyhow::Result;
 use async_trait::async_trait;
 #[cfg(feature = "http")]
 use serde::de::DeserializeOwned;
+#[cfg(any(feature = "direct", test))]
+use serde_json::json;
 use serde_json::Value;
+#[cfg(any(feature = "direct", test))]
+use std::collections::HashSet;
 
 // ---------------------------------------------------------------------------
 // Parameter types
@@ -44,6 +48,28 @@ pub struct QueryMemoryParams {
     pub project: Option<String>,
     pub k: usize,
 }
+
+#[cfg(any(feature = "direct", test))]
+const METADATA_EDGE_TYPES: &[&str] = &[
+    "belongs_to_project",
+    "accessed",
+    "modified",
+    "observed_in",
+    "created_in_session",
+    "handled_by_tool",
+];
+
+#[cfg(any(feature = "direct", test))]
+const NOISE_ENTITY_KINDS: &[&str] = &["ToolCall", "ReasoningLog", "TestRun"];
+
+#[cfg(any(feature = "direct", test))]
+const EDGE_PAGE_MULTIPLIER: usize = 4;
+
+#[cfg(any(feature = "direct", test))]
+const MIN_EDGE_LIMIT: usize = 32;
+
+#[cfg(any(feature = "direct", test))]
+const MAX_EDGE_LIMIT: usize = 200;
 
 // ---------------------------------------------------------------------------
 // Backend trait
@@ -115,6 +141,82 @@ pub trait Backend: Send + Sync + 'static {
         project: Option<&str>,
         dry_run: bool,
     ) -> Result<Value>;
+}
+
+#[cfg(any(feature = "direct", test))]
+fn edge_page_limit(limit: usize) -> usize {
+    (limit.saturating_mul(EDGE_PAGE_MULTIPLIER)).clamp(MIN_EDGE_LIMIT, MAX_EDGE_LIMIT)
+}
+
+#[cfg(any(feature = "direct", test))]
+fn serialize_paginated_view(
+    entry: &atheneum::GraphEntity,
+    depth: u32,
+    entities: Vec<atheneum::GraphEntity>,
+    edges: Vec<atheneum::GraphEdge>,
+    offset: usize,
+    limit: usize,
+) -> Value {
+    let total_input_entities = entities.len();
+    let total_signal: Vec<_> = entities
+        .into_iter()
+        .filter(|e| !NOISE_ENTITY_KINDS.contains(&e.kind.as_str()))
+        .collect();
+    let total_signal_count = total_signal.len();
+    let page_entities: Vec<_> = total_signal.into_iter().skip(offset).take(limit).collect();
+    let returned = page_entities.len();
+    let has_more = offset + returned < total_signal_count;
+    let noise_filtered = total_input_entities.saturating_sub(total_signal_count);
+
+    let mut visible_entity_ids: HashSet<i64> = page_entities.iter().map(|e| e.id).collect();
+    visible_entity_ids.insert(entry.id);
+
+    let edge_limit = edge_page_limit(limit);
+    let mut seen_edges: HashSet<(i64, i64, String)> = HashSet::new();
+    let mut total_signal_edges = 0usize;
+    let mut serialized_edges = Vec::new();
+
+    for edge in edges.into_iter().filter(|e| {
+        !METADATA_EDGE_TYPES.contains(&e.edge_type.as_str())
+            && visible_entity_ids.contains(&e.from_id)
+            && visible_entity_ids.contains(&e.to_id)
+    }) {
+        let key = (edge.from_id, edge.to_id, edge.edge_type.clone());
+        if !seen_edges.insert(key) {
+            continue;
+        }
+        total_signal_edges += 1;
+        if serialized_edges.len() < edge_limit {
+            serialized_edges.push(json!({
+                "type": edge.edge_type,
+                "from_id": edge.from_id,
+                "to_id": edge.to_id,
+            }));
+        }
+    }
+
+    json!({
+        "entry": {
+            "kind": entry.kind,
+            "name": entry.name,
+        },
+        "depth": depth,
+        "entities": page_entities.into_iter().map(|e| {
+            json!({
+                "kind": e.kind,
+                "name": e.name,
+            })
+        }).collect::<Vec<_>>(),
+        "edges": serialized_edges,
+        "noise_filtered": noise_filtered,
+        "total_signal_entities": total_signal_count,
+        "offset": offset,
+        "limit": limit,
+        "has_more": has_more,
+        "edge_limit": edge_limit,
+        "total_signal_edges": total_signal_edges,
+        "edges_has_more": total_signal_edges > edge_limit,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -452,71 +554,9 @@ pub mod direct {
                 let views: Vec<Value> = results
                     .into_iter()
                     .map(|v| {
-                        // Filter metadata edges and low-signal entity types.
-                        // Metadata edges are bookkeeping. ToolCall/ReasoningLog
-                        // entities (84%+ of the graph) flood BFS traversal with
-                        // per-tool-call records that obscure real relationships.
-                        const METADATA_EDGE_TYPES: &[&str] = &[
-                            "belongs_to_project",
-                            "accessed",
-                            "modified",
-                            "observed_in",
-                            "created_in_session",
-                            "handled_by_tool",
-                        ];
-                        const NOISE_ENTITY_KINDS: &[&str] =
-                            &["ToolCall", "ReasoningLog", "TestRun"];
-                        let filtered_edges: Vec<Value> = v
-                            .edges
-                            .into_iter()
-                            .filter(|e| !METADATA_EDGE_TYPES.contains(&e.edge_type.as_str()))
-                            .map(|e| {
-                                json!({
-                                    "type": e.edge_type,
-                                    "from_id": e.from_id,
-                                    "to_id": e.to_id,
-                                })
-                            })
-                            .collect();
-
-                        // Summarize entities: skip noise types, paginate the rest
-                        let v_total_entities_len = v.entities.len();
-                        let total_signal: Vec<_> = v
-                            .entities
-                            .into_iter()
-                            .filter(|e| !NOISE_ENTITY_KINDS.contains(&e.kind.as_str()))
-                            .collect();
-                        let total_signal_count = total_signal.len();
-                        let noise_filtered =
-                            v_total_entities_len.saturating_sub(total_signal_count);
-                        let paged: Vec<Value> = total_signal
-                            .into_iter()
-                            .skip(offset)
-                            .take(limit)
-                            .map(|e| {
-                                json!({
-                                    "kind": e.kind,
-                                    "name": e.name,
-                                })
-                            })
-                            .collect();
-                        let returned = paged.len();
-                        let has_more = offset + returned < total_signal_count;
-
-                        json!({
-                            "entry": {
-                                "kind": v.entry.kind,
-                                "name": v.entry.name,
-                            },
-                            "depth": v.depth,
-                            "entities": paged,
-                            "edges": filtered_edges,
-                            "noise_filtered": noise_filtered,
-                            "total_signal_entities": total_signal_count,
-                            "offset": offset,
-                            "limit": limit,
-                            "has_more": has_more,
-                        })
+                        serialize_paginated_view(
+                            &v.entry, v.depth, v.entities, v.edges, offset, limit,
+                        )
                     })
                     .collect();
                 Ok(Value::Array(views))
@@ -725,4 +765,60 @@ fn encode(s: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use atheneum::{GraphEdge, GraphEntity};
+
+    fn entity(id: i64, kind: &str, name: &str) -> GraphEntity {
+        GraphEntity {
+            id,
+            kind: kind.to_string(),
+            name: name.to_string(),
+            file_path: None,
+            data: serde_json::json!({}),
+        }
+    }
+
+    fn edge(id: i64, from_id: i64, to_id: i64, edge_type: &str) -> GraphEdge {
+        GraphEdge {
+            id,
+            from_id,
+            to_id,
+            edge_type: edge_type.to_string(),
+            data: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn serialize_paginated_view_caps_and_dedups_visible_edges() {
+        let entry = entity(1, "File", "entry");
+        let entities = vec![
+            entity(2, "File", "a"),
+            entity(3, "ToolCall", "noise"),
+            entity(4, "File", "b"),
+        ];
+        let edges = vec![
+            edge(10, 1, 2, "wikilink"),
+            edge(11, 1, 2, "wikilink"),
+            edge(12, 1, 4, "wikilink"),
+            edge(13, 1, 3, "verified_by"),
+            edge(14, 1, 2, "handled_by_tool"),
+        ];
+
+        let view = serialize_paginated_view(&entry, 2, entities, edges, 0, 1);
+
+        assert_eq!(view["entities"].as_array().unwrap().len(), 1);
+        assert_eq!(view["total_signal_entities"], 2);
+        assert_eq!(view["has_more"], true);
+
+        let serialized_edges = view["edges"].as_array().unwrap();
+        assert_eq!(serialized_edges.len(), 1);
+        assert_eq!(serialized_edges[0]["type"], "wikilink");
+        assert_eq!(serialized_edges[0]["to_id"], 2);
+        assert_eq!(view["total_signal_edges"], 1);
+        assert_eq!(view["edges_has_more"], false);
+    }
 }
