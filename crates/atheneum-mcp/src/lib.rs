@@ -172,6 +172,7 @@ mod tests {
             _d: u32,
             _o: usize,
             _l: usize,
+            _t: Option<bool>,
         ) -> anyhow::Result<Value> {
             Ok(Value::Null)
         }

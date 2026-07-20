@@ -644,6 +644,83 @@ impl AtheneumGraph {
             edge_counts,
         })
     }
+
+    pub fn trace_query(
+        &self,
+        plan: &NavigateQueryPlan,
+        result_ids: &[i64],
+    ) -> Result<i64> {
+        let started_at = chrono::Utc::now().to_rfc3339();
+        let finished_at = chrono::Utc::now().to_rfc3339();
+        
+        let data = serde_json::json!({
+            "plan": plan,
+            "result_ids": result_ids,
+            "started_at": started_at,
+            "finished_at": finished_at,
+        });
+
+        let name = format!("Trace: {} @ {}", plan.normalized_query, started_at);
+        let trace_id = self.insert_entity_and_index(sqlitegraph::GraphEntity {
+            id: 0,
+            kind: EntityType::QueryTrace.as_str().to_string(),
+            name,
+            file_path: None,
+            data,
+        })?;
+
+        for &to_id in result_ids {
+            self.insert_edge(trace_id, to_id, EdgeType::ProducedBy, serde_json::Value::Null)?;
+        }
+
+        Ok(trace_id)
+    }
+
+    pub fn navigate_with_trace(
+        &self,
+        query: &str,
+        k: usize,
+        depth: u32,
+        project_id: Option<&str>,
+        entity_kind: Option<&str>,
+        max_tokens: Option<usize>,
+        trace: bool,
+    ) -> Result<(Vec<SubgraphView>, Option<i64>)> {
+        if !trace {
+            let views = self.navigate(query, k, depth, project_id, entity_kind, max_tokens)?;
+            return Ok((views, None));
+        }
+
+        let plan = self.preview_navigate_query(query, k, depth, project_id, entity_kind)?;
+        if !plan.executable {
+            anyhow::bail!(plan.errors.join("; "));
+        }
+
+        let hits = self.lexical_search(
+            &plan.normalized_query,
+            plan.k,
+            project_id,
+            plan.resolved_kind.as_deref(),
+            None,
+        )?;
+
+        let mut views = Vec::with_capacity(hits.len());
+        let mut result_ids = Vec::new();
+        for hit in &hits {
+            result_ids.push(hit.id);
+            let sg = self.get_subgraph_scoped(hit.id, depth, project_id)?;
+            let sg = if let Some(max_tokens) = max_tokens {
+                truncate_subgraph(sg, max_tokens)
+            } else {
+                sg
+            };
+            views.push(sg);
+        }
+
+        let trace_id = self.trace_query(&plan, &result_ids)?;
+
+        Ok((views, Some(trace_id)))
+    }
 }
 
 #[cfg(test)]

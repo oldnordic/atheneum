@@ -132,6 +132,7 @@ pub trait Backend: Send + Sync + 'static {
         depth: u32,
         offset: usize,
         limit: usize,
+        trace: Option<bool>,
     ) -> Result<Value>;
     async fn graph_stats(&self) -> Result<Value>;
     // --- Phase 2 additions ---
@@ -399,6 +400,7 @@ pub mod http {
             depth: u32,
             offset: usize,
             limit: usize,
+            _trace: Option<bool>,
         ) -> Result<Value> {
             let path = format!(
                 "/atheneum/graph/navigate?q={}&k={}&depth={depth}&offset={offset}&limit={limit}",
@@ -692,10 +694,11 @@ pub mod direct {
             depth: u32,
             offset: usize,
             limit: usize,
+            trace: Option<bool>,
         ) -> Result<Value> {
             let graph = self.graph.lock().await;
             tokio::task::block_in_place(|| {
-                let results = graph.navigate(query, k, depth, None, None, None)?;
+                let (results, trace_id) = graph.navigate_with_trace(query, k, depth, None, None, None, trace.unwrap_or(false))?;
                 let views: Vec<Value> = results
                     .into_iter()
                     .map(|v| {
@@ -704,7 +707,14 @@ pub mod direct {
                         )
                     })
                     .collect();
-                Ok(Value::Array(views))
+                if let Some(tid) = trace_id {
+                    Ok(json!({
+                        "subgraphs": views,
+                        "trace_id": tid
+                    }))
+                } else {
+                    Ok(Value::Array(views))
+                }
             })
         }
 

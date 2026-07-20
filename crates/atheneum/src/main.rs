@@ -395,16 +395,20 @@ fn run() -> anyhow::Result<()> {
             if !plan.executable {
                 anyhow::bail!(plan.errors.join("; "));
             }
-            let views = graph.navigate(
+            let (views, trace_id) = graph.navigate_with_trace(
                 query,
                 k,
                 depth,
                 opts.project.as_deref(),
                 opts.kind.as_deref(),
                 max_tokens,
+                opts.trace,
             )?;
             if opts.concise {
                 print_navigate_concise(query, &views, max_tokens)?;
+                if let Some(tid) = trace_id {
+                    println!("Trace ID: {}", tid);
+                }
             } else {
                 print_json(json!({
                     "query": query,
@@ -414,9 +418,40 @@ fn run() -> anyhow::Result<()> {
                     "project": opts.project,
                     "max_tokens": max_tokens,
                     "plan": plan,
+                    "trace_id": trace_id,
                     "subgraphs": views.iter().map(subgraph_to_json).collect::<Vec<_>>(),
                 }))?;
             }
+        }
+        "trace-get" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum trace-get <db-path> --id N");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let opts = parse_options(&args[3..])?;
+            let id = parse_i64_option(opts.id.as_deref(), "id")?
+                .ok_or_else(|| anyhow::anyhow!("missing --id"))?;
+            let graph = AtheneumGraph::open(&db_path)?;
+            
+            let trace_entity = graph.with_raw_connection(|conn| {
+                let mut stmt = conn.prepare("SELECT data FROM graph_entities WHERE id = ?1 AND kind = 'QueryTrace'")?;
+                let mut rows = stmt.query([id])?;
+                if let Some(row) = rows.next()? {
+                    let data_str: String = row.get(0)?;
+                    let data: serde_json::Value = serde_json::from_str(&data_str)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                    Ok(Some(data))
+                } else {
+                    Ok(None)
+                }
+            })?;
+            
+            let Some(trace) = trace_entity else {
+                anyhow::bail!("QueryTrace with ID {} not found", id);
+            };
+            
+            print_json(trace)?;
         }
         "thread" => {
             if args.len() < 4 {
@@ -1986,6 +2021,7 @@ struct CliOptions {
     once: bool,
     include_superseded: bool,
     apply: bool,
+    trace: bool,
     stale_days: Option<String>,
     rewire_threshold: Option<String>,
     broken_link_mode: Option<String>,
@@ -2071,6 +2107,9 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
             i += 1;
         } else if args[i] == "--apply" {
             opts.apply = true;
+            i += 1;
+        } else if args[i] == "--trace" {
+            opts.trace = true;
             i += 1;
         } else if args[i] == "--config-dir" {
             // Multi-valued flag consumed by `watch-decisions`; skipped here so

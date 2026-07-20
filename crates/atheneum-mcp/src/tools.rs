@@ -483,7 +483,8 @@ fn navigate() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServe
             "k": { "type": "integer", "minimum": 1, "maximum": 50, "default": 10, "description": "Number of entry-point results" },
             "depth": { "type": "integer", "minimum": 1, "maximum": 5, "default": 2, "description": "BFS depth for subgraph traversal" },
             "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Entity offset for pagination (skip first N signal entities)" },
-            "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50, "description": "Max signal entities to return per view (pagination)" }
+            "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50, "description": "Max signal entities to return per view (pagination)" },
+            "trace": { "type": "boolean", "default": false, "description": "If true, record a QueryTrace entity for this query" }
         },
         "required": ["query"]
     });
@@ -503,7 +504,8 @@ fn navigate() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServe
                 let depth = args["depth"].as_u64().unwrap_or(2) as u32;
                 let offset = args["offset"].as_u64().unwrap_or(0) as usize;
                 let limit = args["limit"].as_u64().unwrap_or(50) as usize;
-                let result = ctx.service.backend.navigate(&query, k, depth, offset, limit).await;
+                let trace = args["trace"].as_bool();
+                let result = ctx.service.backend.navigate(&query, k, depth, offset, limit, trace).await;
                 match result {
                     Ok(v) => json_result(v),
                     Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),

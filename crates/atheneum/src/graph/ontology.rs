@@ -151,6 +151,7 @@ impl AtheneumGraph {
                 "A failing test, bug, regression, or observed defect",
             ),
             ("Memory", "Stable facts, preferences, and conventions"),
+            ("QueryTrace", "A trace record of a search/navigation query"),
         ];
         for (name, description) in STANDARD {
             self.define_class(name, Some(description))?;
@@ -162,6 +163,12 @@ impl AtheneumGraph {
                 "ANY",
                 "Agent",
                 "Action or event was performed by an agent",
+            ),
+            (
+                EdgeType::ProducedBy,
+                "ANY",
+                "QueryTrace",
+                "Entity was produced as a result of a query trace",
             ),
             (
                 EdgeType::AssignedTo,

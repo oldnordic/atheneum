@@ -18,6 +18,7 @@ pub enum EntityType {
     Memory,
     WikiPage,
     Concept,
+    QueryTrace,
 }
 
 impl EntityType {
@@ -37,6 +38,7 @@ impl EntityType {
             EntityType::Memory => "Memory",
             EntityType::WikiPage => "WikiPage",
             EntityType::Concept => "Concept",
+            EntityType::QueryTrace => "QueryTrace",
         }
     }
 
@@ -62,6 +64,7 @@ impl EntityType {
             "memory" | "memories" => EntityType::Memory,
             "wikipage" | "wikipages" | "wiki" | "page" | "pages" => EntityType::WikiPage,
             "concept" | "concepts" => EntityType::Concept,
+            "querytrace" | "querytraces" | "trace" | "traces" => EntityType::QueryTrace,
             _ => return None,
         })
     }
@@ -81,6 +84,7 @@ impl EntityType {
             "EventLog",
             "Memory",
             "WikiPage",
+            "QueryTrace",
         ]
     }
 }
@@ -123,6 +127,7 @@ pub enum EdgeType {
     HasMemory,
     Verifies,
     Supersedes,
+    ProducedBy,
 }
 
 impl EdgeType {
@@ -159,6 +164,7 @@ impl EdgeType {
             EdgeType::HasMemory => "has_memory",
             EdgeType::Verifies => "verifies",
             EdgeType::Supersedes => "supersedes",
+            EdgeType::ProducedBy => "produced_by",
         }
     }
 
@@ -195,6 +201,7 @@ impl EdgeType {
             "has_memory" => EdgeType::HasMemory,
             "verifies" => EdgeType::Verifies,
             "supersedes" => EdgeType::Supersedes,
+            "produced_by" => EdgeType::ProducedBy,
             _ => return None,
         })
     }
@@ -213,6 +220,7 @@ impl EdgeType {
             EdgeType::Created,
             EdgeType::RelatedTo,
             EdgeType::Mentions,
+            EdgeType::ProducedBy,
             EdgeType::Wikilink,
             EdgeType::Implements,
             EdgeType::DependsOn,

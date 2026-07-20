@@ -85,8 +85,9 @@ impl backend::Backend for MockBackend {
         _d: u32,
         _o: usize,
         _l: usize,
+        _t: Option<bool>,
     ) -> anyhow::Result<serde_json::Value> {
-        Ok(json!({"entities": [], "plan": "test"}))
+        Ok(json!({"subgraphs": [], "count": 0}))
     }
     async fn graph_stats(&self) -> anyhow::Result<serde_json::Value> {
         Ok(json!({"entity_count": 0, "edge_count": 0, "kinds": []}))
@@ -648,6 +649,29 @@ async fn mcp_direct_backend_round_trip() {
     let seed_text = seed_resp["result"]["content"][0]["text"].as_str().unwrap();
     let seed_val: serde_json::Value = serde_json::from_str(seed_text).unwrap();
     assert!(seed_val["instructions"].as_str().is_some());
+
+    // 3h. navigate with trace
+    send_json(
+        &mut client_writer,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 105,
+            "method": "tools/call",
+            "params": {
+                "name": "navigate",
+                "arguments": {
+                    "query": "Rust Style",
+                    "trace": true
+                }
+            }
+        }),
+    )
+    .await;
+    let nav_resp = recv_json(&mut client_reader).await;
+    assert_eq!(nav_resp["id"], 105);
+    let nav_text = nav_resp["result"]["content"][0]["text"].as_str().unwrap();
+    let nav_val: serde_json::Value = serde_json::from_str(nav_text).unwrap();
+    assert!(nav_val["trace_id"].as_i64().is_some());
 
     // 4. store_discovery
     send_json(
