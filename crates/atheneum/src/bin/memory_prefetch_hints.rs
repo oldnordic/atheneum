@@ -447,7 +447,7 @@ fn load_trajectory_index(path: Option<&Path>) -> Result<TrajectoryIndex> {
 fn build_trajectory_from_bytes(query_trajectory: &[f32], context_len: usize) -> Vec<f32> {
     let mut out = Vec::with_capacity(context_len * query_trajectory.len());
     for value in query_trajectory {
-        out.extend(std::iter::repeat(*value).take(context_len.max(1)));
+        out.extend(std::iter::repeat_n(*value, context_len.max(1)));
     }
     out
 }
@@ -474,13 +474,12 @@ fn query_candidates(
     candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
     let mut seen: HashSet<&str> = HashSet::new();
     for (node, _) in candidates.into_iter().take(limit * 4) {
-        if seen.insert(node.next_token.as_str()) {
-            if node.next_token == "__eos__"
+        if seen.insert(node.next_token.as_str())
+            && (node.next_token == "__eos__"
                 || node.next_token == "__pick__"
-                || node.next_token == "__skip__"
-            {
-                break;
-            }
+                || node.next_token == "__skip__")
+        {
+            break;
         }
     }
     let mut out: Vec<String> = seen.into_iter().map(String::from).collect();
@@ -524,9 +523,9 @@ fn compute_tf_idf_stats(entity_texts: &[String], tokens_per_doc: &[Vec<String>])
     TfIdfStats { idf, avg_len }
 }
 
-fn parse_args(
-    args: &[String],
-) -> Result<(
+/// Return type of [`parse_args`]: graph handle, query string, k, max-tokens,
+/// trajectory index, trajectory query vector, and session id.
+type ParsedArgs = (
     AtheneumGraph,
     String,
     usize,
@@ -534,7 +533,9 @@ fn parse_args(
     TrajectoryIndex,
     Vec<f32>,
     String,
-)> {
+);
+
+fn parse_args(args: &[String]) -> Result<ParsedArgs> {
     if args.len() < 3 {
         bail!("Usage: atheneum memory-prefetch-hints <db-path> --query <query> [--k 5] [--max-tokens 500] [--trajectory prefix.bin] [--trajectory-query t1,t2,...] [--session-id SESSION_ID]\nProvided args: {args:?}");
     }
@@ -818,6 +819,10 @@ fn run(args: Vec<String>) -> Result<()> {
 }
 
 fn main() {
+    // argv is only parsed as CLI flags for this offline query tool; it is
+    // never relied upon for any security decision (the rule's documented
+    // concern), so the security-args finding does not apply here.
+    // nosemgrep: rust.lang.security.args.args
     if let Err(err) = run(std::env::args().collect()) {
         eprintln!("Error: {err}");
         std::process::exit(1);
