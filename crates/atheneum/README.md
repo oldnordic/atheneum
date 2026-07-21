@@ -307,9 +307,8 @@ graph.link_wiki_to_symbols(
 | `semantic-search` | — | Optional HNSW candidate index for human fuzzy lookup in `search` (opt-in; heavy — index + embedder). Off by default; agent retrieval uses lexical search, graph traversal, and SQL payload queries |
 | `neural-embed` | — | Ollama neural embeddings (requires `ureq`, ollama + nomic-embed-text) |
 | `extract` | — | Native `atheneum extract-decisions` subcommand (Rust port of the operator script; LLM backend requires `ureq` + ollama, default `qwen3.5`; `--heuristic` backend needs no LLM/network) |
-| `web` | — | Web dashboard (axum + askama templates) |
-| `cli` | — | `atheneum` CLI binary |
-| `async` | — | Async runtime support |
+| `web-ui` | — | Web dashboard (axum + askama templates) — enables the `dashboard` CLI subcommand |
+| `async` | — | Async runtime support (tokio + tracing-subscriber) |
 
 ## CLI
 
@@ -425,7 +424,7 @@ for how candidates are selected and scored.
 
 ## Requirements
 
-- Rust 1.75+
+- Rust 1.82+
 - SQLite 3.35+ with JSON1 (bundled via rusqlite)
 
 ## Related

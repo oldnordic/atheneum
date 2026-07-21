@@ -34,6 +34,12 @@ Current core crate release: `atheneum` `0.12.0`.
 | [`atheneum`](./crates/atheneum) | Core library + CLI | [![Crates.io](https://img.shields.io/crates/v/atheneum)](https://crates.io/crates/atheneum) |
 | [`atheneum-mcp`](./crates/atheneum-mcp) | MCP server (optional) | — |
 
+## Plugins
+
+| Plugin | Description |
+|--------|-------------|
+| [`atheneum-decisions`](./plugin/atheneum-decisions) | Claude Code plugin — cooperative decision capture: a skill that records architectural choices as `Decision` rows, a `/decision` manual fallback, and a non-blocking Stop-gate reminder. Highest-fidelity layer on top of the transcript watcher and LLM backfiller. |
+
 ## Quick Install
 
 ```bash
