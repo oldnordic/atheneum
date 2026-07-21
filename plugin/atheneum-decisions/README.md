@@ -28,6 +28,7 @@ Claude Code companion plugin for [atheneum](https://github.com/oldnordic/atheneu
 
 - `ATHENEUM_DB` — path to the atheneum SQLite database. Defaults to `~/.magellan/atheneum/atheneum.db`.
 - `ATHENEUM_TRAJECTORY_PATH` — optional, enables trajectory-graph lookup in prefetch hints if set to a valid PSF1/PSF2 blob path.
+- `ATHENEUM_BIN` / `ATHENEUM_PREFETCH_BIN` — optional explicit path to the `atheneum` / `memory-prefetch-hints` binaries. Hook scripts don't always inherit a full login-shell `PATH`; each hook falls back to `~/.local/bin/<name>` if a plain `PATH` lookup fails, but set these directly if the binaries live somewhere else.
 
 ## Install
 

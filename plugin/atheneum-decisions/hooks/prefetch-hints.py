@@ -13,7 +13,7 @@ Cross-platform (stdlib only) -- no shell-specific syntax.
 
 Env: ATHENEUM_DB (optional; defaults to the live atheneum DB path),
 ATHENEUM_TRAJECTORY_PATH (optional; enables trajectory-graph lookup if set).
-Stdin (JSON): user_prompt, session_id, cwd, ... (UserPromptSubmit schema).
+Stdin (JSON): prompt, session_id, cwd, ... (UserPromptSubmit schema).
 """
 
 import json
@@ -27,17 +27,35 @@ QUERY_MAX_CHARS = 500
 MAX_CONTEXT_CHARS = 4000
 
 
+def _resolve_binary(name, env_var):
+    """Env var override -> PATH lookup -> ~/.local/bin fallback.
+
+    Hook scripts don't always inherit a full login-shell PATH, so PATH
+    lookup alone silently no-ops even when the binary is installed.
+    """
+    override = os.environ.get(env_var, "").strip()
+    if override and Path(override).is_file():
+        return override
+    found = shutil.which(name)
+    if found:
+        return found
+    fallback = Path.home() / ".local" / "bin" / name
+    if fallback.is_file():
+        return str(fallback)
+    return None
+
+
 def main():
     try:
         hook_input = json.load(sys.stdin)
     except Exception:
         return 0
 
-    query = str(hook_input.get("user_prompt") or "").strip()
+    query = str(hook_input.get("prompt") or "").strip()
     if not query:
         return 0
 
-    binary = shutil.which("memory-prefetch-hints")
+    binary = _resolve_binary("memory-prefetch-hints", "ATHENEUM_PREFETCH_BIN")
     if binary is None:
         return 0
 

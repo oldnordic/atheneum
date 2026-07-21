@@ -9,8 +9,5 @@
   "homepage": "https://github.com/oldnordic/atheneum/tree/master/plugin/atheneum-decisions",
   "repository": "https://github.com/oldnordic/atheneum",
   "license": "GPL-3.0",
-  "keywords": ["atheneum", "decisions", "memory", "prefetch", "grounded-coding", "knowledge-graph", "session-accountability"],
-  "skills": "./skills/",
-  "commands": "./commands/",
-  "hooks": "./hooks/hooks.json"
+  "keywords": ["atheneum", "decisions", "memory", "prefetch", "grounded-coding", "knowledge-graph", "session-accountability"]
 }

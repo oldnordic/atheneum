@@ -12,8 +12,10 @@ Cross-platform by construction (stdlib only, no shell-specific syntax) --
 runs identically on Linux, macOS, and Windows, replacing the earlier
 fish-only implementation.
 
-Env: CLAUDE_CODE_SESSION_ID (set by Claude Code for hooks), ATHENEUM_DB
-(optional; defaults to the live atheneum DB path).
+Env: ATHENEUM_DB (optional; defaults to the live atheneum DB path).
+Stdin (JSON): session_id, transcript_path, cwd, ... (Stop input schema).
+CLAUDE_CODE_SESSION_ID env var used only as a fallback if stdin lacks
+session_id.
 """
 
 import json
@@ -24,11 +26,29 @@ import sys
 from pathlib import Path
 
 
-def _run_atheneum(args):
+def _resolve_binary(name, env_var):
+    """Env var override -> PATH lookup -> ~/.local/bin fallback.
+
+    Hook scripts don't always inherit a full login-shell PATH, so PATH
+    lookup alone silently no-ops even when the binary is installed.
+    """
+    override = os.environ.get(env_var, "").strip()
+    if override and Path(override).is_file():
+        return override
+    found = shutil.which(name)
+    if found:
+        return found
+    fallback = Path.home() / ".local" / "bin" / name
+    if fallback.is_file():
+        return str(fallback)
+    return None
+
+
+def _run_atheneum(atheneum_bin, args):
     """Run an atheneum CLI subcommand, return parsed JSON dict or None on any failure."""
     try:
         result = subprocess.run(
-            ["atheneum", *args],
+            [atheneum_bin, *args],
             capture_output=True,
             text=True,
             timeout=10,
@@ -44,27 +64,37 @@ def _run_atheneum(args):
 
 
 def main():
+    try:
+        hook_input = json.load(sys.stdin)
+    except Exception:
+        hook_input = {}
+
     db = os.environ.get("ATHENEUM_DB", "").strip()
     if not db:
         db = str(Path.home() / ".magellan" / "atheneum" / "atheneum.db")
     if not Path(db).is_file():
         return 0
 
-    session_id = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
+    session_id = str(hook_input.get("session_id") or "").strip()
+    if not session_id:
+        session_id = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
     if not session_id:
         return 0
 
-    if shutil.which("atheneum") is None:
+    atheneum_bin = _resolve_binary("atheneum", "ATHENEUM_BIN")
+    if atheneum_bin is None:
         return 0
 
     decisions = _run_atheneum(
-        ["discoveries-recent", db, "--session", session_id, "--type", "Decision", "--limit", "1"]
+        atheneum_bin,
+        ["discoveries-recent", db, "--session", session_id, "--type", "Decision", "--limit", "1"],
     )
     if decisions is not None and len(decisions.get("discoveries", [])) > 0:
         return 0
 
     events = _run_atheneum(
-        ["events-recent", db, "--session", session_id, "--type", "tool_call", "--limit", "1"]
+        atheneum_bin,
+        ["events-recent", db, "--session", session_id, "--type", "tool_call", "--limit", "1"],
     )
     if events is None or len(events.get("events", [])) == 0:
         return 0

@@ -27,6 +27,24 @@ MAX_TOKENS = 500
 MAX_CONTEXT_CHARS = 8000
 
 
+def _resolve_binary(name, env_var):
+    """Env var override -> PATH lookup -> ~/.local/bin fallback.
+
+    Hook scripts don't always inherit a full login-shell PATH, so PATH
+    lookup alone silently no-ops even when the binary is installed.
+    """
+    override = os.environ.get(env_var, "").strip()
+    if override and Path(override).is_file():
+        return override
+    found = shutil.which(name)
+    if found:
+        return found
+    fallback = Path.home() / ".local" / "bin" / name
+    if fallback.is_file():
+        return str(fallback)
+    return None
+
+
 def main():
     try:
         hook_input = json.load(sys.stdin)
@@ -39,7 +57,8 @@ def main():
     if not Path(db).is_file():
         return 0
 
-    if shutil.which("atheneum") is None:
+    atheneum_bin = _resolve_binary("atheneum", "ATHENEUM_BIN")
+    if atheneum_bin is None:
         return 0
 
     project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "").strip() or hook_input.get("cwd", "")
@@ -50,7 +69,7 @@ def main():
     try:
         result = subprocess.run(
             [
-                "atheneum",
+                atheneum_bin,
                 "session-digest",
                 db,
                 "--project",
