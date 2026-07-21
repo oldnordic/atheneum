@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-07-21
+
+### Added
+
+- **`memory-prefetch-hints` binary** (`crates/atheneum/src/bin/memory_prefetch_hints.rs`,
+  `cargo install atheneum` → `memory-prefetch-hints`): standalone ranking CLI
+  for prefetching relevant `Memory` entities before a session starts. Scores
+  candidates on BM25 + TF-IDF + kind weight + recency + session continuity +
+  an optional trajectory bonus (see `ARCHITECTURE.md` for the full scoring
+  breakdown), and returns a token-budgeted JSON candidate list. Consumed by
+  the Hermes `atheneum` plugin's `_run_prefetch_hints` and available as a
+  general-purpose companion binary for any agent runtime.
+  - `--session-id <id>`: scores entities from the *current* session higher
+    (`session_continuity` bonus), instead of only the coincidental overlap
+    between candidates already in the result set.
+  - `--trajectory <path>` + `--trajectory-query <f32,f32,...>`: optional PSF1/
+    PSF2 trajectory-graph lookup — if the query's leading token matches a
+    taught trajectory node, candidates get a `trajectory_bonus` and are
+    tagged `"handle_kind": "trajectory"` / `"prefetch": true`.
+
+### Fixed
+
+- **`memory_search` candidate pool had no `ORDER BY`** before its `LIMIT
+  (k*4)` — on any database with more than a few dozen `Memory` entities,
+  the query returned an effectively-fixed set of the *oldest* rows every
+  time, regardless of relevance, recency, or the query text. Added
+  `ORDER BY id DESC` so the candidate pool is drawn from the most recent
+  entities before scoring runs. Without this fix, `session_continuity` and
+  `trajectory_bonus` could never fire on any entity created after roughly
+  the first few dozen ever inserted into the database.
+
 ## [0.11.0] - 2026-07-21
 
 ### Added

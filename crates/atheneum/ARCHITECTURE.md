@@ -264,6 +264,63 @@ surfaces that dominate operator and release risk:
 | `open_wal` | SQLite/WAL open path for the core store |
 | `run` / `main` | CLI dispatch and flag parsing surface |
 
+## Memory Prefetch Hints (Ranking Pipeline)
+
+`memory-prefetch-hints` (`crates/atheneum/src/bin/memory_prefetch_hints.rs`)
+is a standalone `[[bin]]` target, separate from the `atheneum` CLI's own
+subcommand dispatch. It exists to answer one question fast, with a bounded
+token budget: given a query and (optionally) a live session ID, which
+`Memory` entities are worth surfacing before the session's first turn.
+
+**Candidate pool.** `SELECT id, kind, name, file_path, data, session_id FROM
+graph_entities WHERE kind = 'Memory' AND data IS NOT NULL ORDER BY id DESC
+LIMIT (k * 4)` — the pool is drawn from the *most recent* `k * 4` `Memory`
+entities, then scored. This `ORDER BY` was missing until 0.12.0; without it,
+SQLite's unordered table scan returned an effectively-fixed set of the
+*oldest* rows in the table every time, so on any database with more than a
+few dozen memories, nothing created after early on could ever be scored,
+regardless of the query.
+
+**Scoring**, summed per candidate:
+
+```
+score = bm25 * 0.35
+      + tf_idf * 0.25
+      + recency                    (0.0–0.12, own tiered function)
+      + session_continuity         (0.0–0.28: own 0.0–0.16 recency term + 0.12 session match)
+      + kind_weight * 0.15
+      + trajectory_bonus           (0.0 or 0.25, flat)
+```
+
+`session_continuity`'s session-match term (`+0.12`) only fires when the
+entity's `session_id` (a JSON field on `data`, exposed via a generated SQLite
+column) matches the `--session-id` CLI flag. If `--session-id` is empty, the
+scorer falls back to its original behavior — scoring session overlap between
+whatever entities happen to land in the same result batch, which is a much
+weaker and largely coincidental signal.
+
+**Trajectory bonus.** Optional PSF1/PSF2 binary blob, loaded via
+`load_trajectory_index`: magic (`PSF1`/`PSF2`, 4 bytes) + `context_len`/
+`feat_dim`/`n` (each little-endian `u64`) + per-node records (corpus
+position, valid length, source/next token as `u32`, optional logit, then
+`context_len * feat_dim` `f32` trajectory values). The query's first
+alphanumeric token is compared, as an exact string, against each node's
+`source_token`. This is deliberately a raw token-ID match, not a semantic
+one — the trajectory format is designed for a caller that already speaks in
+the same token space (e.g. a walker over a taught skip-graph), not for
+matching arbitrary natural-language queries.
+
+**Handle cache — currently write-only.** The Hermes plugin's
+`_prefetch_handle_cache`/`_prefetch_last_handles` (Python side, not in this
+crate) store each query's returned candidates keyed by session ID, but as of
+0.12.0 nothing in the plugin reads that cache back. The `handle` field
+returned by this binary is a compact, session-scoped ID for a candidate
+(assigned by `TinyHandleMap`, effectively a hash-collision-tolerant `u32`
+slot allocator over a bounded space), designed so a follow-up tool call could
+say "expand handle 4893" without re-sending the full entity payload. That
+consumer doesn't exist yet — this is documented as a known gap, not a
+finished round-trip.
+
 ## Edge Types
 
 | EdgeType       | Usage                                      |

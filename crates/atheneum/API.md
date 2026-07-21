@@ -613,6 +613,85 @@ Fuzzy entity lookup over the search index without mutation. Returns ranked candi
 
 ---
 
+## Memory Prefetch Hints
+
+Standalone `[[bin]]` target, not a library function -- `memory-prefetch-hints`,
+installed alongside the `atheneum` CLI via `cargo install atheneum`.
+
+```
+memory-prefetch-hints <db-path> --query <query> [--k 5] [--max-tokens 500]
+    [--session-id <id>] [--trajectory <path>] [--trajectory-query <f32,f32,...>]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--query <text>` | required | Free-text query; tokenized on non-alphanumeric boundaries, lowercased |
+| `--k <n>` | `5` | Max candidates returned (candidate pool internally is `k * 4`, pre-scoring) |
+| `--max-tokens <n>` | `500` | Token budget for the returned candidate set; candidates are dropped once the running total would exceed it |
+| `--session-id <id>` | none | Scores `Memory` entities whose `session_id` matches this value with a `+0.12` `session_continuity` bonus |
+| `--trajectory <path>` | none | Path to a PSF1/PSF2 trajectory-graph blob (see below) |
+| `--trajectory-query <f32,...>` | none | Comma-separated floats; only used if `--trajectory` is also set |
+
+Candidate pool: `SELECT ... WHERE kind = 'Memory' AND data IS NOT NULL ORDER BY id DESC LIMIT (k * 4)`
+-- newest entities first, then scored. Scoring is the sum of:
+
+| Component | Range | Source |
+|-----------|-------|--------|
+| `bm25` | 0.0-1.0, weight 0.35 | Okapi BM25 over query tokens |
+| `tf_idf` | 0.0-1.0, weight 0.25 | Term-frequency / inverse-doc-frequency |
+| `kind_weight` | -0.18 to 0.18, weight 0.15 | Per-`kind` prior (`WikiPage` positive, `File`/`Event` negative) |
+| `recency` | 0.0-0.12 | Age of `updated_at`/`created_at`/`timestamp`, tiered by hours-old |
+| `session_continuity` | 0.0-0.28 | Own recency sub-term (0.0-0.16) + `+0.12` if `session_id` matches `--session-id` |
+| `trajectory_bonus` | `0.0` or `0.25` (`WEIGHT_TRAJECTORY`) | Flat bonus if the trajectory lookup below found a match |
+
+### Trajectory lookup
+
+If `--trajectory` points to a valid PSF1/PSF2 blob (magic `PSF1`/`PSF2`,
+28-byte header: `context_len`/`feat_dim`/`n` as little-endian `u64`, then
+per-node 28-byte prefix + `context_len * feat_dim` `f32` trajectory values),
+the query's first token is compared against each node's `source_token`
+(exact string match). On a match, `trajectory_bonus` fires, the candidate is
+returned with `"prefetch": true` and `"handle_kind": "trajectory"`, and its
+`name` is annotated with the most common `next_token` among matches
+(`"<name> | next=<token>"`).
+
+### Response shape
+
+```json
+{
+  "query": "...",
+  "candidates": [
+    {
+      "handle": 706529,
+      "entity_id": 706529,
+      "kind": "Memory",
+      "name": "...",
+      "score": 1.245,
+      "score_breakdown": {
+        "bm25": 1.0,
+        "tf_idf": 1.0,
+        "recency": 0.1,
+        "kind_weight": 0.015,
+        "session_continuity": 0.28,
+        "trajectory_bonus": 0.25
+      },
+      "estimated_tokens": 35,
+      "skip_prob": 0.0,
+      "session_id": "...",
+      "prefetch": true,
+      "handle_kind": "trajectory"
+    }
+  ]
+}
+```
+
+An empty candidate list is returned as a single placeholder entry
+(`"kind": "empty"`, `"name": "no-prefetch"`) when the query has real tokens
+but nothing scored -- distinguishes "searched, found nothing" from a
+malformed/empty query.
+
+---
+
 ## HopGraph
 
 ### `hopgraph_query(query, k, depth, allowed_types, max_tokens, project_id) -> Result<Vec<SubgraphView>>`

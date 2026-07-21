@@ -482,6 +482,70 @@ atheneum navigate ./atheneum.db timezone --kind memories
 
 ---
 
+## Memory Prefetch Hints
+
+`memory-prefetch-hints` is a separate binary (not an `atheneum` subcommand)
+installed alongside the CLI. It ranks `Memory` entities against a query and
+returns a token-budgeted JSON candidate list, meant to run once at session
+start so an agent already has relevant memories before the first turn.
+
+```bash
+memory-prefetch-hints ./atheneum.db --query "flash-attn split-KV coherence fix" --k 5
+```
+
+```json
+{
+  "query": "flash-attn split-KV coherence fix",
+  "candidates": [
+    {
+      "handle": 695590,
+      "kind": "Memory",
+      "name": "feedback-verify-instrumentation",
+      "score": 0.745,
+      "score_breakdown": {"bm25": 1.0, "tf_idf": 0.48, "recency": 0.1, "session_continuity": 0.0, "trajectory_bonus": 0.0, "kind_weight": 0.015},
+      "estimated_tokens": 412
+    }
+  ]
+}
+```
+
+### Scoring a live session higher
+
+Pass `--session-id` with the current session's ID to give entities from that
+same session a `session_continuity` bonus, instead of scoring only whatever
+coincidental overlap exists between candidates already in the result batch:
+
+```bash
+memory-prefetch-hints ./atheneum.db --query "..." --session-id "$SESSION_ID"
+```
+
+### Trajectory-graph lookup (optional)
+
+If you have a taught PSF1/PSF2 trajectory blob (see `docs/` for the format
+notes), pass it alongside a matching query vector to get a `trajectory_bonus`
+and `"prefetch": true`/`"handle_kind": "trajectory"` on matching candidates:
+
+```bash
+memory-prefetch-hints ./atheneum.db --query "1 some query" \
+    --trajectory ./trajectories.psf --trajectory-query "1.0"
+```
+
+The query's *first token* is matched against each trajectory node's
+`source_token` as an exact string — this is a raw token-ID match, not a
+semantic one, so it's most useful when the query is itself constructed from
+the same token space the trajectory was taught from (e.g. driven by another
+tool), not free-form natural language.
+
+### Wiring into an agent runtime
+
+The Hermes `atheneum` plugin calls this binary from `_run_prefetch_hints`,
+passing the plugin's own `--db-path`, `--session-id`, and (if configured via
+`ATHENEUM_TRAJECTORY_PATH`) `--trajectory`/`--trajectory-query`. Any other
+agent runtime can shell out to the same binary the same way — it only needs
+a database path and a query string; everything else is optional.
+
+---
+
 ## Decision Capture from Chat Transcripts
 
 Claude Code chat transcripts (`~/.claude/projects/*/*.jsonl`) carry the

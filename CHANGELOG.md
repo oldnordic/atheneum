@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-07-21
+
+### Added — `memory-prefetch-hints` binary (`atheneum` crate)
+
+- Standalone `[[bin]]` ranking CLI: scores `Memory` entities by BM25 +
+  TF-IDF + kind weight + recency + session continuity + an optional
+  trajectory bonus, returning a token-budgeted JSON candidate list.
+  `--session-id` scores entities from the live session higher;
+  `--trajectory`/`--trajectory-query` adds optional PSF1/PSF2
+  trajectory-graph lookup. Consumed by the Hermes `atheneum` plugin.
+  See `crates/atheneum/CHANGELOG.md`, `ARCHITECTURE.md`, `API.md`,
+  and `MANUAL.md` for the full scoring/format reference.
+
+### Fixed
+
+- `memory_search`'s candidate-pool query had no `ORDER BY` before its
+  `LIMIT` — returned the oldest rows in the table regardless of query
+  or recency on any database with more than a few dozen `Memory`
+  entities. Added `ORDER BY id DESC`.
+
 ## [0.11.0] - 2026-07-21
 
 ### Added — Librarian primitives (closes the local-memory gap analysis)

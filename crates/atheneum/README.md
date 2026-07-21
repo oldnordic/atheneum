@@ -31,6 +31,20 @@ cargo add atheneum
 
 Atheneum is a library. Production use is via [agent-envoy](https://crates.io/crates/agent-envoy) which exposes all endpoints over HTTP (`envoy` binary). Direct embedding is for custom runtimes.
 
+## What's New In 0.12.0
+
+- **`memory-prefetch-hints` binary**: standalone ranking CLI that scores
+  `Memory` entities by BM25 + TF-IDF + kind weight + recency + session
+  continuity + an optional trajectory bonus, returning a token-budgeted JSON
+  candidate list. `--session-id` scores entities from the current session
+  higher; `--trajectory`/`--trajectory-query` adds trajectory-graph lookup.
+  See [ARCHITECTURE.md](./ARCHITECTURE.md#memory-prefetch-hints-ranking-pipeline)
+  for the scoring pipeline and [API.md](./API.md#memory-prefetch-hints) for
+  the CLI/JSON reference.
+- Fixed `memory_search`'s candidate-pool query missing `ORDER BY` before its
+  `LIMIT` — it was returning the oldest rows in the table regardless of
+  query or recency. Recent entities are now the ones actually scored.
+
 ## What's New In 0.11.0
 
 - `seed_memory`: a token-bounded, concept-grouped summary of the knowledge base. `atheneum-mcp` regenerates it on every session connect and folds it into the server instructions and `navigate`/`query_memory`/`search` tool descriptions, so a connecting client already knows what's in memory.
@@ -377,6 +391,37 @@ relationships.
 session graph. It records prompt/chat summaries, observed tool calls, `accessed`
 file edges for `Read`/`Edit`/`Write`, and session token/cache totals. Re-running the
 command on the same append-only transcript imports only new lines.
+
+## `memory-prefetch-hints` Binary
+
+Separate `[[bin]]` target, installed alongside the `atheneum` CLI:
+
+```bash
+cargo install atheneum   # installs both `atheneum` and `memory-prefetch-hints`
+```
+
+```
+memory-prefetch-hints <db-path> --query <query> [--k 5] [--max-tokens 500]
+    [--session-id <id>] [--trajectory <path>] [--trajectory-query <f32,f32,...>]
+```
+
+- `--session-id <id>` — score `Memory` entities from the current session
+  higher (`session_continuity` bonus of `+0.12`), instead of scoring only
+  the coincidental overlap between whatever entities land in the same
+  result batch.
+- `--trajectory <path>` + `--trajectory-query <f32,f32,...>` — optional
+  PSF1/PSF2 trajectory-graph lookup. If the query's first token matches a
+  taught trajectory node's `source_token`, matching candidates get a
+  `trajectory_bonus` and are returned with `"prefetch": true` /
+  `"handle_kind": "trajectory"`.
+
+Output is JSON: `{"query": "...", "candidates": [...]}`, each candidate
+carrying `handle`, `entity_id`, `kind`, `name`, `score`, a `score_breakdown`
+(`bm25`, `tf_idf`, `recency`, `kind_weight`, `session_continuity`,
+`trajectory_bonus`), `estimated_tokens`, `session_id`, `prefetch`, and
+`handle_kind`. See [API.md](./API.md#memory-prefetch-hints) for the full
+schema and [ARCHITECTURE.md](./ARCHITECTURE.md#memory-prefetch-hints-ranking-pipeline)
+for how candidates are selected and scored.
 
 ## Requirements
 
