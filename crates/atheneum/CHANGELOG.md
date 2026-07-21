@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-07-21
+
+### Fixed
+
+- `memory-prefetch-hints`: newer-toolchain clippy compliance (MSRV-stable
+  CI runs `-D warnings`): `iter::repeat().take()` → `iter::repeat_n`,
+  collapsed nested condition, `parse_args` return tuple factored into a
+  `ParsedArgs` type alias, and `vec!` → array conversions in tests. No
+  behavior change.
+- Semgrep `p/rust` CI: annotated the `rust.lang.security.args.args`
+  false positive on the binary's own argv parse (offline CLI flags, never
+  a security input) with a documented `nosemgrep`.
+
+### Repo (not part of the crate package)
+
+- `plugin/atheneum-decisions`: added the Kimi Code CLI companion set —
+  `kimi.plugin.json` manifest plus `hooks/kimi/` variants of the three
+  hooks (plain-text stdout, Kimi payload fields), sharing skills/commands
+  with the Claude Code set. Install with
+  `/plugins install plugin/atheneum-decisions` then `/reload`.
+
 ## [0.12.0] - 2026-07-21
 
 ### Added

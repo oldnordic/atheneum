@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-07-21
+
+### Added — Kimi Code CLI plugin set (`plugin/atheneum-decisions`)
+
+- `kimi.plugin.json` manifest plus `hooks/kimi/` variants of the three
+  hooks (session bootstrap digest, per-turn prefetch hints, decision
+  gate), sharing the skills/commands with the Claude Code set. One plugin
+  root, per-agent manifests and hook script sets. Install in Kimi Code CLI
+  with `/plugins install plugin/atheneum-decisions` then `/reload`.
+
+### Fixed
+
+- `memory-prefetch-hints`: newer-toolchain clippy compliance (MSRV-stable
+  CI runs `-D warnings`): `iter::repeat_n`, collapsed condition,
+  `ParsedArgs` type alias, `vec!` → arrays in tests. No behavior change.
+- Semgrep `p/rust` CI: documented `nosemgrep` for the
+  `rust.lang.security.args.args` false positive on the binary's own argv
+  parse.
+- `atheneum-mcp`: default `ATHENEUM_DB` fallback path moved from
+  `~/.magellan` to `~/.hermes` to match the live database location
+  (already released as part of `a4439bc`; repo-only crate, not on
+  crates.io).
+
 ## [0.12.0] - 2026-07-21
 
 ### Added — `memory-prefetch-hints` binary (`atheneum` crate)
