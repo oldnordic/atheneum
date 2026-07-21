@@ -10,7 +10,7 @@ server, no envoy dependency required. Every subcommand takes the DB path as
 its first argument:
 
 ```bash
-DB="${ATHENEUM_DB:-$HOME/.magellan/atheneum/atheneum.db}"
+DB="${ATHENEUM_DB:-$HOME/.hermes/atheneum/atheneum.db}"
 atheneum <subcommand> "$DB" [args...]
 ```
 

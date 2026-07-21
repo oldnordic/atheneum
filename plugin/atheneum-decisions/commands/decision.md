@@ -23,7 +23,7 @@ Otherwise run this bash block, substituting the parsed values. Keep `source` as
 live atheneum DB (falls back to the default path).
 
 ```bash
-DB="${ATHENEUM_DB:-$HOME/.magellan/atheneum/atheneum.db}"
+DB="${ATHENEUM_DB:-$HOME/.hermes/atheneum/atheneum.db}"
 T=$(mktemp --suffix=.json)
 cat > "$T" <<JSON
 {"source":"skill","chosen":"<CHOSEN>","alternatives":[],"rationale":"<RATIONALE>","target":"<TARGET>"}

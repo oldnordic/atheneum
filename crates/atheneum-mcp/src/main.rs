@@ -35,7 +35,7 @@ async fn main() -> anyhow::Result<()> {
         #[cfg(feature = "direct")]
         {
             let db_path = std::env::var("ATHENEUM_DB")
-                .unwrap_or_else(|_| "~/.magellan/atheneum/atheneum.db".to_string());
+                .unwrap_or_else(|_| "~/.hermes/atheneum/atheneum.db".to_string());
             let expanded = shellexpand::tilde(&db_path).to_string();
             let path = std::path::PathBuf::from(&expanded);
             tracing::info!(

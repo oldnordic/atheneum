@@ -627,7 +627,7 @@ extract-decisions --all --dry-run
 ```
 
 Options: `--db PATH` (default `$ATHENEUM_DB` or
-`~/.magellan/atheneum/atheneum.db`), `--project NAME`, `--agent NAME`
+`~/.hermes/atheneum/atheneum.db`), `--project NAME`, `--agent NAME`
 (default `claude`), `--model NAME` (default `qwen3.5`), `--transcripts-dir`,
 `--max-chars N` (per-chunk cap, default 20000), `--force`, `--verbose`.
 
@@ -1297,7 +1297,7 @@ cd ~/Projects/magellan
 magellan watch --root ./src --db ~/.magellan/magellan/magellan.db --scan-initial
 
 cd ~/Projects/atheneum
-magellan watch --root ./src --db ~/.magellan/atheneum/atheneum.db --scan-initial
+magellan watch --root ./src --db ~/.hermes/atheneum/atheneum.db --scan-initial
 ```
 
 **Step 2 — Atheneum sees them automatically (no registration needed):**
@@ -1316,7 +1316,7 @@ atheneum meta-register magellan ~/Projects/magellan \
   ~/.magellan/magellan/magellan.db --language rust
 
 atheneum meta-register atheneum ~/Projects/atheneum \
-  ~/.magellan/atheneum/atheneum.db --language rust
+  ~/.hermes/atheneum/atheneum.db --language rust
 ```
 
 **Step 3 — Search across all three projects for "build_router":**

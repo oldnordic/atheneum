@@ -32,7 +32,7 @@ the `<ALT...>` entries, and `<RATIONALE>`. Keep `source` as `"skill"`.
 atheneum DB (falls back to the default path).
 
 ```bash
-DB="${ATHENEUM_DB:-$HOME/.magellan/atheneum/atheneum.db}"
+DB="${ATHENEUM_DB:-$HOME/.hermes/atheneum/atheneum.db}"
 T=$(mktemp --suffix=.json)
 cat > "$T" <<JSON
 {"source":"skill","chosen":"<CHOSEN>","alternatives":["<ALT1>","<ALT2>"],"rationale":"<RATIONALE>","target":"<TARGET>"}

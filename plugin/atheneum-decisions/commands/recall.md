@@ -13,14 +13,14 @@ lookup by key.
 **Exact lookup** (when `$ARGUMENTS` starts with `--key`):
 
 ```bash
-DB="${ATHENEUM_DB:-$HOME/.magellan/atheneum/atheneum.db}"
+DB="${ATHENEUM_DB:-$HOME/.hermes/atheneum/atheneum.db}"
 atheneum memory-get "$DB" "<key>"
 ```
 
 **Free-text search** (otherwise):
 
 ```bash
-DB="${ATHENEUM_DB:-$HOME/.magellan/atheneum/atheneum.db}"
+DB="${ATHENEUM_DB:-$HOME/.hermes/atheneum/atheneum.db}"
 atheneum search "$DB" "<query>" --k 8
 ```
 

@@ -23,7 +23,7 @@ by existing docs -- over-recording is as much noise as under-recording.
 ## How to record
 
 ```bash
-DB="${ATHENEUM_DB:-$HOME/.magellan/atheneum/atheneum.db}"
+DB="${ATHENEUM_DB:-$HOME/.hermes/atheneum/atheneum.db}"
 atheneum memory-store "$DB" "<key>" "<content>" --scope memory --project "<project>"
 ```
 

@@ -61,7 +61,7 @@ def main():
 
     db = os.environ.get("ATHENEUM_DB", "").strip()
     if not db:
-        db = str(Path.home() / ".magellan" / "atheneum" / "atheneum.db")
+        db = str(Path.home() / ".hermes" / "atheneum" / "atheneum.db")
     if not Path(db).is_file():
         return 0
 
