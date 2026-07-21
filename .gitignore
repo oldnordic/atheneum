@@ -25,3 +25,19 @@ Cargo.lock
 
 # Local agent hooks/scripts (machine-specific, not published)
 .claude/
+
+# Build/run logs
+*.log
+
+# Generated output (graphify skill, etc.)
+graphify-out/
+
+# Internal working docs (audits, research notes, specs) — not user-facing,
+# keep these local. If a doc under this naming belongs in the repo, move it
+# under docs/ with a real name instead of re-adding the pattern's match.
+/AUDIT_*.md
+/RESEARCH_*.md
+/SPEC_*.md
+
+# Raw session transcript exports — not user-facing
+docs/transcript-*
