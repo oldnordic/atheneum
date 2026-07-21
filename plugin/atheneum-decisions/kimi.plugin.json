@@ -1,0 +1,33 @@
+{
+  "name": "atheneum-decisions",
+  "version": "1.0.0",
+  "description": "Atheneum decision memory: session digests, memory prefetch hints, and a decision-record gate",
+  "skills": "./skills/",
+  "commands": "./commands/",
+  "sessionStart": {
+    "skill": "atheneum-cli"
+  },
+  "hooks": [
+    {
+      "event": "SessionStart",
+      "matcher": "startup|resume",
+      "command": "python3 ./hooks/kimi/session-bootstrap.py",
+      "timeout": 10
+    },
+    {
+      "event": "UserPromptSubmit",
+      "command": "python3 ./hooks/kimi/prefetch-hints.py",
+      "timeout": 10
+    },
+    {
+      "event": "Stop",
+      "command": "python3 ./hooks/kimi/decision-gate.py",
+      "timeout": 10
+    }
+  ],
+  "interface": {
+    "displayName": "Atheneum Decisions",
+    "shortDescription": "Decision memory via atheneum: digests, prefetch hints, record gate",
+    "developerName": "Luiz Spies"
+  }
+}
