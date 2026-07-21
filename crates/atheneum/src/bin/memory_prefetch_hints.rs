@@ -909,10 +909,10 @@ mod preview_tests {
 
     #[test]
     fn skip_gate_zero_weights_is_one_half() {
-        let features = vec![0.0_f64; 4];
-        let weights = vec![0.0_f64; 4];
-        let mean = vec![0.0_f64; 4];
-        let std = vec![1.0_f64; 4];
+        let features = [0.0_f64; 4];
+        let weights = [0.0_f64; 4];
+        let mean = [0.0_f64; 4];
+        let std = [1.0_f64; 4];
         let mut z = 0.0_f64;
         for ((w, x), (m, s)) in weights
             .iter()
