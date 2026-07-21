@@ -6,22 +6,43 @@ fn test_seed_memory_primitive() {
     let graph = AtheneumGraph::open_in_memory().expect("open");
 
     // 1. Seed some concept entities
-    graph.upsert_concept("Compiler Optimization", &json!({
-        "summary": "Transforms source code to execute more efficiently",
-        "scope": "project",
-        "project_id": "envoy"
-    })).unwrap();
+    graph
+        .upsert_concept(
+            "Compiler Optimization",
+            &json!({
+                "summary": "Transforms source code to execute more efficiently",
+                "scope": "project",
+                "project_id": "envoy"
+            }),
+        )
+        .unwrap();
 
-    graph.upsert_concept("Memory Allocator", &json!({
-        "summary": "Manages physical heap memory segments",
-        "scope": "global"
-    })).unwrap();
+    graph
+        .upsert_concept(
+            "Memory Allocator",
+            &json!({
+                "summary": "Manages physical heap memory segments",
+                "scope": "global"
+            }),
+        )
+        .unwrap();
 
     // Seed some memories
-    graph.store_memory("key1", "Vim preference details", "user", 1.0, None, None).unwrap();
+    graph
+        .store_memory("key1", "Vim preference details", "user", 1.0, None, None)
+        .unwrap();
     // sleep to guarantee different timestamps for sorting
     std::thread::sleep(std::time::Duration::from_millis(50));
-    graph.store_memory("key2", "Emacs preference details", "project", 0.9, Some("envoy"), None).unwrap();
+    graph
+        .store_memory(
+            "key2",
+            "Emacs preference details",
+            "project",
+            0.9,
+            Some("envoy"),
+            None,
+        )
+        .unwrap();
 
     // Seed a noise entity (ToolCall)
     graph.with_raw_connection(|conn| {

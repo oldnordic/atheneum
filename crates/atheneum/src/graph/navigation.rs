@@ -645,14 +645,10 @@ impl AtheneumGraph {
         })
     }
 
-    pub fn trace_query(
-        &self,
-        plan: &NavigateQueryPlan,
-        result_ids: &[i64],
-    ) -> Result<i64> {
+    pub fn trace_query(&self, plan: &NavigateQueryPlan, result_ids: &[i64]) -> Result<i64> {
         let started_at = chrono::Utc::now().to_rfc3339();
         let finished_at = chrono::Utc::now().to_rfc3339();
-        
+
         let data = serde_json::json!({
             "plan": plan,
             "result_ids": result_ids,
@@ -670,12 +666,21 @@ impl AtheneumGraph {
         })?;
 
         for &to_id in result_ids {
-            self.insert_edge(trace_id, to_id, EdgeType::ProducedBy, serde_json::Value::Null)?;
+            self.insert_edge(
+                trace_id,
+                to_id,
+                EdgeType::ProducedBy,
+                serde_json::Value::Null,
+            )?;
         }
 
         Ok(trace_id)
     }
 
+    // reason: mirrors `navigate`'s existing 6-argument signature plus `trace`;
+    // splitting into a params struct would ripple through CLI and MCP call
+    // sites for one extra bool.
+    #[allow(clippy::too_many_arguments)]
     pub fn navigate_with_trace(
         &self,
         query: &str,

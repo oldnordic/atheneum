@@ -7,16 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-21
+
 ### Added
 
+- **`update_memory`** (`AtheneumGraph::update_memory`, CLI `memory-update`,
+  MCP `update_memory`): patch an existing memory's content/importance/tags
+  in place instead of forcing every correction into a new row.
+- **`upsert_memory_by_concept`** + MCP `add_memory`: enrich-before-create —
+  patches the owning concept if one exists, creates it otherwise.
+- **`insert_edge_pair`**: forward edge + reciprocal in one call, using the
+  standard ontology pairs (`attached_to`↔`has_memory`, `related_to`↔
+  `related_to`, `verified_by`↔`verifies`, `superseded_by`↔`supersedes`).
+- **`lint_graph` / `maintain`** (CLI `lint`, `maintain --apply`; MCP
+  `maintain`): read-only graph-health lint (orphans, broken wikilinks, stale
+  `superseded_by` edges) plus a mutating pass that rewires orphans, stubs or
+  severs broken links, and resolves flagged contradictions.
+- **`seed_memory`** (MCP `seed_memory`): token-bounded, concept-grouped
+  summary of the knowledge base. `atheneum-mcp` regenerates it on every
+  session connect and injects it into the server `instructions` field and
+  the `navigate`/`query_memory`/`search` tool descriptions.
+- **Query tracing** (`trace_query`, `QueryTrace`, `navigate --trace`, CLI
+  `trace-get`): records a navigation query's plan and result ids for replay.
+- **`dream_if_idle`**: runs consolidation only when no writes occurred within
+  a given idle threshold, safe to call from a periodic scheduler.
+- **`semantic_consolidation`** (CLI `dream-semantic`, MCP `dream_semantic`):
+  merges closely-related/redundant concepts via a local language-model
+  prompt when one is reachable, lexical-similarity fallback otherwise;
+  rewires the loser's edges onto the winner instead of dropping them.
+- **Memory pinning + TTL** (`pin_entity`/`unpin_entity`, CLI `pin`/`unpin`,
+  MCP `pin_entity`/`unpin_entity`): pinned entities always appear in
+  `seed_memory` and are immune to cache eviction; `maintain` archives
+  memories past their configured TTL.
+- **Local-model discovery + swap guard** (`discover_available_models`, CLI
+  `models-list`, MCP `list_models`, `SwapGuardMode`): finds what's loaded on
+  a local model server so consolidation doesn't force an unwanted swap on a
+  shared GPU; `SwapGuardMode` controls the fallback (lexical, adapt, or
+  strict-fail).
+- **Dashboard web UI** (CLI `dashboard`, `web-ui` feature, off by default):
+  Axum server exposing the graph, query traces, and flagged
+  orphans/contradictions over HTTP.
 - **`wiki-search` CLI command**: Full-text search over wiki pages via FTS5.
   Previously 661 wiki pages were unsearchable from the CLI.
 - **`decision-search` CLI command**: Content search over Decision discoveries
   by target/chosen/why text. Previously 381 decisions were only listable
   chronologically, not searchable by content.
 
+### Security
+
+- **`sqlitegraph` 3.9.0** transitively adds `rio` on Linux (unfixed critical
+  `RUSTSEC-2020-0021`, use-after-free on a leaked future). Only exercised by
+  sqlitegraph's non-default `native-v3` feature, which this workspace never
+  enables — compiled but unreachable. CI's `cargo audit` explicitly ignores
+  this advisory with that justification rather than silently passing.
+
 ### Fixed
 
+- **`seed_memory` noise filtering**: `Agent`/`Call` entities and entities
+  with empty summary/content/body no longer render as bare `- name: ` lines
+  in the seed summary.
+- **`seed_memory` token-budget starvation**: concepts render first and could
+  consume the whole budget before Recent Memories got a chance. Now reserves
+  up to a third of the remaining budget (min 60 tokens) for memories first.
+- **Stale `sqlitegraph` lockfile pin**: `Cargo.lock` was pinned to a
+  resolution with 6 of the crate's now-10 schema migrations, well behind
+  the 3.9.0 already on crates.io. Binaries built against the stale pin
+  couldn't open databases written by a newer `sqlitegraph` —
+  `atheneum-mcp` failed to start at all (`schema error: database schema
+  version N is newer than supported 6`). `cargo update -p sqlitegraph`
+  repins to the current release; no dependency requirement changed.
 - **`query-wiki` partial path matching**: Falls back to `LIKE '%<path>%'`
   contains-match when exact path returns no results.
 - **`memory-bootstrap` excludes session noise**: Filters `scope NOT LIKE

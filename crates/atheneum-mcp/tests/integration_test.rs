@@ -45,17 +45,13 @@ impl backend::Backend for MockBackend {
         // the route + schema are wired.
         Ok(json!({"memory_id": p.id, "echoed": true}))
     }
-    async fn add_memory(
-        &self,
-        p: backend::AddMemoryParams,
-    ) -> anyhow::Result<serde_json::Value> {
+    async fn add_memory(&self, p: backend::AddMemoryParams) -> anyhow::Result<serde_json::Value> {
         Ok(json!({"memory_id": 8, "concept": p.concept, "action": "CREATED"}))
     }
-    async fn maintain(
-        &self,
-        p: backend::MaintainParams,
-    ) -> anyhow::Result<serde_json::Value> {
-        Ok(json!({"orphans_rewired": 0, "broken_links_resolved": 0, "contradictions_superseded": 0, "stale_superseded_pruned": 0, "apply": p.apply}))
+    async fn maintain(&self, p: backend::MaintainParams) -> anyhow::Result<serde_json::Value> {
+        Ok(
+            json!({"orphans_rewired": 0, "broken_links_resolved": 0, "contradictions_superseded": 0, "stale_superseded_pruned": 0, "expired_memories_pruned": 0, "apply": p.apply}),
+        )
     }
     async fn query_memory(
         &self,
@@ -173,6 +169,21 @@ impl backend::Backend for MockBackend {
     ) -> anyhow::Result<serde_json::Value> {
         Ok(json!({"findings": []}))
     }
+    async fn list_models(&self) -> anyhow::Result<serde_json::Value> {
+        Ok(serde_json::json!([]))
+    }
+    async fn dream_semantic(
+        &self,
+        _params: backend::DreamSemanticParams,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(serde_json::json!({ "merges_completed": 0, "details": [] }))
+    }
+    async fn pin_entity(&self, id: i64) -> anyhow::Result<serde_json::Value> {
+        Ok(serde_json::json!({ "status": "success", "id": id, "pinned": true }))
+    }
+    async fn unpin_entity(&self, id: i64) -> anyhow::Result<serde_json::Value> {
+        Ok(serde_json::json!({ "status": "success", "id": id, "pinned": false }))
+    }
 }
 
 async fn send_json(w: &mut tokio::io::WriteHalf<tokio::io::DuplexStream>, msg: serde_json::Value) {
@@ -256,7 +267,7 @@ async fn mcp_server_initializes_and_lists_tools() {
     assert!(names.contains(&"add_memory"));
     assert!(names.contains(&"maintain"));
     assert!(names.contains(&"seed_memory"));
-    assert_eq!(tools.len(), 25);
+    assert_eq!(tools.len(), 29);
 
     // Call graph_stats tool
     send_json(
@@ -589,7 +600,9 @@ async fn mcp_direct_backend_round_trip() {
     .await;
     let enrich_resp = recv_json(&mut client_reader).await;
     assert_eq!(enrich_resp["id"], 102);
-    let enrich_text = enrich_resp["result"]["content"][0]["text"].as_str().unwrap();
+    let enrich_text = enrich_resp["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
     let enrich_val: serde_json::Value = serde_json::from_str(enrich_text).unwrap();
     assert_eq!(
         enrich_val["action"].as_str(),
@@ -624,7 +637,9 @@ async fn mcp_direct_backend_round_trip() {
     .await;
     let maintain_resp = recv_json(&mut client_reader).await;
     assert_eq!(maintain_resp["id"], 103);
-    let maintain_text = maintain_resp["result"]["content"][0]["text"].as_str().unwrap();
+    let maintain_text = maintain_resp["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
     let maintain_val: serde_json::Value = serde_json::from_str(maintain_text).unwrap();
     assert_eq!(maintain_val["broken_links_resolved"].as_u64(), Some(0));
 

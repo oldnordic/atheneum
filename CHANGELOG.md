@@ -7,6 +7,117 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-21
+
+### Added — Librarian primitives (closes the local-memory gap analysis)
+
+- **`update_memory`** (`AtheneumGraph::update_memory`, CLI `memory-update`, MCP
+  `update_memory`): patch an existing memory's content/importance/tags in
+  place instead of forcing every correction to become a new row.
+- **`upsert_memory_by_concept`** + MCP `add_memory`: enrich-before-create —
+  finds the concept a fact belongs to and patches it, or creates the concept
+  and memory together if it doesn't exist yet.
+- **`insert_edge_pair`**: inserts a forward edge plus its reciprocal in one
+  call (`attached_to`↔`has_memory`, `related_to`↔`related_to`,
+  `verified_by`↔`verifies`, `superseded_by`↔`supersedes`), so new concepts
+  are no longer islands unless the caller forgets the second edge.
+- **`lint_graph` / `maintain`** (CLI `lint`, `maintain --apply`; MCP
+  `maintain`): deterministic graph-health lint flags orphans, broken
+  wikilinks, and stale `superseded_by` edges; `maintain` auto-rewires orphans
+  to their closest concept, stubs or severs broken links, and resolves
+  flagged contradictions by superseding the old fact rather than leaving both
+  versions live.
+- **`seed_memory`** (CLI `session-digest`-adjacent, MCP `seed_memory`): a
+  compact, token-bounded summary of what's in the knowledge base, grouped by
+  concept rather than file name. `atheneum-mcp` now regenerates this on every
+  session connect and injects it into the server `instructions` field and the
+  `navigate`/`query_memory`/`search` tool descriptions, so a connecting
+  client knows what's in memory before it asks — closing the "flying blind"
+  failure mode where a client never thought to check memory because it had
+  no idea anything useful was there.
+- **Query tracing** (`trace_query`, `QueryTrace` entities, `navigate --trace`,
+  CLI `trace-get`): records the plan and result ids of a navigation query so
+  a past query can be replayed and inspected.
+- **`dream_if_idle`**: runs a consolidation pass only if no writes have
+  occurred within a given idle threshold, so dream can be safely wired into
+  a periodic scheduler without racing live writers.
+- **`semantic_consolidation`** (CLI `dream-semantic`, MCP `dream_semantic`):
+  merges closely-related or redundant concepts (e.g. two profiles for the
+  same person under different names) using a local language-model prompt
+  when one is reachable, with a lexical-similarity fallback when it isn't.
+  The superseded concept's edges are rewired onto the surviving one rather
+  than dropped.
+- **Memory pinning + TTL** (`pin_entity`/`unpin_entity`, CLI `pin`/`unpin`,
+  MCP `pin_entity`/`unpin_entity`): pinned entities are always included in
+  `seed_memory` regardless of token budget or recency, and are immune to
+  cache eviction. `maintain` archives memories past their configured TTL.
+- **Local-model discovery + swap guard** (`discover_available_models`, CLI
+  `models-list`, MCP `list_models`, `SwapGuardMode` config): queries a local
+  model server for what's currently loaded so model-dependent operations
+  (like semantic consolidation) don't force an unwanted model swap on a
+  shared GPU. `SwapGuardMode` picks the behavior when the preferred model
+  isn't loaded: fall back to a lexical check (default), adapt to whatever is
+  loaded, or fail closed in `strict` mode.
+- **Dashboard web UI** (CLI `dashboard`, `web-ui` Cargo feature, off by
+  default): an Axum server exposing the graph, query traces, and flagged
+  orphans/contradictions over HTTP for inspection outside the CLI.
+- **`wiki-search` CLI command** (`crates/atheneum/src/main.rs`,
+  `crates/atheneum/src/graph/wiki.rs`): Full-text search over wiki pages using
+  the existing `wiki_pages_fts` FTS5 index. Previously, 661 wiki pages were
+  completely unsearchable from the CLI — `query-wiki` required the exact full
+  filesystem path. The new `wiki-search <db> <query> [--project P] [--limit N]`
+  command queries the FTS5 index and falls back to name-based matching when FTS
+  returns no hits.
+- **`decision-search` CLI command** (`crates/atheneum/src/main.rs`,
+  `crates/atheneum/src/graph/discovery.rs`): Content search over Decision
+  discoveries by `target`, `chosen`, and `why` text fields. Previously, 381
+  decisions were only reachable via `discoveries-recent --type Decision`
+  (chronological list, not searchable by content).
+
+### Security
+
+- **`sqlitegraph` bumped to 3.9.0** (from a lockfile stuck on an old
+  resolution, see below) transitively adds `rio` on Linux, which carries an
+  unfixed critical advisory (`RUSTSEC-2020-0021`, use-after-free on a leaked
+  future). `rio` is only exercised by sqlitegraph's non-default `native-v3`
+  backend feature; this workspace uses only the default `sqlite-backend`, so
+  the vulnerable code path is compiled but unreachable. CI's `cargo audit`
+  step now explicitly ignores this advisory with that justification
+  (`.github/workflows/ci.yml`) rather than silently passing or blocking the
+  release. Revisit once sqlitegraph makes `rio` optional.
+
+### Fixed
+
+- **`seed_memory` noise filtering**: `Agent` and `Call` entities (agent
+  registration records, raw call-graph edges) were appearing in the seed
+  summary as bare `- name: ` lines with no content — structural
+  graph-plumbing, not knowledge. Both kinds are now excluded, along with any
+  entity whose summary/content/body is empty.
+- **`seed_memory` token-budget starvation**: concepts render before recent
+  memories and, with enough of them, could consume the entire token budget
+  before memories ever got a chance to render. `seed_memory` now reserves up
+  to a third of the remaining budget (minimum 60 tokens) for Recent Memories
+  before concepts are allowed to spend it.
+- **Stale `sqlitegraph` lockfile pin**: `Cargo.lock` had `sqlitegraph`
+  pinned to an old resolution with only 6 of the crate's now-10 schema
+  migrations, well behind what's actually published on crates.io (3.9.0).
+  Any database written by a newer `sqlitegraph` (including this workspace's
+  own CLI) could no longer be opened by binaries still linked against the
+  stale pin — `atheneum-mcp` in particular failed to start at all
+  (`schema error: database schema version N is newer than supported 6`),
+  silently dropping it from any MCP client's server list. `cargo update -p
+  sqlitegraph` repins to the current registry release; no dependency
+  requirement changed.
+- **`query-wiki` now supports partial path matching** (`crates/atheneum/src/
+  graph/wiki.rs`): Previously required the exact full filesystem path. Now falls
+  back to a `LIKE '%<path>%'` contains-match when exact match returns no results.
+- **`memory-bootstrap` excludes session-scoped noise** (`crates/atheneum/src/
+  graph/memory.rs`): Previously fetched ALL entries including low-confidence
+  session-scoped chat logs (scope LIKE `session:%`) that crowded out durable
+  memories in the token budget. Now filters `scope NOT LIKE 'session:%'`.
+- **`journal_sections` table populated**: Was empty (0 rows) because
+  `sync-journal` had never been run. Ran sync — 17 journal sections ingested.
+
 ### fix(wiki): wiki_search returns empty when project filter given
 
 Root cause: all 661 wiki pages have `project_id = NULL` (unscoped). The FTS
@@ -32,36 +143,6 @@ Verified:
   Callers can now partition memory by scope/project.
 - **query_memory accepts optional scope and project filters** plus deprecated
   `query` as a backward-compatible alias for `key`.
-
-### Added
-
-- **`wiki-search` CLI command** (`crates/atheneum/src/main.rs`,
-  `crates/atheneum/src/graph/wiki.rs`): Full-text search over wiki pages using
-  the existing `wiki_pages_fts` FTS5 index. Previously, 661 wiki pages were
-  completely unsearchable from the CLI — `query-wiki` required the exact full
-  filesystem path. The new `wiki-search <db> <query> [--project P] [--limit N]`
-  command queries the FTS5 index and falls back to name-based matching when FTS
-  returns no hits.
-
-- **`decision-search` CLI command** (`crates/atheneum/src/main.rs`,
-  `crates/atheneum/src/graph/discovery.rs`): Content search over Decision
-  discoveries by `target`, `chosen`, and `why` text fields. Previously, 381
-  decisions were only reachable via `discoveries-recent --type Decision`
-  (chronological list, not searchable by content).
-
-### Fixed
-
-- **`query-wiki` now supports partial path matching** (`crates/atheneum/src/
-  graph/wiki.rs`): Previously required the exact full filesystem path. Now falls
-  back to a `LIKE '%<path>%'` contains-match when exact match returns no results.
-
-- **`memory-bootstrap` excludes session-scoped noise** (`crates/atheneum/src/
-  graph/memory.rs`): Previously fetched ALL entries including low-confidence
-  session-scoped chat logs (scope LIKE `session:%`) that crowded out durable
-  memories in the token budget. Now filters `scope NOT LIKE 'session:%'`.
-
-- **`journal_sections` table populated**: Was empty (0 rows) because
-  `sync-journal` had never been run. Ran sync — 17 journal sections ingested.
 
 ## [0.10.0] - 2026-06-27
 

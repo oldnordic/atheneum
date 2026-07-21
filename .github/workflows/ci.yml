@@ -40,7 +40,14 @@ jobs:
         uses: taiki-e/install-action@cargo-audit
 
       - name: cargo audit
-        run: cargo audit
+        # RUSTSEC-2020-0021 (rio, critical, no fixed upgrade available):
+        # transitive via sqlitegraph >=3.5.0's `native-v3` async I/O backend
+        # (Linux-only, non-optional dependency). atheneum uses sqlitegraph's
+        # default `sqlite-backend` only — the `native-v3` feature that
+        # exercises rio is never enabled, so the vulnerable code path is
+        # compiled but unreachable. Revisit once sqlitegraph makes rio
+        # optional behind the native-v3 feature.
+        run: cargo audit --ignore RUSTSEC-2020-0021
 
   test:
     name: Tests

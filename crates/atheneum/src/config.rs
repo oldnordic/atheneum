@@ -20,6 +20,15 @@ pub enum LlmProvider {
     Custom,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SwapGuardMode {
+    Strict,
+    #[default]
+    Fallback,
+    Adapt,
+}
+
 /// LLM configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
@@ -28,6 +37,8 @@ pub struct LlmConfig {
     pub model: String,
     #[serde(default)]
     pub api_key: String,
+    #[serde(default)]
+    pub swap_guard: SwapGuardMode,
 }
 
 impl Default for LlmConfig {
@@ -37,6 +48,7 @@ impl Default for LlmConfig {
             base_url: "http://localhost:11434".to_string(),
             model: "codellama".to_string(),
             api_key: String::new(),
+            swap_guard: SwapGuardMode::Fallback,
         }
     }
 }

@@ -11,7 +11,7 @@ use serde_json::json;
 use sqlitegraph::GraphEntity;
 use std::collections::{HashMap, HashSet};
 
-use super::{AtheneumGraph, EdgeType, WikiPage};
+use super::{cache::CacheDomain, AtheneumGraph, EdgeType, WikiPage};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -423,7 +423,7 @@ impl AtheneumGraph {
 
         // Pass 2b: Batched Jaccard similarity on deduped set
         const BATCH_SIZE: usize = 50;
-        let total_batches = (deduped_pages.len() + BATCH_SIZE - 1) / BATCH_SIZE;
+        let total_batches = deduped_pages.len().div_ceil(BATCH_SIZE);
 
         for batch_num in 0..total_batches {
             let batch_start = batch_num * BATCH_SIZE;
@@ -583,7 +583,8 @@ impl AtheneumGraph {
 
         if let Some(lw) = last_write {
             if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&lw) {
-                let elapsed = chrono::Utc::now().signed_duration_since(dt.with_timezone(&chrono::Utc));
+                let elapsed =
+                    chrono::Utc::now().signed_duration_since(dt.with_timezone(&chrono::Utc));
                 if elapsed.num_seconds() < threshold_secs as i64 {
                     return Ok(None);
                 }
@@ -595,6 +596,233 @@ impl AtheneumGraph {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConsolidationConfig {
+    pub similarity_threshold: f64,
+    pub model: String,
+    pub ollama_url: String,
+    pub swap_guard: crate::config::SwapGuardMode,
+}
+
+impl Default for ConsolidationConfig {
+    fn default() -> Self {
+        Self {
+            similarity_threshold: 0.4,
+            model: "gemma4:e2b".to_string(),
+            ollama_url: "http://127.0.0.1:11434".to_string(),
+            swap_guard: crate::config::SwapGuardMode::Fallback,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConsolidationReport {
+    pub merges_completed: usize,
+    pub details: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct LlmMergeResponse {
+    should_merge: bool,
+    keeper_name: String,
+    keeper_description: String,
+}
+
+impl AtheneumGraph {
+    pub fn semantic_consolidation(
+        &self,
+        config: &ConsolidationConfig,
+    ) -> Result<ConsolidationReport> {
+        let concepts = self.entities_by_kind("Concept")?;
+        let active_concepts: Vec<_> = concepts
+            .into_iter()
+            .filter(|c| c.data.get("superseded_at").is_none())
+            .collect();
+
+        let mut merges_completed = 0;
+        let mut details = Vec::new();
+        let mut superseded_ids = std::collections::HashSet::new();
+
+        let model_run_result = self.apply_swap_guard(&config.model, config.swap_guard);
+        let use_llm = match model_run_result {
+            Ok(_) => true,
+            Err(e) => {
+                if config.swap_guard == crate::config::SwapGuardMode::Strict {
+                    return Err(anyhow::anyhow!(e));
+                }
+                false
+            }
+        };
+
+        for i in 0..active_concepts.len() {
+            let ca = &active_concepts[i];
+            if superseded_ids.contains(&ca.id) {
+                continue;
+            }
+
+            for cb in active_concepts.iter().skip(i + 1) {
+                if superseded_ids.contains(&cb.id) {
+                    continue;
+                }
+
+                let sim = jaccard_similarity(&ca.name, &cb.name);
+                if sim >= config.similarity_threshold {
+                    let mut should_merge = false;
+                    let mut keeper_name = ca.name.clone();
+                    let mut keeper_description = ca
+                        .data
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    if use_llm {
+                        if let Ok(decision) = self.query_llm_for_merge(ca, cb, config) {
+                            should_merge = decision.should_merge;
+                            if should_merge {
+                                keeper_name = decision.keeper_name;
+                                keeper_description = decision.keeper_description;
+                            }
+                        }
+                    } else {
+                        if sim >= 0.8 {
+                            should_merge = true;
+                            let desc_b = cb
+                                .data
+                                .get("description")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            if !desc_b.is_empty() {
+                                if keeper_description.is_empty() {
+                                    keeper_description = desc_b.to_string();
+                                } else if !keeper_description.contains(desc_b) {
+                                    keeper_description =
+                                        format!("{}; {}", keeper_description, desc_b);
+                                }
+                            }
+                        }
+                    }
+
+                    if should_merge {
+                        self.execute_semantic_merge(
+                            ca.id,
+                            cb.id,
+                            &keeper_name,
+                            &keeper_description,
+                        )?;
+                        superseded_ids.insert(cb.id);
+                        merges_completed += 1;
+                        details.push(format!(
+                            "Merged [{}] '{}' and [{}] '{}' -> '{}'",
+                            ca.id, ca.name, cb.id, cb.name, keeper_name
+                        ));
+                    }
+                }
+            }
+        }
+
+        Ok(ConsolidationReport {
+            merges_completed,
+            details,
+        })
+    }
+
+    fn query_llm_for_merge(
+        &self,
+        a: &sqlitegraph::GraphEntity,
+        b: &sqlitegraph::GraphEntity,
+        config: &ConsolidationConfig,
+    ) -> Result<LlmMergeResponse> {
+        let prompt = format!(
+            "You are the Atheneum Librarian. Determine if these two concepts refer to the same entity or topic.\n\
+             Concept A: Name: '{}', Description: '{}'\n\
+             Concept B: Name: '{}', Description: '{}'\n\n\
+             If they refer to the same thing, set 'should_merge': true, suggest a unified 'keeper_name', and a unified 'keeper_description'.\n\
+             Otherwise set 'should_merge': false.\n\
+             Return raw JSON strictly matching this schema: {{ \"should_merge\": bool, \"keeper_name\": \"string\", \"keeper_description\": \"string\" }}",
+            a.name, a.data.get("description").and_then(|v| v.as_str()).unwrap_or(""),
+            b.name, b.data.get("description").and_then(|v| v.as_str()).unwrap_or("")
+        );
+
+        let resp: serde_json::Value = ureq::post(&format!("{}/api/generate", config.ollama_url))
+            .send_json(serde_json::json!({
+                "model": config.model,
+                "prompt": prompt,
+                "stream": false,
+                "format": "json",
+                "options": { "temperature": 0.1 }
+            }))?
+            .into_json()?;
+
+        let raw_res = resp
+            .get("response")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Empty response"))?;
+        let parsed: LlmMergeResponse = serde_json::from_str(raw_res)?;
+        Ok(parsed)
+    }
+
+    pub fn execute_semantic_merge(
+        &self,
+        keeper_id: i64,
+        loser_id: i64,
+        _new_name: &str,
+        new_desc: &str,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // 1. Update winner concept data
+        let mut winner = self.get_entity(keeper_id)?;
+        if let Some(obj) = winner.data.as_object_mut() {
+            obj.insert(
+                "description".to_string(),
+                serde_json::Value::String(new_desc.to_string()),
+            );
+            obj.insert(
+                "updated_at".to_string(),
+                serde_json::Value::String(now.clone()),
+            );
+        }
+        self.update_entity_data(keeper_id, &winner.data)?;
+
+        // 2. Mark loser as superseded
+        let mut loser = self.get_entity(loser_id)?;
+        if let Some(obj) = loser.data.as_object_mut() {
+            obj.insert(
+                "superseded_at".to_string(),
+                serde_json::Value::String(now.clone()),
+            );
+            obj.insert("superseded_by".to_string(), serde_json::json!(keeper_id));
+        }
+        self.update_entity_data(loser_id, &loser.data)?;
+
+        // 3. Create superseded_by relation from loser to winner
+        self.insert_edge(
+            loser_id,
+            keeper_id,
+            EdgeType::SupersededBy,
+            serde_json::json!({ "reason": "semantic_dream" }),
+        )?;
+
+        // 4. Rewire all incoming and outgoing edges of the loser to the winner
+        self.with_raw_connection(|conn| {
+            conn.execute(
+                "UPDATE graph_edges SET from_id = ?1 WHERE from_id = ?2",
+                rusqlite::params![keeper_id, loser_id],
+            )?;
+            conn.execute(
+                "UPDATE graph_edges SET to_id = ?1 WHERE to_id = ?2",
+                rusqlite::params![keeper_id, loser_id],
+            )?;
+            Ok::<(), anyhow::Error>(())
+        })?;
+
+        // 5. Invalidate caches
+        self.runtime.bump_generation(CacheDomain::Memory);
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -602,6 +830,7 @@ impl AtheneumGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{LintConfig, MaintainConfig};
 
     #[test]
     fn trigram_jaccard_identical() {
@@ -979,16 +1208,281 @@ mod tests {
     #[test]
     fn test_dream_if_idle() {
         let graph = AtheneumGraph::open_in_memory().unwrap();
-        
+
         // Seed a memory with current timestamp
-        graph.store_memory("key", "val1", "user", 1.0, None, None).unwrap();
-        
+        graph
+            .store_memory("key", "val1", "user", 1.0, None, None)
+            .unwrap();
+
         // dream_if_idle with threshold=10 should return None (just written)
         let res = graph.dream_if_idle(10).unwrap();
         assert!(res.is_none());
-        
+
         // dream_if_idle with threshold=0 should run
         let res2 = graph.dream_if_idle(0).unwrap();
         assert!(res2.is_some());
+    }
+
+    #[test]
+    fn test_execute_semantic_merge_rewires_edges() {
+        let graph = AtheneumGraph::open_in_memory().unwrap();
+
+        // 1. Create winner and loser concept
+        let keeper_id = graph
+            .store_memory(
+                "Winner Concept",
+                "Some content",
+                "Winner desc",
+                1.0,
+                None,
+                None,
+            )
+            .unwrap();
+        let loser_id = graph
+            .store_memory(
+                "Loser Concept",
+                "Some content",
+                "Loser desc",
+                1.0,
+                None,
+                None,
+            )
+            .unwrap();
+
+        // 2. Add some third entity
+        let related_id = graph
+            .store_memory(
+                "Related Concept",
+                "Some content",
+                "Related desc",
+                1.0,
+                None,
+                None,
+            )
+            .unwrap();
+
+        // 3. Connect related entity to loser
+        graph
+            .insert_edge(
+                related_id,
+                loser_id,
+                EdgeType::RelatedTo,
+                serde_json::json!({}),
+            )
+            .unwrap();
+
+        // 4. Run semantic merge
+        graph
+            .execute_semantic_merge(keeper_id, loser_id, "Winner Concept", "New description")
+            .unwrap();
+
+        // 5. Verify loser is superseded
+        let loser_entity = graph.get_entity(loser_id).unwrap();
+        assert!(loser_entity.data.get("superseded_at").is_some());
+        assert_eq!(
+            loser_entity.data.get("superseded_by").unwrap(),
+            &serde_json::json!(keeper_id)
+        );
+
+        // 6. Verify edges pointing to loser are rewired to winner
+        let incoming_edges = graph.incoming_edges(keeper_id).unwrap();
+        let has_rewired = incoming_edges
+            .iter()
+            .any(|e| e.from_id == related_id && e.edge_type == "related_to");
+        assert!(has_rewired, "Edge should be rewired to winner");
+
+        // 7. Verify new description is set on winner
+        let winner_entity = graph.get_entity(keeper_id).unwrap();
+        assert_eq!(
+            winner_entity
+                .data
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap(),
+            "New description"
+        );
+    }
+
+    #[test]
+    fn test_semantic_consolidation_lexical_fallback() {
+        let graph = AtheneumGraph::open_in_memory().unwrap();
+
+        let entity_a = sqlitegraph::GraphEntity {
+            id: 0,
+            kind: "Concept".to_string(),
+            name: "Lexical Concept Test One".to_string(),
+            file_path: None,
+            data: serde_json::json!({
+                "description": "Desc A"
+            }),
+        };
+        let keeper_id = graph.inner.insert_entity(&entity_a).unwrap();
+
+        let entity_b = sqlitegraph::GraphEntity {
+            id: 0,
+            kind: "Concept".to_string(),
+            name: "Lexical Concept Test On".to_string(),
+            file_path: None,
+            data: serde_json::json!({
+                "description": "Desc B"
+            }),
+        };
+        let loser_id = graph.inner.insert_entity(&entity_b).unwrap();
+
+        let config = ConsolidationConfig {
+            similarity_threshold: 0.7,
+            model: "gemma4:e2b".to_string(),
+            ollama_url: "http://invalid-url-to-trigger-offline-fallback.local".to_string(),
+            swap_guard: crate::config::SwapGuardMode::Fallback,
+        };
+
+        let report = graph.semantic_consolidation(&config).unwrap();
+        assert_eq!(report.merges_completed, 1);
+
+        let loser_entity = graph.get_entity(loser_id).unwrap();
+        assert!(loser_entity.data.get("superseded_at").is_some());
+        assert_eq!(
+            loser_entity.data.get("superseded_by").unwrap(),
+            &serde_json::json!(keeper_id)
+        );
+    }
+
+    #[test]
+    fn test_pinning_and_unpinning() {
+        let graph = AtheneumGraph::open_in_memory().unwrap();
+
+        let id = graph
+            .store_memory("Concept A", "Content A", "Desc A", 1.0, None, None)
+            .unwrap();
+
+        // Check initial pinned state (should be false/absent)
+        let ent = graph.get_entity(id).unwrap();
+        assert!(!ent
+            .data
+            .get("pinned")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false));
+
+        // Pin entity
+        graph.pin_entity(id).unwrap();
+        let ent2 = graph.get_entity(id).unwrap();
+        assert!(ent2
+            .data
+            .get("pinned")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false));
+
+        // Unpin entity
+        graph.unpin_entity(id).unwrap();
+        let ent3 = graph.get_entity(id).unwrap();
+        assert!(!ent3
+            .data
+            .get("pinned")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false));
+    }
+
+    #[test]
+    fn test_seed_memory_prioritizes_pinned_items() {
+        let graph = AtheneumGraph::open_in_memory().unwrap();
+
+        // Insert concept A, concept B, and concept C
+        let _id_a = graph
+            .store_memory("Concept A", "Content A", "Desc A", 1.0, None, None)
+            .unwrap();
+        let id_b = graph
+            .store_memory("Concept B", "Content B", "Desc B", 1.0, None, None)
+            .unwrap();
+        let _id_c = graph
+            .store_memory("Concept C", "Content C", "Desc C", 1.0, None, None)
+            .unwrap();
+
+        // Pin concept B
+        graph.pin_entity(id_b).unwrap();
+
+        // Generate seed memory with a very tight budget (e.g. 100 tokens) to ensure sorting puts B first
+        let seed = graph.seed_memory(None, 100).unwrap();
+        assert!(seed
+            .instructions
+            .contains("### Pinned Memories\n- [PINNED MEMORY] Concept B:"));
+    }
+
+    #[test]
+    fn test_ttl_expiry_and_maintenance() {
+        let graph = AtheneumGraph::open_in_memory().unwrap();
+
+        // 1. Create a memory entry that has already expired
+        let now = chrono::Utc::now();
+        let past = now - chrono::Duration::hours(2);
+
+        let data = serde_json::json!({
+            "content": "Expired content",
+            "expires_at": past.to_rfc3339(),
+            "ttl_hours": 1
+        });
+
+        // Store memory using sqlitegraph directly or insert_entity
+        let entity = sqlitegraph::GraphEntity {
+            id: 0,
+            kind: "Memory".to_string(),
+            name: "ExpiredMemory".to_string(),
+            file_path: None,
+            data,
+        };
+        let id = graph.inner.insert_entity(&entity).unwrap();
+
+        // Connect some edge to show edge pruning
+        let other_id = graph
+            .store_memory("Other Concept", "content", "desc", 1.0, None, None)
+            .unwrap();
+        graph
+            .insert_edge(other_id, id, EdgeType::RelatedTo, serde_json::json!({}))
+            .unwrap();
+
+        // 2. Run lint - should find 1 expired entry
+        let lint = graph.lint_graph(&LintConfig::default()).unwrap();
+        assert_eq!(lint.expired.len(), 1);
+        assert_eq!(lint.expired[0].entity_id, id);
+
+        // 3. Run maintain with apply: true - should prune the expired entry and its edges
+        let maint = graph.maintain(&MaintainConfig::default(), true).unwrap();
+        assert_eq!(maint.expired_memories_pruned, 1);
+
+        // Check entity is gone
+        let res = graph.get_entity(id);
+        assert!(res.is_err());
+
+        // Check edges are gone
+        let edges = graph.incoming_edges(id).unwrap();
+        assert!(edges.is_empty());
+    }
+
+    #[test]
+    fn test_swap_guard() {
+        let graph = AtheneumGraph::open_in_memory().unwrap();
+
+        // Since there are no loaded models under testing, discover_available_models should return empty list.
+        // preferred model = "gemma4:e2b"
+
+        // 1. Strict mode should return ModelSwapBlocked error
+        let res_strict = graph.apply_swap_guard("gemma4:e2b", crate::config::SwapGuardMode::Strict);
+        assert!(matches!(
+            res_strict,
+            Err(crate::graph::types::AtheneumError::ModelSwapBlocked { .. })
+        ));
+
+        // 2. Fallback mode should return ModelSwapBlocked error
+        let res_fallback =
+            graph.apply_swap_guard("gemma4:e2b", crate::config::SwapGuardMode::Fallback);
+        assert!(matches!(
+            res_fallback,
+            Err(crate::graph::types::AtheneumError::ModelSwapBlocked { .. })
+        ));
+
+        // 3. Adapt mode should return the preferred model itself if no models are loaded
+        let res_adapt = graph
+            .apply_swap_guard("gemma4:e2b", crate::config::SwapGuardMode::Adapt)
+            .unwrap();
+        assert_eq!(res_adapt, "gemma4:e2b");
     }
 }

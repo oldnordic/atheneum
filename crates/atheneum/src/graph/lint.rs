@@ -3,7 +3,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use sqlitegraph::GraphEntity;
 
-use super::{AtheneumGraph, EntityType, EdgeType};
+use super::{AtheneumGraph, EdgeType, EntityType};
 
 const METADATA_EDGE_TYPES: &[&str] = &[
     "belongs_to_project",
@@ -50,11 +50,19 @@ pub struct StaleSupersededFinding {
     pub age_days: i64,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ExpiredFinding {
+    pub entity_id: i64,
+    pub name: String,
+    pub expires_at: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct LintReport {
     pub orphans: Vec<OrphanFinding>,
     pub broken_links: Vec<BrokenLinkFinding>,
     pub stale_superseded: Vec<StaleSupersededFinding>,
+    pub expired: Vec<ExpiredFinding>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +94,7 @@ pub struct MaintainReport {
     pub broken_links_resolved: usize,
     pub contradictions_superseded: usize,
     pub stale_superseded_pruned: usize,
+    pub expired_memories_pruned: usize,
 }
 
 fn trigrams(text: &str) -> std::collections::HashSet<String> {
@@ -123,12 +132,17 @@ impl AtheneumGraph {
         let mut stale_superseded = Vec::new();
 
         // 1. Orphans scan
-        let kinds = &[EntityType::Concept, EntityType::Memory, EntityType::WikiPage];
+        let kinds = &[
+            EntityType::Concept,
+            EntityType::Memory,
+            EntityType::WikiPage,
+        ];
         for kind in kinds {
             let entities = self.entities_by_kind(kind.as_str())?;
             for entity in entities {
                 // Exclude index files themselves from being reported as orphans
-                let is_index_entity = (entity.kind == "WikiPage" && (entity.name == "index.md" || entity.name.ends_with("/index.md")))
+                let is_index_entity = (entity.kind == "WikiPage"
+                    && (entity.name == "index.md" || entity.name.ends_with("/index.md")))
                     || entity.data.get("role").and_then(|v| v.as_str()) == Some("auto_index");
                 if is_index_entity {
                     continue;
@@ -141,8 +155,10 @@ impl AtheneumGraph {
                         continue;
                     }
                     if let Ok(source) = self.get_entity(edge.from_id) {
-                        let is_index = (source.kind == "WikiPage" && source.name.ends_with("/index.md"))
-                            || source.data.get("role").and_then(|v| v.as_str()) == Some("auto_index");
+                        let is_index = (source.kind == "WikiPage"
+                            && source.name.ends_with("/index.md"))
+                            || source.data.get("role").and_then(|v| v.as_str())
+                                == Some("auto_index");
                         if is_index {
                             continue;
                         }
@@ -199,10 +215,15 @@ impl AtheneumGraph {
 
         for eid in self_edges {
             if let Ok(entity) = self.get_entity(eid) {
-                let superseded_at = entity.data.get("superseded_at").or_else(|| entity.data.get("updated_at")).and_then(|v| v.as_str());
+                let superseded_at = entity
+                    .data
+                    .get("superseded_at")
+                    .or_else(|| entity.data.get("updated_at"))
+                    .and_then(|v| v.as_str());
                 if let Some(sat_str) = superseded_at {
                     if let Ok(sat) = chrono::DateTime::parse_from_rfc3339(sat_str) {
-                        let age = chrono::Utc::now().signed_duration_since(sat.with_timezone(&chrono::Utc));
+                        let age = chrono::Utc::now()
+                            .signed_duration_since(sat.with_timezone(&chrono::Utc));
                         if age.num_days() >= config.stale_superseded_days {
                             stale_superseded.push(StaleSupersededFinding {
                                 entity_id: entity.id,
@@ -216,10 +237,27 @@ impl AtheneumGraph {
             }
         }
 
+        let mut expired = Vec::new();
+        let memories = self.entities_by_kind("Memory")?;
+        for m in memories {
+            if let Some(exp_str) = m.data.get("expires_at").and_then(|v| v.as_str()) {
+                if let Ok(exp_dt) = chrono::DateTime::parse_from_rfc3339(exp_str) {
+                    if chrono::Utc::now() > exp_dt.with_timezone(&chrono::Utc) {
+                        expired.push(ExpiredFinding {
+                            entity_id: m.id,
+                            name: m.name.clone(),
+                            expires_at: exp_str.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+
         Ok(LintReport {
             orphans,
             broken_links,
             stale_superseded,
+            expired,
         })
     }
 
@@ -272,13 +310,22 @@ impl AtheneumGraph {
                     }
                     if apply {
                         let source_entity = self.get_entity(bl.source_page_id)?;
-                        let project_id = source_entity.data.get("project_id").and_then(|v| v.as_str());
+                        let project_id = source_entity
+                            .data
+                            .get("project_id")
+                            .and_then(|v| v.as_str());
                         let pages = self.list_wiki_pages(project_id)?;
-                        let project_wiki_dir = pages.iter()
+                        let project_wiki_dir = pages
+                            .iter()
                             .find(|p| p.path.contains('/') || p.path.contains('\\'))
-                            .and_then(|p| std::path::Path::new(&p.path).parent().map(|d| d.to_path_buf()));
-                        
-                        let filename = format!("{}.md", bl.target.to_ascii_lowercase().replace(' ', "_"));
+                            .and_then(|p| {
+                                std::path::Path::new(&p.path)
+                                    .parent()
+                                    .map(|d| d.to_path_buf())
+                            });
+
+                        let filename =
+                            format!("{}.md", bl.target.to_ascii_lowercase().replace(' ', "_"));
                         let target_path = if let Some(dir) = project_wiki_dir {
                             dir.join(filename)
                         } else {
@@ -287,15 +334,27 @@ impl AtheneumGraph {
 
                         let body = format!("# {}\n\nThis page is a stub.", bl.target);
                         std::fs::write(&target_path, &body)?;
-                        let new_page_id = self.ingest_wiki_page(target_path.to_str().unwrap_or_default(), &body, project_id)?;
+                        let new_page_id = self.ingest_wiki_page(
+                            target_path.to_str().unwrap_or_default(),
+                            &body,
+                            project_id,
+                        )?;
 
                         // Clean up the stub entity and re-route its incoming edges to the new page id
-                        if let Some(stub_id) = self.find_entity_id_by_kind_and_name("WikiPage", &bl.target)? {
+                        if let Some(stub_id) =
+                            self.find_entity_id_by_kind_and_name("WikiPage", &bl.target)?
+                        {
                             if let Ok(t_ent) = self.get_entity(stub_id) {
                                 if t_ent.data.get("stub").and_then(|v| v.as_bool()) == Some(true) {
                                     self.with_raw_connection(|conn| {
-                                        conn.execute("DELETE FROM graph_entities WHERE id = ?1", rusqlite::params![stub_id])?;
-                                        conn.execute("UPDATE graph_edges SET to_id = ?1 WHERE to_id = ?2", rusqlite::params![new_page_id, stub_id])?;
+                                        conn.execute(
+                                            "DELETE FROM graph_entities WHERE id = ?1",
+                                            rusqlite::params![stub_id],
+                                        )?;
+                                        conn.execute(
+                                            "UPDATE graph_edges SET to_id = ?1 WHERE to_id = ?2",
+                                            rusqlite::params![new_page_id, stub_id],
+                                        )?;
                                         Ok::<(), anyhow::Error>(())
                                     })?;
                                     self.runtime.remove_entity_id("WikiPage", &bl.target);
@@ -311,7 +370,10 @@ impl AtheneumGraph {
                     if apply {
                         let source_entity = self.get_entity(bl.source_page_id)?;
                         let path = &source_entity.name;
-                        let project_id = source_entity.data.get("project_id").and_then(|v| v.as_str());
+                        let project_id = source_entity
+                            .data
+                            .get("project_id")
+                            .and_then(|v| v.as_str());
                         if let Some(page) = self.get_wiki_page(path)? {
                             let target_pattern = format!("[[{}]]", bl.target);
                             let new_body = page.body.replace(&target_pattern, &bl.target);
@@ -319,7 +381,9 @@ impl AtheneumGraph {
                             self.ingest_wiki_page(&page.path, &new_body, project_id)?;
                         }
                         // Delete the specific edge from source to stub
-                        if let Some(stub_id) = self.find_entity_id_by_kind_and_name("WikiPage", &bl.target)? {
+                        if let Some(stub_id) =
+                            self.find_entity_id_by_kind_and_name("WikiPage", &bl.target)?
+                        {
                             self.with_raw_connection(|conn| {
                                 conn.execute(
                                     "DELETE FROM graph_edges WHERE from_id = ?1 AND to_id = ?2 AND edge_type = 'wikilink'",
@@ -335,7 +399,8 @@ impl AtheneumGraph {
             }
         }
         if wiki_changed {
-            self.runtime.bump_generation(super::cache::CacheDomain::Wiki);
+            self.runtime
+                .bump_generation(super::cache::CacheDomain::Wiki);
         }
 
         // 3. Contradiction resolve
@@ -346,7 +411,8 @@ impl AtheneumGraph {
                 active_memories.push(m);
             }
         }
-        let mut by_key: std::collections::HashMap<&str, Vec<&GraphEntity>> = std::collections::HashMap::new();
+        let mut by_key: std::collections::HashMap<&str, Vec<&GraphEntity>> =
+            std::collections::HashMap::new();
         for m in &active_memories {
             by_key.entry(&m.name).or_default().push(m);
         }
@@ -364,16 +430,38 @@ impl AtheneumGraph {
                     if si == sj {
                         continue;
                     }
-                    let ci = mi.data.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                    let cj = mj.data.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                    let ci = mi
+                        .data
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let cj = mj
+                        .data
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     if jaccard_similarity(ci, cj) > 0.5 {
                         continue;
                     }
-                    let ti_str = mi.data.get("updated_at").or_else(|| mi.data.get("created_at")).and_then(|v| v.as_str()).unwrap_or("");
-                    let tj_str = mj.data.get("updated_at").or_else(|| mj.data.get("created_at")).and_then(|v| v.as_str()).unwrap_or("");
-                    let ti = chrono::DateTime::parse_from_rfc3339(ti_str).map(|d| d.with_timezone(&chrono::Utc)).unwrap_or_else(|_| chrono::Utc::now());
-                    let tj = chrono::DateTime::parse_from_rfc3339(tj_str).map(|d| d.with_timezone(&chrono::Utc)).unwrap_or_else(|_| chrono::Utc::now());
-                    
+                    let ti_str = mi
+                        .data
+                        .get("updated_at")
+                        .or_else(|| mi.data.get("created_at"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let tj_str = mj
+                        .data
+                        .get("updated_at")
+                        .or_else(|| mj.data.get("created_at"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let ti = chrono::DateTime::parse_from_rfc3339(ti_str)
+                        .map(|d| d.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now());
+                    let tj = chrono::DateTime::parse_from_rfc3339(tj_str)
+                        .map(|d| d.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now());
+
                     let old_mem = if ti < tj { mi } else { mj };
                     if apply {
                         let mut updated_data = old_mem.data.clone();
@@ -401,10 +489,19 @@ impl AtheneumGraph {
                 if let Ok(entity) = self.get_entity(ss.entity_id) {
                     self.with_raw_connection(|conn| {
                         let tx = conn.unchecked_transaction()?;
-                        tx.execute("DELETE FROM graph_edges WHERE from_id = ?1 OR to_id = ?1", rusqlite::params![ss.entity_id])?;
-                        tx.execute("DELETE FROM graph_entities WHERE id = ?1", rusqlite::params![ss.entity_id])?;
+                        tx.execute(
+                            "DELETE FROM graph_edges WHERE from_id = ?1 OR to_id = ?1",
+                            rusqlite::params![ss.entity_id],
+                        )?;
+                        tx.execute(
+                            "DELETE FROM graph_entities WHERE id = ?1",
+                            rusqlite::params![ss.entity_id],
+                        )?;
                         if entity.kind == EntityType::Memory.as_str() {
-                            tx.execute("DELETE FROM memory_entries WHERE key = ?1", rusqlite::params![entity.name])?;
+                            tx.execute(
+                                "DELETE FROM memory_entries WHERE key = ?1",
+                                rusqlite::params![entity.name],
+                            )?;
                         }
                         tx.commit()?;
                         Ok::<(), anyhow::Error>(())
@@ -416,8 +513,35 @@ impl AtheneumGraph {
             report.stale_superseded_pruned += 1;
         }
 
+        for ss in &lint.expired {
+            if apply {
+                self.with_raw_connection(|conn| {
+                    let tx = conn.unchecked_transaction()?;
+                    tx.execute(
+                        "DELETE FROM graph_edges WHERE from_id = ?1 OR to_id = ?1",
+                        rusqlite::params![ss.entity_id],
+                    )?;
+                    tx.execute(
+                        "DELETE FROM graph_entities WHERE id = ?1",
+                        rusqlite::params![ss.entity_id],
+                    )?;
+                    tx.execute(
+                        "DELETE FROM memory_entries WHERE key = ?1",
+                        rusqlite::params![ss.name],
+                    )?;
+                    tx.commit()?;
+                    Ok::<(), anyhow::Error>(())
+                })?;
+                self.runtime
+                    .remove_entity_id(EntityType::Memory.as_str(), &ss.name);
+                memory_changed = true;
+            }
+            report.expired_memories_pruned += 1;
+        }
+
         if memory_changed {
-            self.runtime.bump_generation(super::cache::CacheDomain::Memory);
+            self.runtime
+                .bump_generation(super::cache::CacheDomain::Memory);
         }
 
         Ok(report)

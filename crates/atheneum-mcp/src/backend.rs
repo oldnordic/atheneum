@@ -86,6 +86,15 @@ pub struct SeedMemoryParams {
     pub tokens: Option<usize>,
 }
 
+/// Parameters for semantic consolidation dream.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DreamSemanticParams {
+    pub similarity_threshold: Option<f64>,
+    pub model: Option<String>,
+    pub ollama_url: Option<String>,
+    pub swap_guard: Option<String>,
+}
+
 #[cfg(any(feature = "direct", test))]
 const METADATA_EDGE_TYPES: &[&str] = &[
     "belongs_to_project",
@@ -183,6 +192,10 @@ pub trait Backend: Send + Sync + 'static {
         project: Option<&str>,
         dry_run: bool,
     ) -> Result<Value>;
+    async fn list_models(&self) -> Result<Value>;
+    async fn dream_semantic(&self, params: DreamSemanticParams) -> Result<Value>;
+    async fn pin_entity(&self, id: i64) -> Result<Value>;
+    async fn unpin_entity(&self, id: i64) -> Result<Value>;
 }
 
 #[cfg(any(feature = "direct", test))]
@@ -471,6 +484,18 @@ pub mod http {
         async fn dream(&self, _s: Option<&str>, _p: Option<&str>, _d: bool) -> Result<Value> {
             Err(not_direct("dream"))
         }
+        async fn list_models(&self) -> Result<Value> {
+            Err(not_direct("list_models"))
+        }
+        async fn dream_semantic(&self, _params: DreamSemanticParams) -> Result<Value> {
+            Err(not_direct("dream_semantic"))
+        }
+        async fn pin_entity(&self, _id: i64) -> Result<Value> {
+            Err(not_direct("pin_entity"))
+        }
+        async fn unpin_entity(&self, _id: i64) -> Result<Value> {
+            Err(not_direct("unpin_entity"))
+        }
     }
 }
 
@@ -655,18 +680,22 @@ pub mod direct {
                     _ => atheneum::BrokenLinkMode::Stub,
                 };
                 let apply = params.apply.unwrap_or(false);
-                let report = graph.maintain(&atheneum::MaintainConfig {
-                    rewire_threshold,
-                    broken_link_mode,
-                    stale_superseded_days,
-                }, apply)?;
+                let report = graph.maintain(
+                    &atheneum::MaintainConfig {
+                        rewire_threshold,
+                        broken_link_mode,
+                        stale_superseded_days,
+                    },
+                    apply,
+                )?;
                 Ok(serde_json::to_value(report)?)
             })
         }
         async fn seed_memory(&self, params: SeedMemoryParams) -> Result<Value> {
             let graph = self.graph.lock().await;
             tokio::task::block_in_place(|| {
-                let seed = graph.seed_memory(params.project.as_deref(), params.tokens.unwrap_or(800))?;
+                let seed =
+                    graph.seed_memory(params.project.as_deref(), params.tokens.unwrap_or(800))?;
                 Ok(serde_json::to_value(seed)?)
             })
         }
@@ -698,7 +727,15 @@ pub mod direct {
         ) -> Result<Value> {
             let graph = self.graph.lock().await;
             tokio::task::block_in_place(|| {
-                let (results, trace_id) = graph.navigate_with_trace(query, k, depth, None, None, None, trace.unwrap_or(false))?;
+                let (results, trace_id) = graph.navigate_with_trace(
+                    query,
+                    k,
+                    depth,
+                    None,
+                    None,
+                    None,
+                    trace.unwrap_or(false),
+                )?;
                 let views: Vec<Value> = results
                     .into_iter()
                     .map(|v| {
@@ -889,6 +926,55 @@ pub mod direct {
                 let config = atheneum::DreamConfig::default();
                 let report = graph.dream_pass(mode, scope, project, &config)?;
                 Ok(serde_json::to_value(report)?)
+            })
+        }
+
+        async fn list_models(&self) -> Result<Value> {
+            let graph = self.graph.lock().await;
+            tokio::task::block_in_place(|| {
+                let models = graph.discover_available_models()?;
+                Ok(serde_json::to_value(models)?)
+            })
+        }
+
+        async fn dream_semantic(&self, params: DreamSemanticParams) -> Result<Value> {
+            let graph = self.graph.lock().await;
+            tokio::task::block_in_place(|| {
+                let mut config = atheneum::ConsolidationConfig::default();
+                if let Some(threshold) = params.similarity_threshold {
+                    config.similarity_threshold = threshold;
+                }
+                if let Some(model) = params.model {
+                    config.model = model;
+                }
+                if let Some(ollama_url) = params.ollama_url {
+                    config.ollama_url = ollama_url;
+                }
+                if let Some(sg) = params.swap_guard {
+                    config.swap_guard = match sg.as_str() {
+                        "strict" => atheneum::config::SwapGuardMode::Strict,
+                        "adapt" => atheneum::config::SwapGuardMode::Adapt,
+                        _ => atheneum::config::SwapGuardMode::Fallback,
+                    };
+                }
+                let report = graph.semantic_consolidation(&config)?;
+                Ok(serde_json::to_value(report)?)
+            })
+        }
+
+        async fn pin_entity(&self, id: i64) -> Result<Value> {
+            let graph = self.graph.lock().await;
+            tokio::task::block_in_place(|| {
+                graph.pin_entity(id)?;
+                Ok(serde_json::json!({ "status": "success", "id": id, "pinned": true }))
+            })
+        }
+
+        async fn unpin_entity(&self, id: i64) -> Result<Value> {
+            let graph = self.graph.lock().await;
+            tokio::task::block_in_place(|| {
+                graph.unpin_entity(id)?;
+                Ok(serde_json::json!({ "status": "success", "id": id, "pinned": false }))
             })
         }
     }

@@ -42,6 +42,10 @@ pub fn register_all(router: &mut ToolRouter<AtheneumMcpServer>) {
     router.add_route(dream());
     router.add_route(maintain());
     router.add_route(seed_memory());
+    router.add_route(list_models());
+    router.add_route(dream_semantic());
+    router.add_route(pin_entity());
+    router.add_route(unpin_entity());
 }
 
 // ---------------------------------------------------------------------------
@@ -278,13 +282,11 @@ fn update_memory() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcp
                     id,
                     content: args["content"].as_str().map(String::from),
                     importance: args["importance"].as_i64(),
-                    tags: args["tags"]
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|v| v.as_str().map(String::from))
-                                .collect()
-                        }),
+                    tags: args["tags"].as_array().map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    }),
                     replace_tags: args["replace_tags"].as_bool(),
                 };
                 let result = ctx.service.backend.update_memory(params).await;
@@ -1030,6 +1032,124 @@ fn seed_memory() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpSe
                     tokens,
                 };
                 match ctx.service.backend.seed_memory(params).await {
+                    Ok(v) => json_result(v),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            })
+        },
+    )
+}
+
+fn list_models() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServer> {
+    let schema = json!({
+        "type": "object",
+        "properties": {}
+    });
+    let schema: Map<String, Value> = schema.as_object().unwrap().clone();
+    rmcp::handler::server::router::tool::ToolRoute::new_dyn(
+        Tool::new(
+            "list_models",
+            "List all loaded LLM models from Ollama or llama.cpp endpoint.",
+            schema,
+        ),
+        |ctx: rmcp::handler::server::tool::ToolCallContext<'_, AtheneumMcpServer>| {
+            Box::pin(async move {
+                match ctx.service.backend.list_models().await {
+                    Ok(v) => json_result(v),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            })
+        },
+    )
+}
+
+fn dream_semantic() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServer> {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "similarity_threshold": { "type": "number", "default": 0.4, "description": "Min Jaccard lexical similarity to trigger merge decision." },
+            "model": { "type": "string", "default": "gemma4:e2b", "description": "Llama model to run LLM merge evaluation." },
+            "ollama_url": { "type": "string", "default": "http://127.0.0.1:11434", "description": "Host URL of local Ollama server." },
+            "swap_guard": { "type": "string", "default": "fallback", "description": "Swap guard mode (strict, adapt, fallback)." }
+        }
+    });
+    let schema: Map<String, Value> = schema.as_object().unwrap().clone();
+    rmcp::handler::server::router::tool::ToolRoute::new_dyn(
+        Tool::new(
+            "dream_semantic",
+            "Consolidate similar redundant concepts semantically using a local LLM or lexical trigram fallback.",
+            schema,
+        ),
+        |ctx: rmcp::handler::server::tool::ToolCallContext<'_, AtheneumMcpServer>| {
+            Box::pin(async move {
+                let args = extract_args(ctx.arguments);
+                let similarity_threshold = args["similarity_threshold"].as_f64();
+                let model = args["model"].as_str().map(String::from);
+                let ollama_url = args["ollama_url"].as_str().map(String::from);
+                let swap_guard = args["swap_guard"].as_str().map(String::from);
+                let params = crate::backend::DreamSemanticParams {
+                    similarity_threshold,
+                    model,
+                    ollama_url,
+                    swap_guard,
+                };
+                match ctx.service.backend.dream_semantic(params).await {
+                    Ok(v) => json_result(v),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            })
+        },
+    )
+}
+
+fn pin_entity() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServer> {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "id": { "type": "integer", "description": "Unique ID of the concept/memory to pin" }
+        },
+        "required": ["id"]
+    });
+    let schema: Map<String, Value> = schema.as_object().unwrap().clone();
+    rmcp::handler::server::router::tool::ToolRoute::new_dyn(
+        Tool::new(
+            "pin_entity",
+            "Pin a concept or memory to prevent eviction and prioritize it in seeding.",
+            schema,
+        ),
+        |ctx: rmcp::handler::server::tool::ToolCallContext<'_, AtheneumMcpServer>| {
+            Box::pin(async move {
+                let args = extract_args(ctx.arguments);
+                let id = args["id"].as_i64().unwrap_or(0);
+                match ctx.service.backend.pin_entity(id).await {
+                    Ok(v) => json_result(v),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            })
+        },
+    )
+}
+
+fn unpin_entity() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServer> {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "id": { "type": "integer", "description": "Unique ID of the concept/memory to unpin" }
+        },
+        "required": ["id"]
+    });
+    let schema: Map<String, Value> = schema.as_object().unwrap().clone();
+    rmcp::handler::server::router::tool::ToolRoute::new_dyn(
+        Tool::new(
+            "unpin_entity",
+            "Unpin a previously pinned concept or memory.",
+            schema,
+        ),
+        |ctx: rmcp::handler::server::tool::ToolCallContext<'_, AtheneumMcpServer>| {
+            Box::pin(async move {
+                let args = extract_args(ctx.arguments);
+                let id = args["id"].as_i64().unwrap_or(0);
+                match ctx.service.backend.unpin_entity(id).await {
                     Ok(v) => json_result(v),
                     Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
                 }

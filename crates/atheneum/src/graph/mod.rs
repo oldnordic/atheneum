@@ -24,9 +24,10 @@ pub mod extraction;
 pub mod handoff;
 mod hashing;
 pub mod knowledge;
-pub mod magellan_bridge;
 pub mod lint;
+pub mod magellan_bridge;
 pub mod memory;
+pub mod models;
 pub mod navigation;
 pub mod ontology;
 pub mod planning;
@@ -37,14 +38,18 @@ pub mod watch;
 pub mod wiki;
 
 use cache::GraphRuntime;
-pub use cache::RuntimeStats;
+pub use cache::{CacheDomain, RuntimeStats};
 pub use chat::{ChatChainNode, ChatDecision, ChatDirection, ChatQuery, ChatReport, ChatTurn};
-pub use dream::{DreamConfig, DreamFinding, DreamMode, DreamPhase, DreamReport};
+pub use dream::{
+    ConsolidationConfig, ConsolidationReport, DreamConfig, DreamFinding, DreamMode, DreamPhase,
+    DreamReport,
+};
 #[cfg(feature = "extract")]
 pub use extract_decisions::{run_extract, ExtractConfig, ExtractMode, ExtractStats};
+pub use lint::{BrokenLinkMode, LintConfig, LintReport, MaintainConfig, MaintainReport};
+pub use models::ModelInfo;
 pub use navigation::{estimate_entity_tokens, truncate_subgraph};
 pub use planning::{KanbanStatus, KanbanUpdate};
-pub use lint::{BrokenLinkMode, LintConfig, LintReport, MaintainConfig, MaintainReport};
 pub use seed::SeedMemory;
 pub use types::ProvenanceData;
 pub use types::{
@@ -52,12 +57,12 @@ pub use types::{
     ClaudeTranscriptImportParams, ClaudeTranscriptImportSummary, CommitParams,
     DisambiguationResult, DiscoveryPreview, EdgeType, EndSessionParams, EntityType,
     FileAccessParams, FileWriteParams, FixChainParams, GraphStats, HandoffPreview, MemoryPatch,
-    MemoryPreview, UpsertAction, UpsertResult,
-    NavigateQueryPlan, Neighbors, OntologyClassInfo, OntologyPropertyInfo, PromptParams,
-    QueryIntent, RecordEventParams, RelationEndpoint, RelationHint, RequirementStatus,
-    ResolvedEntity, SearchResult, SessionParams, SessionProgressParams, SessionSummary,
-    SubgraphView, TaskDetail, TestRunParams, ToolCallParams, ToolCallRecord, ToolCallTrace,
-    WikiSearchResult, ONTOLOGY_CLASS_KIND, ONTOLOGY_PROPERTY_KIND,
+    MemoryPreview, NavigateQueryPlan, Neighbors, OntologyClassInfo, OntologyPropertyInfo,
+    PromptParams, QueryIntent, RecordEventParams, RelationEndpoint, RelationHint,
+    RequirementStatus, ResolvedEntity, SearchResult, SessionParams, SessionProgressParams,
+    SessionSummary, SubgraphView, TaskDetail, TestRunParams, ToolCallParams, ToolCallRecord,
+    ToolCallTrace, UpsertAction, UpsertResult, WikiSearchResult, ONTOLOGY_CLASS_KIND,
+    ONTOLOGY_PROPERTY_KIND,
 };
 pub use watch::{watch_decisions, WatchConfig, WatchStats};
 pub use wiki::{
@@ -608,11 +613,7 @@ impl AtheneumGraph {
         })
     }
 
-    pub fn find_entity_id_by_kind_and_name(
-        &self,
-        kind: &str,
-        name: &str,
-    ) -> Result<Option<i64>> {
+    pub fn find_entity_id_by_kind_and_name(&self, kind: &str, name: &str) -> Result<Option<i64>> {
         if let Some(id) = self.runtime.resolve_entity_id(kind, name) {
             return Ok(Some(id));
         }

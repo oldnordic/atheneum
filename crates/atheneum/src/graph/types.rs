@@ -266,6 +266,9 @@ pub enum AtheneumError {
         domain: String,
         range: String,
     },
+
+    #[error("Requested model '{model}' is not currently loaded, and swap guard is STRICT")]
+    ModelSwapBlocked { model: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

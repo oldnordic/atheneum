@@ -49,7 +49,9 @@ fn test_query_memory_filters_scope() {
         .store_memory("api_key", "xyz789", "project", 1.0, Some("projA"), None)
         .unwrap();
 
-    let user_only = graph.query_memory("api_key", Some("user"), None, false).unwrap();
+    let user_only = graph
+        .query_memory("api_key", Some("user"), None, false)
+        .unwrap();
     assert_eq!(user_only.len(), 1);
     assert_eq!(
         user_only[0].data.get("scope").and_then(|v| v.as_str()),
@@ -168,7 +170,9 @@ fn test_store_memory_upsert_updates_content() {
 
     assert_eq!(id1, id2, "upsert should return same entity id");
 
-    let items = graph.query_memory("prefers_concise", None, None, false).unwrap();
+    let items = graph
+        .query_memory("prefers_concise", None, None, false)
+        .unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(
         items[0].data.get("content").and_then(|v| v.as_str()),
@@ -380,7 +384,13 @@ fn test_update_memory_replaces_content_and_recomputes_hash() {
         .map(String::from);
 
     let returned = graph
-        .update_memory(id, &MemoryPatch { content: Some("Bangalore".into()), ..Default::default() })
+        .update_memory(
+            id,
+            &MemoryPatch {
+                content: Some("Bangalore".into()),
+                ..Default::default()
+            },
+        )
         .expect("update_memory");
     assert_eq!(returned, id, "update_memory must return the same id");
 
@@ -440,7 +450,13 @@ fn test_update_memory_importance_maps_to_confidence() {
         .expect("seed memory");
 
     graph
-        .update_memory(id, &MemoryPatch { importance: Some(5), ..Default::default() })
+        .update_memory(
+            id,
+            &MemoryPatch {
+                importance: Some(5),
+                ..Default::default()
+            },
+        )
         .unwrap();
 
     let updated = graph.get_entity(id).unwrap();
@@ -482,9 +498,17 @@ fn test_update_memory_merges_tags_by_default() {
         .data
         .get("tags")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
-    assert_eq!(tags, vec!["alpha", "beta", "gamma"], "tags merge, dedup, preserve order");
+    assert_eq!(
+        tags,
+        vec!["alpha", "beta", "gamma"],
+        "tags merge, dedup, preserve order"
+    );
 }
 
 #[test]
@@ -519,7 +543,11 @@ fn test_update_memory_replace_tags_overwrites() {
         .data
         .get("tags")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     assert_eq!(tags, vec!["gamma", "delta"], "replace_tags overwrites");
 }
@@ -530,10 +558,18 @@ fn test_update_memory_rejects_non_memory_entity() {
 
     let graph = AtheneumGraph::open_in_memory().expect("open");
     // An Agent entity, not a Memory.
-    let id = graph.insert_agent("bot", serde_json::json!({})).expect("insert agent");
+    let id = graph
+        .insert_agent("bot", serde_json::json!({}))
+        .expect("insert agent");
 
     let err = graph
-        .update_memory(id, &MemoryPatch { content: Some("x".into()), ..Default::default() })
+        .update_memory(
+            id,
+            &MemoryPatch {
+                content: Some("x".into()),
+                ..Default::default()
+            },
+        )
         .unwrap_err();
     assert!(
         err.to_string().contains("Entity not found") || err.to_string().contains(&id.to_string()),
@@ -547,7 +583,13 @@ fn test_update_memory_rejects_missing_id() {
 
     let graph = AtheneumGraph::open_in_memory().expect("open");
     let err = graph
-        .update_memory(999999, &MemoryPatch { content: Some("x".into()), ..Default::default() })
+        .update_memory(
+            999999,
+            &MemoryPatch {
+                content: Some("x".into()),
+                ..Default::default()
+            },
+        )
         .unwrap_err();
     assert!(
         err.to_string().contains("Entity not found") || err.to_string().contains("999999"),
@@ -566,10 +608,18 @@ fn test_update_memory_query_memory_reflects_new_content() {
         .expect("seed memory");
 
     graph
-        .update_memory(id, &MemoryPatch { content: Some("Bangalore".into()), ..Default::default() })
+        .update_memory(
+            id,
+            &MemoryPatch {
+                content: Some("Bangalore".into()),
+                ..Default::default()
+            },
+        )
         .unwrap();
 
-    let found = graph.query_memory("city", None, None, false).expect("query");
+    let found = graph
+        .query_memory("city", None, None, false)
+        .expect("query");
     assert_eq!(found.len(), 1, "no duplicate memory created");
     assert_eq!(
         found[0].data.get("content").and_then(|v| v.as_str()),
@@ -590,7 +640,13 @@ fn test_update_memory_mirrors_to_memory_entries_table() {
         .expect("seed memory");
 
     graph
-        .update_memory(id, &MemoryPatch { content: Some("Bangalore".into()), ..Default::default() })
+        .update_memory(
+            id,
+            &MemoryPatch {
+                content: Some("Bangalore".into()),
+                ..Default::default()
+            },
+        )
         .unwrap();
 
     let row: (String, f64) = graph
@@ -612,7 +668,12 @@ fn test_upsert_memory_by_concept_new_concept() {
     let graph = AtheneumGraph::open_in_memory().expect("open");
     graph.seed_standard_ontology().unwrap();
     let result = graph
-        .upsert_memory_by_concept("Rust Style Guide", "Use clippy before committing.", None, true)
+        .upsert_memory_by_concept(
+            "Rust Style Guide",
+            "Use clippy before committing.",
+            None,
+            true,
+        )
         .expect("upsert");
     assert_eq!(result.action, atheneum::UpsertAction::Created);
 
@@ -663,7 +724,9 @@ fn test_insert_edge_pair_and_validation() {
     let graph = AtheneumGraph::open_in_memory().expect("open");
     graph.seed_standard_ontology().unwrap();
 
-    let concept_id = graph.upsert_concept("Rust", &serde_json::json!({})).unwrap();
+    let concept_id = graph
+        .upsert_concept("Rust", &serde_json::json!({}))
+        .unwrap();
     let memory_id = graph
         .store_memory("pref", "Use rustup", "project", 1.0, None, None)
         .unwrap();
@@ -682,10 +745,14 @@ fn test_insert_edge_pair_and_validation() {
     assert!(rev > 0);
 
     let out = graph.outgoing_edges(memory_id).unwrap();
-    assert!(out.iter().any(|e| e.edge_type == "attached_to" && e.to_id == concept_id));
+    assert!(out
+        .iter()
+        .any(|e| e.edge_type == "attached_to" && e.to_id == concept_id));
 
     let incoming = graph.incoming_edges(memory_id).unwrap();
-    assert!(incoming.iter().any(|e| e.edge_type == "has_memory" && e.from_id == concept_id));
+    assert!(incoming
+        .iter()
+        .any(|e| e.edge_type == "has_memory" && e.from_id == concept_id));
 
     // Test invalid reciprocal validation
     let err = graph

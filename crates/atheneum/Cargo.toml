@@ -1,6 +1,6 @@
 [package]
 name = "atheneum"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 license = "GPL-3.0-only"
 description = "Agent coordination graph database - episodic and semantic memory for multi-agent workflows"
@@ -26,10 +26,10 @@ uuid = { version = "1", features = ["v7"] }
 thiserror = "2.0"
 tracing = "0.1"
 parking_lot = "0.12"
-sqlitegraph = "3.3.1"
+sqlitegraph = "3.9.0"
 toml = "0.8"
 
-ureq = { version = "2", default-features = false, features = ["json"], optional = true }
+ureq = { version = "2", default-features = false, features = ["json"] }
 
 # Async runtime (optional for future use)
 tokio = { version = "1.44", features = ["full"], optional = true }
@@ -53,10 +53,10 @@ walkdir = "2.5"
 default = []
 web-ui = ["dep:axum", "dep:tower-http", "dep:askama"]
 async = ["tokio", "tracing-subscriber"]
-neural-embed = ["dep:ureq"]
+neural-embed = []
 semantic-search = []
 # Native `atheneum extract-decisions` subcommand (Phase 3 Rust port). Calls a
 # local Ollama LLM over transcripts and stores Decision discoveries in-process.
 # Off by default; the `~/.local/bin/extract-decisions` Python script remains the
 # default fallback. Enable with `--features extract` (or `--all-features`).
-extract = ["dep:ureq"]
+extract = []

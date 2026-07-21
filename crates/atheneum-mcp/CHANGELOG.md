@@ -6,6 +6,35 @@ Format: Keep a Changelog. Versions: `major.minor.patch`.
 
 ---
 
+## [0.5.0] — 2026-07-21
+
+### Added
+
+- **`update_memory`, `maintain`, `seed_memory` tools**: expose the new
+  `atheneum` librarian primitives (patch-in-place memory updates,
+  orphan/broken-link/contradiction repair, and the token-bounded
+  concept-grouped knowledge-base summary).
+- **`seed_memory` auto-injection**: `get_info`/`list_tools` now call
+  `seed_memory` and fold the result into the server `instructions` field and
+  the `navigate`/`query_memory`/`search` tool descriptions, so a connecting
+  client sees what's in the knowledge base without an explicit call.
+- **`list_models` tool**: exposes `discover_available_models` for local-model
+  discovery ahead of model-dependent operations.
+- **`dream_semantic` tool**: exposes `semantic_consolidation` for merging
+  closely-related or redundant concepts.
+- **`pin_entity` / `unpin_entity` tools**: mark entities as always-included
+  in `seed_memory` and immune to cache eviction.
+
+### Fixed
+
+- Direct-mode `atheneum-mcp` failed to start entirely
+  (`schema error: database schema version N is newer than supported 6`)
+  due to a stale `sqlitegraph` lockfile pin in the `atheneum` workspace —
+  see the `atheneum` 0.11.0 changelog entry. Any MCP client configured to
+  launch this server silently lost it from its tool list on every session.
+
+---
+
 ## [Unreleased] — Pending
 
 > **Status: Verified end-to-end.** Store→query round-trip confirmed via MCP protocol against a real Atheneum graph. The "same-process empty result" was a test artifact from pipelining requests without waiting for responses — real MCP clients are not affected.

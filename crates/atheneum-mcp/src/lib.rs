@@ -28,23 +28,33 @@ impl AtheneumMcpServer {
 
 impl ServerHandler for AtheneumMcpServer {
     fn get_info(&self) -> ServerInfo {
-        let instructions = tokio::runtime::Handle::try_current().map(|handle| {
-            if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread {
-                // block_in_place is not allowed on CurrentThread runtime
-                return "".to_string();
-            }
-            tokio::task::block_in_place(|| {
-                handle.block_on(async {
-                    match self.backend.seed_memory(crate::backend::SeedMemoryParams { project: None, tokens: Some(400) }).await {
-                        Ok(v) => v["instructions"].as_str().unwrap_or("").to_string(),
-                        Err(_) => "".to_string(),
-                    }
+        let instructions = tokio::runtime::Handle::try_current()
+            .map(|handle| {
+                if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread {
+                    // block_in_place is not allowed on CurrentThread runtime
+                    return "".to_string();
+                }
+                tokio::task::block_in_place(|| {
+                    handle.block_on(async {
+                        match self
+                            .backend
+                            .seed_memory(crate::backend::SeedMemoryParams {
+                                project: None,
+                                tokens: Some(400),
+                            })
+                            .await
+                        {
+                            Ok(v) => v["instructions"].as_str().unwrap_or("").to_string(),
+                            Err(_) => "".to_string(),
+                        }
+                    })
                 })
             })
-        }).unwrap_or_default();
+            .unwrap_or_default();
 
         let final_instructions = if instructions.is_empty() {
-            "Atheneum MCP server: tools for agent memory, knowledge graph, search, and navigation.".to_string()
+            "Atheneum MCP server: tools for agent memory, knowledge graph, search, and navigation."
+                .to_string()
         } else {
             format!(
                 "Atheneum MCP server: tools for agent memory, knowledge graph, search, and navigation.\n\n\
@@ -62,6 +72,9 @@ impl ServerHandler for AtheneumMcpServer {
             .with_protocol_version(rmcp::model::ProtocolVersion::V_2025_03_26)
     }
 
+    // reason: needs the explicit `+ MaybeSendFuture` bound `async fn` sugar
+    // can't express on stable.
+    #[allow(clippy::manual_async_fn)]
     fn list_tools(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
@@ -71,15 +84,25 @@ impl ServerHandler for AtheneumMcpServer {
            + '_ {
         async move {
             let mut tools = self.router.list_all();
-            if let Ok(seed) = self.backend.seed_memory(crate::backend::SeedMemoryParams { project: None, tokens: Some(400) }).await {
+            if let Ok(seed) = self
+                .backend
+                .seed_memory(crate::backend::SeedMemoryParams {
+                    project: None,
+                    tokens: Some(400),
+                })
+                .await
+            {
                 if let Some(instructions) = seed["instructions"].as_str() {
                     for tool in &mut tools {
-                        if tool.name == "navigate" || tool.name == "query_memory" || tool.name == "search" {
-                            let original = tool.description.as_ref().map(|c| c.as_ref()).unwrap_or("");
+                        if tool.name == "navigate"
+                            || tool.name == "query_memory"
+                            || tool.name == "search"
+                        {
+                            let original =
+                                tool.description.as_ref().map(|c| c.as_ref()).unwrap_or("");
                             let enriched = format!(
                                 "{}\n\nCurrent Knowledge Base Context:\n{}",
-                                original,
-                                instructions
+                                original, instructions
                             );
                             tool.description = Some(std::borrow::Cow::Owned(enriched));
                         }
@@ -260,6 +283,21 @@ mod tests {
         ) -> anyhow::Result<Value> {
             Ok(Value::Null)
         }
+        async fn list_models(&self) -> anyhow::Result<Value> {
+            Ok(serde_json::json!([]))
+        }
+        async fn dream_semantic(
+            &self,
+            _params: backend::DreamSemanticParams,
+        ) -> anyhow::Result<Value> {
+            Ok(serde_json::json!({ "merges_completed": 0, "details": [] }))
+        }
+        async fn pin_entity(&self, id: i64) -> anyhow::Result<Value> {
+            Ok(serde_json::json!({ "status": "success", "id": id, "pinned": true }))
+        }
+        async fn unpin_entity(&self, id: i64) -> anyhow::Result<Value> {
+            Ok(serde_json::json!({ "status": "success", "id": id, "pinned": false }))
+        }
     }
 
     fn mock_server() -> AtheneumMcpServer {
@@ -307,7 +345,7 @@ mod tests {
         assert!(names.contains(&"dream"));
         assert!(names.contains(&"maintain"));
         assert!(names.contains(&"seed_memory"));
-        assert_eq!(tools.len(), 25);
+        assert_eq!(tools.len(), 29);
     }
 
     #[test]

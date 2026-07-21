@@ -1,4 +1,4 @@
-use atheneum::graph::{AtheneumGraph, LintConfig, MaintainConfig, BrokenLinkMode};
+use atheneum::graph::{AtheneumGraph, BrokenLinkMode, LintConfig, MaintainConfig};
 use serde_json::json;
 
 #[test]
@@ -8,7 +8,9 @@ fn test_lint_and_maintain_orphans() {
 
     // 1. Seed two similar concept entities: "Rust Compiler" and "Rust Compilation"
     graph.upsert_concept("Rust Compiler", &json!({})).unwrap();
-    graph.upsert_concept("Rust Compilation", &json!({})).unwrap();
+    graph
+        .upsert_concept("Rust Compilation", &json!({}))
+        .unwrap();
 
     // 2. Both are orphans initially
     let lint = graph.lint_graph(&LintConfig::default()).unwrap();
@@ -66,10 +68,21 @@ fn test_lint_and_maintain_contradiction() {
     let graph = AtheneumGraph::open_in_memory().expect("open");
 
     // Store two contradicting memories under same key, different scope
-    let _id1 = graph.store_memory("key1", "User likes Vim", "user", 1.0, None, None).unwrap();
+    let _id1 = graph
+        .store_memory("key1", "User likes Vim", "user", 1.0, None, None)
+        .unwrap();
     // sleep for a brief moment to make sure timestamps differ slightly
     std::thread::sleep(std::time::Duration::from_millis(50));
-    let id2 = graph.store_memory("key1", "User prefers Emacs", "project", 0.9, Some("projA"), None).unwrap();
+    let id2 = graph
+        .store_memory(
+            "key1",
+            "User prefers Emacs",
+            "project",
+            0.9,
+            Some("projA"),
+            None,
+        )
+        .unwrap();
 
     // Verify both are retrieved by default query before maintain
     let active = graph.query_memory("key1", None, None, false).unwrap();

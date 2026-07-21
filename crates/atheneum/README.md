@@ -31,6 +31,17 @@ cargo add atheneum
 
 Atheneum is a library. Production use is via [agent-envoy](https://crates.io/crates/agent-envoy) which exposes all endpoints over HTTP (`envoy` binary). Direct embedding is for custom runtimes.
 
+## What's New In 0.11.0
+
+- `seed_memory`: a token-bounded, concept-grouped summary of the knowledge base. `atheneum-mcp` regenerates it on every session connect and folds it into the server instructions and `navigate`/`query_memory`/`search` tool descriptions, so a connecting client already knows what's in memory.
+- `update_memory` and `upsert_memory_by_concept` (`add_memory`): patch a memory or its owning concept in place instead of every correction becoming a new row.
+- `lint`/`maintain`: deterministic graph-health lint (orphans, broken wikilinks, stale `superseded_by` edges) plus a mutating pass that rewires, stubs, or resolves what it finds.
+- `dream-semantic` (`semantic_consolidation`): merges closely-related or redundant concepts via a local language-model prompt with a lexical-similarity fallback.
+- Memory pinning (`pin`/`unpin`) and TTL-based archival via `maintain`.
+- `models-list` + swap-guard config: discovers what's loaded on a local model server before running model-dependent operations, so they don't force an unwanted swap on a shared GPU.
+- Optional `dashboard` web UI (`web-ui` feature, off by default).
+- Query tracing (`navigate --trace`, `trace-get`) for replaying past navigation queries.
+
 ## What's New In 0.10.0
 
 - Native `extract-decisions` now ships inside the crate behind the `extract` feature, with both Ollama-backed and `--heuristic` backfill modes.
@@ -309,9 +320,19 @@ MEMORY:
   memory-store <db> <key> <content> [--scope S] [--confidence N] [--project P]  Store a memory
   memory-get <db> <key> [--scope S] [--project P]      Retrieve memory by key
   memory-list <db> [--scope S] [--project P] [--offset N] [--limit N]  List memories (paginated, default limit 1000)
+  memory-update <db> --id N [--content C] [--importance N] [--tags a,b --replace-tags]  Patch an existing memory in place
+  pin <db> --id N                                   Pin an entity (always in seed_memory, cache-eviction immune)
+  unpin <db> --id N                                 Unpin an entity
+
+LIBRARIAN:
+  lint <db-path> [--stale-days N]                   Graph-health check: orphans, broken wikilinks, stale superseded_by edges
+  maintain <db-path> [--apply] [--stale-days N] [--rewire-threshold F] [--broken-link-mode <stub|sever>]  Rewire orphans, stub/sever broken links, resolve contradictions
+  models-list <db-path>                             List models loaded on a local model server
+  dashboard <db-path> [--port N]                     Web dashboard server (feature: web-ui)
 
 DREAM:
   dream <db> [--scope S] [--project P] [--dry-run|--auto-merge]  Reflective memory consolidation
+  dream-semantic <db> [--apply]                     Merge closely-related/redundant concepts (local-model prompt, lexical fallback)
 
 QUERY & NAVIGATION:
   search <db> <query> [--k N] [--project P] [--max-tokens N]         Lexical search (optional HNSW candidate index with --features semantic-search)
@@ -320,6 +341,10 @@ QUERY & NAVIGATION:
   chat <db> --session <id> [--tokens T] [--direction recent|chrono] [--kinds K] [--role R] [--search Q] [--only-decisions] [--walk] [--offset N --limit L] [--json]  Token-budgeted walk of a session's chat records (or just its decisions)
   watch-decisions <db> [--once] [--interval S=2] [--config-dir D]... [--project P] [--agent A] [--dry-run]  Live-tail transcripts, capture structured decisions
   extract-decisions <db> [--all|<session-id>] [--dry-run] [--force] [--project P] [--agent A] [--model M] [--transcripts-dir D] [--max-chars N] [--ollama-url U] [--heuristic|--mode llm|heuristic] [--verbose]  Backfill decisions (LLM or --heuristic; feature: extract)
+  wiki-search <db> <query> [--project P] [--limit N]  Full-text search over wiki pages (FTS5, falls back to name match)
+  decision-search <db> <query> [--project P] [--limit N]  Content search over Decision discoveries (target/chosen/why)
+  seed-memory <db> [--project P] [--tokens N]       Token-bounded, concept-grouped knowledge-base summary
+  trace-get <db> --id N                             Replay a past navigate --trace query
   query-wiki <db> <path>                            Query a wiki page by path
   query-journal <db> <path>                         Query journal sections by path
   query-knowledge <db> <target> [--project P] [--max-tokens N]       Aggregated knowledge

@@ -269,7 +269,9 @@ impl AtheneumGraph {
     /// Errors with [`AtheneumError::EntityNotFound`] if `id` does not refer to
     /// a kind=`Memory` entity.
     pub fn update_memory(&self, id: i64, patch: &super::MemoryPatch) -> Result<i64> {
-        let entity = self.get_entity(id).map_err(|_| super::AtheneumError::EntityNotFound(id))?;
+        let entity = self
+            .get_entity(id)
+            .map_err(|_| super::AtheneumError::EntityNotFound(id))?;
         if entity.kind != EntityType::Memory.as_str() {
             return Err(super::AtheneumError::EntityNotFound(id).into());
         }
@@ -339,9 +341,11 @@ impl AtheneumGraph {
                 Some(existing)
             }
         } else {
-            obj.get("tags")
-                .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            obj.get("tags").and_then(|v| v.as_array()).map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
         };
 
         // Preserve created_at + sql_id.
@@ -362,7 +366,14 @@ impl AtheneumGraph {
                  SET content = ?1, confidence = ?2, updated_at = ?3
                  WHERE key = ?4 AND scope = ?5
                    AND COALESCE(project_id, '') = COALESCE(?6, '')",
-                params![&content, confidence, &now, &key, &scope, project_id.as_deref()],
+                params![
+                    &content,
+                    confidence,
+                    &now,
+                    &key,
+                    &scope,
+                    project_id.as_deref()
+                ],
             )?;
             if updated == 0 {
                 self.runtime.record_memory_row_repair();
@@ -370,7 +381,15 @@ impl AtheneumGraph {
                     "INSERT INTO memory_entries
                         (key, scope, content, confidence, project_id, created_at, updated_at)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    params![&key, &scope, &content, confidence, project_id.as_deref(), &created_at, &now],
+                    params![
+                        &key,
+                        &scope,
+                        &content,
+                        confidence,
+                        project_id.as_deref(),
+                        &created_at,
+                        &now
+                    ],
                 )?;
             }
             Ok::<_, anyhow::Error>(())
@@ -426,10 +445,9 @@ impl AtheneumGraph {
         link_both_ways: bool,
     ) -> Result<super::UpsertResult> {
         // 1. Find or create the Concept entity
-        let (concept_id, is_new_concept) = if let Some(id) = self.find_entity_id_by_kind_and_name(
-            EntityType::Concept.as_str(),
-            concept_name,
-        )? {
+        let (concept_id, is_new_concept) = if let Some(id) =
+            self.find_entity_id_by_kind_and_name(EntityType::Concept.as_str(), concept_name)?
+        {
             (id, false)
         } else {
             let concept_id = self.upsert_concept(concept_name, &json!({}))?;
@@ -472,7 +490,7 @@ impl AtheneumGraph {
             } else {
                 format!("{}\n{}", old_content, body_patch)
             };
-            
+
             let patch = super::MemoryPatch {
                 content: Some(new_content),
                 ..Default::default()
@@ -481,14 +499,7 @@ impl AtheneumGraph {
             (mid, super::UpsertAction::Enriched)
         } else {
             // Create new Memory
-            let mid = self.store_memory(
-                concept_name,
-                body_patch,
-                "project",
-                0.5,
-                None,
-                None,
-            )?;
+            let mid = self.store_memory(concept_name, body_patch, "project", 0.5, None, None)?;
             // Link bidirectionally concept <-> memory
             self.insert_edge_pair(
                 mid,
@@ -513,12 +524,7 @@ impl AtheneumGraph {
                     json!({}),
                 )?;
             } else {
-                self.insert_edge(
-                    memory_id,
-                    lf_id,
-                    super::EdgeType::RelatedTo,
-                    json!({}),
-                )?;
+                self.insert_edge(memory_id, lf_id, super::EdgeType::RelatedTo, json!({}))?;
             }
         }
 
@@ -552,15 +558,20 @@ impl AtheneumGraph {
                 if include_superseded {
                     base_sql.to_string()
                 } else {
-                    format!("{} AND json_extract(data, '$.superseded_at') IS NULL", base_sql)
+                    format!(
+                        "{} AND json_extract(data, '$.superseded_at') IS NULL",
+                        base_sql
+                    )
                 }
             };
             match (scope, project_id) {
                 (Some(s), Some(pid)) => {
-                    let sql = query_sql("SELECT id, kind, name, file_path, data FROM graph_entities
+                    let sql = query_sql(
+                        "SELECT id, kind, name, file_path, data FROM graph_entities
                           WHERE kind = ?1 AND name = ?2
                             AND json_extract(data, '$.scope') = ?3
-                            AND json_extract(data, '$.project_id') = ?4");
+                            AND json_extract(data, '$.project_id') = ?4",
+                    );
                     let mut stmt = conn.prepare(&sql)?;
                     let rows = stmt.query_map(
                         params![EntityType::Memory.as_str(), key, s, pid],
@@ -571,9 +582,11 @@ impl AtheneumGraph {
                     }
                 }
                 (Some(s), None) => {
-                    let sql = query_sql("SELECT id, kind, name, file_path, data FROM graph_entities
+                    let sql = query_sql(
+                        "SELECT id, kind, name, file_path, data FROM graph_entities
                           WHERE kind = ?1 AND name = ?2
-                            AND json_extract(data, '$.scope') = ?3");
+                            AND json_extract(data, '$.scope') = ?3",
+                    );
                     let mut stmt = conn.prepare(&sql)?;
                     let rows = stmt
                         .query_map(params![EntityType::Memory.as_str(), key, s], row_to_entity)?;
@@ -582,9 +595,11 @@ impl AtheneumGraph {
                     }
                 }
                 (None, Some(pid)) => {
-                    let sql = query_sql("SELECT id, kind, name, file_path, data FROM graph_entities
+                    let sql = query_sql(
+                        "SELECT id, kind, name, file_path, data FROM graph_entities
                           WHERE kind = ?1 AND name = ?2
-                            AND json_extract(data, '$.project_id') = ?3");
+                            AND json_extract(data, '$.project_id') = ?3",
+                    );
                     let mut stmt = conn.prepare(&sql)?;
                     let rows = stmt.query_map(
                         params![EntityType::Memory.as_str(), key, pid],
@@ -595,8 +610,10 @@ impl AtheneumGraph {
                     }
                 }
                 (None, None) => {
-                    let sql = query_sql("SELECT id, kind, name, file_path, data FROM graph_entities
-                          WHERE kind = ?1 AND name = ?2");
+                    let sql = query_sql(
+                        "SELECT id, kind, name, file_path, data FROM graph_entities
+                          WHERE kind = ?1 AND name = ?2",
+                    );
                     let mut stmt = conn.prepare(&sql)?;
                     let rows =
                         stmt.query_map(params![EntityType::Memory.as_str(), key], row_to_entity)?;

@@ -15,7 +15,7 @@ const HOT_TTL: Duration = Duration::from_secs(30);
 const HOT_HIT_THRESHOLD: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum CacheDomain {
+pub enum CacheDomain {
     Memory,
     Sessions,
     Events,

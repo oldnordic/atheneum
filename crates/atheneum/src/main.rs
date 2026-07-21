@@ -433,9 +433,11 @@ fn run() -> anyhow::Result<()> {
             let id = parse_i64_option(opts.id.as_deref(), "id")?
                 .ok_or_else(|| anyhow::anyhow!("missing --id"))?;
             let graph = AtheneumGraph::open(&db_path)?;
-            
+
             let trace_entity = graph.with_raw_connection(|conn| {
-                let mut stmt = conn.prepare("SELECT data FROM graph_entities WHERE id = ?1 AND kind = 'QueryTrace'")?;
+                let mut stmt = conn.prepare(
+                    "SELECT data FROM graph_entities WHERE id = ?1 AND kind = 'QueryTrace'",
+                )?;
                 let mut rows = stmt.query([id])?;
                 if let Some(row) = rows.next()? {
                     let data_str: String = row.get(0)?;
@@ -446,12 +448,38 @@ fn run() -> anyhow::Result<()> {
                     Ok(None)
                 }
             })?;
-            
+
             let Some(trace) = trace_entity else {
                 anyhow::bail!("QueryTrace with ID {} not found", id);
             };
-            
+
             print_json(trace)?;
+        }
+        "pin" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum pin <db-path> --id N");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let opts = parse_options(&args[3..])?;
+            let id = parse_i64_option(opts.id.as_deref(), "id")?
+                .ok_or_else(|| anyhow::anyhow!("missing --id"))?;
+            let graph = AtheneumGraph::open(&db_path)?;
+            graph.pin_entity(id)?;
+            println!("Pinned entity {}", id);
+        }
+        "unpin" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum unpin <db-path> --id N");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let opts = parse_options(&args[3..])?;
+            let id = parse_i64_option(opts.id.as_deref(), "id")?
+                .ok_or_else(|| anyhow::anyhow!("missing --id"))?;
+            let graph = AtheneumGraph::open(&db_path)?;
+            graph.unpin_entity(id)?;
+            println!("Unpinned entity {}", id);
         }
         "thread" => {
             if args.len() < 4 {
@@ -1358,15 +1386,16 @@ fn run() -> anyhow::Result<()> {
                     .importance
                     .as_deref()
                     .map(|s| {
-                        s.parse::<i64>().map_err(|e| {
-                            anyhow::anyhow!("invalid --importance '{}': {}", s, e)
-                        })
+                        s.parse::<i64>()
+                            .map_err(|e| anyhow::anyhow!("invalid --importance '{}': {}", s, e))
                     })
                     .transpose()?,
-                tags: opts
-                    .tags
-                    .as_deref()
-                    .map(|s| s.split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect()),
+                tags: opts.tags.as_deref().map(|s| {
+                    s.split(',')
+                        .map(|p| p.trim().to_string())
+                        .filter(|p| !p.is_empty())
+                        .collect()
+                }),
                 replace_tags: opts.replace_tags,
             };
             if patch.is_empty() {
@@ -1397,7 +1426,12 @@ fn run() -> anyhow::Result<()> {
             let key = positional(&args, 3, "key")?;
             let opts = parse_options(&args[4..])?;
             let graph = AtheneumGraph::open(&db_path)?;
-            let items = graph.query_memory(key, opts.scope.as_deref(), opts.project.as_deref(), opts.include_superseded)?;
+            let items = graph.query_memory(
+                key,
+                opts.scope.as_deref(),
+                opts.project.as_deref(),
+                opts.include_superseded,
+            )?;
             print_json(json!({
                 "key": key,
                 "count": items.len(),
@@ -1492,8 +1526,11 @@ fn run() -> anyhow::Result<()> {
             let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
             let opts = parse_options(&args[3..])?;
             let graph = AtheneumGraph::open(&db_path)?;
-            let stale_superseded_days = parse_i64_option(opts.stale_days.as_deref(), "stale-days")?.unwrap_or(30);
-            let report = graph.lint_graph(&atheneum::LintConfig { stale_superseded_days })?;
+            let stale_superseded_days =
+                parse_i64_option(opts.stale_days.as_deref(), "stale-days")?.unwrap_or(30);
+            let report = graph.lint_graph(&atheneum::LintConfig {
+                stale_superseded_days,
+            })?;
             print_json(serde_json::to_value(&report)?)?;
         }
         "maintain" => {
@@ -1504,9 +1541,15 @@ fn run() -> anyhow::Result<()> {
             let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
             let opts = parse_options(&args[3..])?;
             let graph = AtheneumGraph::open(&db_path)?;
-            let stale_superseded_days = parse_i64_option(opts.stale_days.as_deref(), "stale-days")?.unwrap_or(30);
-            let rewire_threshold = opts.rewire_threshold.as_deref()
-                .map(|s| s.parse::<f64>().map_err(|e| anyhow::anyhow!("invalid rewire-threshold '{}': {}", s, e)))
+            let stale_superseded_days =
+                parse_i64_option(opts.stale_days.as_deref(), "stale-days")?.unwrap_or(30);
+            let rewire_threshold = opts
+                .rewire_threshold
+                .as_deref()
+                .map(|s| {
+                    s.parse::<f64>()
+                        .map_err(|e| anyhow::anyhow!("invalid rewire-threshold '{}': {}", s, e))
+                })
                 .transpose()?
                 .unwrap_or(0.3);
             let broken_link_mode = match opts.broken_link_mode.as_deref() {
@@ -1514,11 +1557,14 @@ fn run() -> anyhow::Result<()> {
                 _ => atheneum::BrokenLinkMode::Stub,
             };
             let apply = opts.apply && !opts.dry_run;
-            let report = graph.maintain(&atheneum::MaintainConfig {
-                rewire_threshold,
-                broken_link_mode,
-                stale_superseded_days,
-            }, apply)?;
+            let report = graph.maintain(
+                &atheneum::MaintainConfig {
+                    rewire_threshold,
+                    broken_link_mode,
+                    stale_superseded_days,
+                },
+                apply,
+            )?;
             print_json(serde_json::to_value(&report)?)?;
         }
         "seed-memory" => {
@@ -1532,6 +1578,41 @@ fn run() -> anyhow::Result<()> {
             let graph = AtheneumGraph::open(&db_path)?;
             let seed = graph.seed_memory(opts.project.as_deref(), tokens)?;
             print_json(serde_json::to_value(&seed)?)?;
+        }
+        "models-list" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum models-list <db-path>");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let graph = AtheneumGraph::open(&db_path)?;
+            let models = graph.discover_available_models()?;
+            print_json(serde_json::json!({
+                "models": models,
+                "count": models.len()
+            }))?;
+        }
+        "dashboard" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum dashboard <db-path> [--port N]");
+                std::process::exit(1);
+            }
+            let _db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let opts = parse_options(&args[3..])?;
+            let _port = parse_u32_option(opts.port.as_deref(), "port")?.unwrap_or(8080) as u16;
+
+            #[cfg(feature = "web-ui")]
+            {
+                let graph = AtheneumGraph::open(&_db_path)?;
+                let rt = tokio::runtime::Runtime::new()?;
+                rt.block_on(atheneum::web_ui::start_web_server(graph, _port))?;
+            }
+            #[cfg(not(feature = "web-ui"))]
+            {
+                anyhow::bail!(
+                    "Atheneum must be compiled with --features web-ui to run the dashboard server."
+                );
+            }
         }
         "config" => {
             if args.len() < 3 {
@@ -2023,6 +2104,7 @@ struct CliOptions {
     apply: bool,
     trace: bool,
     stale_days: Option<String>,
+    port: Option<String>,
     rewire_threshold: Option<String>,
     broken_link_mode: Option<String>,
     interval: Option<String>,
@@ -2153,6 +2235,7 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
                 "--tags" => opts.tags = Some(value),
                 "--id" => opts.id = Some(value),
                 "--content" => opts.content = Some(value),
+                "--port" => opts.port = Some(value),
                 "--interval" => opts.interval = Some(value),
                 "--exclude-project" => opts.exclude_projects.push(value),
                 other => anyhow::bail!("unknown option: {}", other),
