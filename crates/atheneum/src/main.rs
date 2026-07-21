@@ -316,7 +316,7 @@ fn run() -> anyhow::Result<()> {
                     ))?;
                     stdoutln(format_args!(
                         "    Body (first 200 chars): {}",
-                        &section.body.chars().take(200).collect::<String>()
+                        section.body.chars().take(200).collect::<String>()
                     ))?;
                     if !section.kanban_updates.is_empty() {
                         stdoutln(format_args!("    Kanban updates:"))?;
