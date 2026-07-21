@@ -1,0 +1,45 @@
+# atheneum-decisions
+
+Claude Code companion plugin for [atheneum](https://github.com/oldnordic/atheneum) — session bootstrap, per-turn memory prefetch, decision capture, general memory, and CLI reference. Works against any atheneum SQLite database directly; no envoy server required.
+
+## Requirements
+
+- The `atheneum` CLI on `$PATH` (`cargo install atheneum`)
+- `python3` (hooks are stdlib-only, cross-platform)
+- For prefetch hints specifically: the `memory-prefetch-hints` binary, installed alongside `atheneum` from the same crate
+
+## What it does
+
+**Hooks:**
+- `SessionStart` → `session-bootstrap.py`: injects a bounded session digest (recent activity, decisions, open tasks for the current project) as context before the first turn.
+- `UserPromptSubmit` → `prefetch-hints.py`: runs `memory-prefetch-hints` against each prompt and the live session ID, injecting ranked `Memory` candidates (BM25 + TF-IDF + recency + session continuity + optional trajectory bonus) as context for that turn.
+- `Stop` → `decision-gate.py`: non-blocking reminder if a session did real work but recorded zero `Decision` rows.
+
+**Skills** (model-invoked automatically based on task context):
+- `record-decision` — records a genuine architectural/implementation choice as a `Decision` row, source-tagged `skill`, dedup'd on `(session_id, target, source, chosen)`.
+- `remember` — records a durable non-decision fact via `memory-store` (upserts by key, so re-recording an updated fact doesn't duplicate it).
+- `atheneum-cli` — reference for the rest of the `atheneum` CLI surface (tasks, wiki/journal sync, handoffs, graph introspection) for anything the above don't cover.
+
+**Commands** (explicit, user-invoked):
+- `/decision <target> <chosen> [rationale]` — manual fallback for `record-decision`.
+- `/recall <query>` or `/recall --key <key>` — manual search/lookup fallback for when the automatic prefetch hint wasn't enough.
+
+## Environment variables
+
+- `ATHENEUM_DB` — path to the atheneum SQLite database. Defaults to `~/.magellan/atheneum/atheneum.db`.
+- `ATHENEUM_TRAJECTORY_PATH` — optional, enables trajectory-graph lookup in prefetch hints if set to a valid PSF1/PSF2 blob path.
+
+## Install
+
+```bash
+# Test locally without installing
+claude --plugin-dir ./plugin/atheneum-decisions
+
+# Or add this repo as a marketplace and install from it
+/plugin marketplace add oldnordic/atheneum
+/plugin install atheneum-decisions@atheneum
+```
+
+## Design notes
+
+Every hook is defensive by construction: missing DB, missing `atheneum`/`memory-prefetch-hints` binary, empty query, or any subprocess failure exits `0` with no output. A session without atheneum configured behaves exactly as if this plugin weren't installed — nothing blocks, nothing errors visibly.

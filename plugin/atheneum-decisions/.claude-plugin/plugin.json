@@ -1,13 +1,15 @@
 {
   "name": "atheneum-decisions",
-  "version": "0.1.0",
-  "description": "Cooperative decision capture for atheneum — a skill that records architectural choices as Decision rows, a /decision manual fallback, and a non-blocking Stop-gate that reminds you to record decisions. Highest-fidelity layer on top of the transcript watcher and LLM backfiller.",
+  "version": "0.2.0",
+  "description": "Atheneum companion for Claude Code — session-start context bootstrap, per-turn memory prefetch (BM25 + recency + session continuity + trajectory-graph ranking), decision capture (skill + /decision fallback + non-blocking Stop-gate reminder), a remember skill for general facts, a /recall command, and a full atheneum CLI reference. Works standalone against any atheneum SQLite DB — no envoy required.",
   "author": {
     "name": "oldnordic",
     "url": "https://github.com/oldnordic"
   },
+  "homepage": "https://github.com/oldnordic/atheneum/tree/master/plugin/atheneum-decisions",
+  "repository": "https://github.com/oldnordic/atheneum",
   "license": "GPL-3.0",
-  "keywords": ["atheneum", "decisions", "grounded-coding", "knowledge-graph", "session-accountability"],
+  "keywords": ["atheneum", "decisions", "memory", "prefetch", "grounded-coding", "knowledge-graph", "session-accountability"],
   "skills": "./skills/",
   "commands": "./commands/",
   "hooks": "./hooks/hooks.json"
