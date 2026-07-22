@@ -31,6 +31,15 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/feedback-capture.py\"",
+            "timeout": 10
+          }
+        ]
       }
     ]
   }
