@@ -863,12 +863,16 @@ mod preview_tests {
 
     #[test]
     fn session_continuity_score_favors_recent_same_session() {
+        // The "recent" timestamp must be relative to now: the scorer decays
+        // recency against the wall clock, so a hardcoded date goes stale and
+        // silently drops the recency tier this test depends on.
+        let recent = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
         let mut matched = GraphEntity {
             id: 1,
             kind: "Memory".to_string(),
             name: "test".to_string(),
             file_path: None,
-            data: serde_json::json!({"session_id": "session-1", "updated_at": "2026-07-21T12:00:00+00:00"}),
+            data: serde_json::json!({"session_id": "session-1", "updated_at": recent}),
         };
         let mut sessions = HashSet::new();
         sessions.insert("session-1".to_string());
@@ -890,7 +894,7 @@ mod preview_tests {
             kind: "Memory".to_string(),
             name: "no-session".to_string(),
             file_path: None,
-            data: serde_json::json!({"updated_at": "2026-07-21T12:00:00+00:00"}),
+            data: serde_json::json!({"updated_at": recent}),
         };
         let baseline = session_continuity_score(&no_session, &sessions);
         let delta = matched_score - baseline;
