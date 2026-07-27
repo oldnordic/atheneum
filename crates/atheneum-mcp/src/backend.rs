@@ -93,6 +93,7 @@ pub struct DreamSemanticParams {
     pub model: Option<String>,
     pub ollama_url: Option<String>,
     pub swap_guard: Option<String>,
+    pub dry_run: Option<bool>,
 }
 
 #[cfg(any(feature = "direct", test))]
@@ -940,14 +941,25 @@ pub mod direct {
         async fn dream_semantic(&self, params: DreamSemanticParams) -> Result<Value> {
             let graph = self.graph.lock().await;
             tokio::task::block_in_place(|| {
-                let mut config = atheneum::ConsolidationConfig::default();
+                // Base config comes from ~/.config/atheneum/config.toml [llm]
+                // (provider, base_url, model, api_key). Falls back to the
+                // legacy ollama defaults when the config is missing/invalid.
+                let mut config = match atheneum::load_config() {
+                    Ok(cfg) => atheneum::ConsolidationConfig::from_llm_config(&cfg.llm),
+                    Err(_) => atheneum::ConsolidationConfig::default(),
+                };
                 if let Some(threshold) = params.similarity_threshold {
                     config.similarity_threshold = threshold;
                 }
                 if let Some(model) = params.model {
+                    // MCP 'model' param overrides the configured model for any
+                    // provider.
                     config.model = model;
                 }
                 if let Some(ollama_url) = params.ollama_url {
+                    // Explicit ollama_url means the caller wants the legacy
+                    // ollama path regardless of the configured provider.
+                    config.provider = atheneum::LlmProvider::Ollama;
                     config.ollama_url = ollama_url;
                 }
                 if let Some(sg) = params.swap_guard {
@@ -956,6 +968,9 @@ pub mod direct {
                         "adapt" => atheneum::config::SwapGuardMode::Adapt,
                         _ => atheneum::config::SwapGuardMode::Fallback,
                     };
+                }
+                if let Some(dry_run) = params.dry_run {
+                    config.dry_run = dry_run;
                 }
                 let report = graph.semantic_consolidation(&config)?;
                 Ok(serde_json::to_value(report)?)

@@ -29,7 +29,7 @@ parking_lot = "0.12"
 sqlitegraph = "3.9.0"
 toml = "0.8"
 
-ureq = { version = "2", default-features = false, features = ["json"] }
+ureq = { version = "2", default-features = false, features = ["json", "tls"] }
 
 # Async runtime (optional for future use)
 tokio = { version = "1.44", features = ["full"], optional = true }

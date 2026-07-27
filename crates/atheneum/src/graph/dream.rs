@@ -602,6 +602,20 @@ pub struct ConsolidationConfig {
     pub model: String,
     pub ollama_url: String,
     pub swap_guard: crate::config::SwapGuardMode,
+    /// LLM provider used for merge decisions. `Ollama` keeps the legacy
+    /// `/api/generate` path; `Anthropic`/`OpenAi`/`Custom` use
+    /// `base_url`/`api_key` with their respective wire protocols.
+    #[serde(default)]
+    pub provider: crate::config::LlmProvider,
+    /// Base URL for non-Ollama providers (e.g. `https://api.kimi.com/coding`).
+    #[serde(default)]
+    pub base_url: String,
+    /// API key for non-Ollama providers. Never logged.
+    #[serde(default)]
+    pub api_key: String,
+    /// When true, candidate merges are reported but never executed.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 impl Default for ConsolidationConfig {
@@ -611,6 +625,51 @@ impl Default for ConsolidationConfig {
             model: "gemma4:e2b".to_string(),
             ollama_url: "http://127.0.0.1:11434".to_string(),
             swap_guard: crate::config::SwapGuardMode::Fallback,
+            provider: crate::config::LlmProvider::Ollama,
+            base_url: String::new(),
+            api_key: String::new(),
+            dry_run: false,
+        }
+    }
+}
+
+impl ConsolidationConfig {
+    /// Build a consolidation config from the persisted `[llm]` config section.
+    ///
+    /// For `Ollama` the legacy fields (`ollama_url`, swap-guarded local model)
+    /// are populated; for remote providers `base_url`/`model`/`api_key` are
+    /// taken verbatim from the config.
+    pub fn from_llm_config(llm: &crate::config::LlmConfig) -> Self {
+        let mut cfg = Self::default();
+        cfg.provider = llm.provider.clone();
+        cfg.swap_guard = llm.swap_guard;
+        match llm.provider {
+            crate::config::LlmProvider::Ollama => {
+                if !llm.base_url.is_empty() {
+                    cfg.ollama_url = llm.base_url.clone();
+                }
+                if !llm.model.is_empty() {
+                    cfg.model = llm.model.clone();
+                }
+            }
+            _ => {
+                cfg.base_url = llm.base_url.clone();
+                if !llm.model.is_empty() {
+                    cfg.model = llm.model.clone();
+                }
+                cfg.api_key = llm.api_key.clone();
+            }
+        }
+        cfg
+    }
+
+    /// Short lowercase label for the active provider (for log/detail lines).
+    fn provider_label(&self) -> &'static str {
+        match self.provider {
+            crate::config::LlmProvider::Ollama => "ollama",
+            crate::config::LlmProvider::OpenAi => "openai",
+            crate::config::LlmProvider::Anthropic => "anthropic",
+            crate::config::LlmProvider::Custom => "custom",
         }
     }
 }
@@ -619,6 +678,12 @@ impl Default for ConsolidationConfig {
 pub struct ConsolidationReport {
     pub merges_completed: usize,
     pub details: Vec<String>,
+    /// Number of merge pairs actually evaluated by the LLM (0 when the
+    /// lexical fallback path was used throughout).
+    #[serde(default)]
+    pub llm_evaluations: usize,
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -640,16 +705,46 @@ impl AtheneumGraph {
             .collect();
 
         let mut merges_completed = 0;
+        let mut llm_evaluations = 0;
         let mut details = Vec::new();
         let mut superseded_ids = std::collections::HashSet::new();
 
-        let model_run_result = self.apply_swap_guard(&config.model, config.swap_guard);
-        let use_llm = match model_run_result {
-            Ok(_) => true,
-            Err(e) => {
-                if config.swap_guard == crate::config::SwapGuardMode::Strict {
-                    return Err(anyhow::anyhow!(e));
+        // Decide whether an LLM is available for merge evaluation.
+        // - Ollama: honor the swap guard against locally loaded models.
+        // - Remote providers: require an API key; the swap guard semantics
+        //   are reused for the missing-credentials case (strict -> hard
+        //   error, fallback/adapt -> lexical path).
+        let llm_unavailable: Option<String> = match config.provider {
+            crate::config::LlmProvider::Ollama => self
+                .apply_swap_guard(&config.model, config.swap_guard)
+                .err()
+                .map(|e| e.to_string()),
+            _ => {
+                if config.api_key.is_empty() {
+                    Some(format!(
+                        "no api_key configured for {} provider",
+                        config.provider_label()
+                    ))
+                } else if config.base_url.is_empty() {
+                    Some(format!(
+                        "no base_url configured for {} provider",
+                        config.provider_label()
+                    ))
+                } else {
+                    None
                 }
+            }
+        };
+        let use_llm = match llm_unavailable {
+            None => true,
+            Some(reason) => {
+                if config.swap_guard == crate::config::SwapGuardMode::Strict {
+                    return Err(anyhow::anyhow!(reason));
+                }
+                details.push(format!(
+                    "LLM unavailable ({}); using lexical fallback",
+                    reason
+                ));
                 false
             }
         };
@@ -677,11 +772,44 @@ impl AtheneumGraph {
                         .to_string();
 
                     if use_llm {
-                        if let Ok(decision) = self.query_llm_for_merge(ca, cb, config) {
-                            should_merge = decision.should_merge;
-                            if should_merge {
-                                keeper_name = decision.keeper_name;
-                                keeper_description = decision.keeper_description;
+                        match self.query_llm_for_merge(ca, cb, config) {
+                            Ok(decision) => {
+                                llm_evaluations += 1;
+                                let evidence = format!(
+                                    "LLM evaluation via {} (model={}): [{}] '{}' vs [{}] '{}' -> should_merge={}",
+                                    config.provider_label(),
+                                    config.model,
+                                    ca.id,
+                                    ca.name,
+                                    cb.id,
+                                    cb.name,
+                                    decision.should_merge
+                                );
+                                // Evidence line: proves a real (non-fallback) LLM
+                                // call happened and which provider served it.
+                                eprintln!("dream-semantic: {}", evidence);
+                                tracing::info!("{}", evidence);
+                                details.push(evidence);
+                                should_merge = decision.should_merge;
+                                if should_merge {
+                                    keeper_name = decision.keeper_name;
+                                    keeper_description = decision.keeper_description;
+                                }
+                            }
+                            Err(e) => {
+                                let msg = format!(
+                                    "LLM evaluation via {} (model={}) FAILED for [{}] '{}' vs [{}] '{}': {:#}",
+                                    config.provider_label(),
+                                    config.model,
+                                    ca.id,
+                                    ca.name,
+                                    cb.id,
+                                    cb.name,
+                                    e
+                                );
+                                eprintln!("dream-semantic: {}", msg);
+                                tracing::warn!("{}", msg);
+                                details.push(msg);
                             }
                         }
                     } else {
@@ -704,18 +832,25 @@ impl AtheneumGraph {
                     }
 
                     if should_merge {
-                        self.execute_semantic_merge(
-                            ca.id,
-                            cb.id,
-                            &keeper_name,
-                            &keeper_description,
-                        )?;
-                        superseded_ids.insert(cb.id);
-                        merges_completed += 1;
-                        details.push(format!(
-                            "Merged [{}] '{}' and [{}] '{}' -> '{}'",
-                            ca.id, ca.name, cb.id, cb.name, keeper_name
-                        ));
+                        if config.dry_run {
+                            details.push(format!(
+                                "[dry-run] Would merge [{}] '{}' and [{}] '{}' -> '{}'",
+                                ca.id, ca.name, cb.id, cb.name, keeper_name
+                            ));
+                        } else {
+                            self.execute_semantic_merge(
+                                ca.id,
+                                cb.id,
+                                &keeper_name,
+                                &keeper_description,
+                            )?;
+                            superseded_ids.insert(cb.id);
+                            merges_completed += 1;
+                            details.push(format!(
+                                "Merged [{}] '{}' and [{}] '{}' -> '{}'",
+                                ca.id, ca.name, cb.id, cb.name, keeper_name
+                            ));
+                        }
                     }
                 }
             }
@@ -724,6 +859,8 @@ impl AtheneumGraph {
         Ok(ConsolidationReport {
             merges_completed,
             details,
+            llm_evaluations,
+            dry_run: config.dry_run,
         })
     }
 
@@ -733,6 +870,8 @@ impl AtheneumGraph {
         b: &sqlitegraph::GraphEntity,
         config: &ConsolidationConfig,
     ) -> Result<LlmMergeResponse> {
+        // NOTE: this prompt and its JSON schema are identical across all
+        // providers — only the wire protocol differs.
         let prompt = format!(
             "You are the Atheneum Librarian. Determine if these two concepts refer to the same entity or topic.\n\
              Concept A: Name: '{}', Description: '{}'\n\
@@ -744,22 +883,15 @@ impl AtheneumGraph {
             b.name, b.data.get("description").and_then(|v| v.as_str()).unwrap_or("")
         );
 
-        let resp: serde_json::Value = ureq::post(&format!("{}/api/generate", config.ollama_url))
-            .send_json(serde_json::json!({
-                "model": config.model,
-                "prompt": prompt,
-                "stream": false,
-                "format": "json",
-                "options": { "temperature": 0.1 }
-            }))?
-            .into_json()?;
+        let raw_res = match config.provider {
+            crate::config::LlmProvider::Ollama => call_ollama_generate(config, &prompt)?,
+            crate::config::LlmProvider::Anthropic => call_anthropic_messages(config, &prompt)?,
+            crate::config::LlmProvider::OpenAi | crate::config::LlmProvider::Custom => {
+                call_openai_chat_completions(config, &prompt)?
+            }
+        };
 
-        let raw_res = resp
-            .get("response")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Empty response"))?;
-        let parsed: LlmMergeResponse = serde_json::from_str(raw_res)?;
-        Ok(parsed)
+        parse_merge_response(&raw_res)
     }
 
     pub fn execute_semantic_merge(
@@ -824,6 +956,140 @@ impl AtheneumGraph {
 }
 
 // ---------------------------------------------------------------------------
+// LLM provider wire protocols (semantic consolidation)
+// ---------------------------------------------------------------------------
+
+/// Legacy Ollama path: POST {ollama_url}/api/generate.
+fn call_ollama_generate(config: &ConsolidationConfig, prompt: &str) -> Result<String> {
+    let resp: serde_json::Value = ureq::post(&format!("{}/api/generate", config.ollama_url))
+        .send_json(serde_json::json!({
+            "model": config.model,
+            "prompt": prompt,
+            "stream": false,
+            "format": "json",
+            "options": { "temperature": 0.1 }
+        }))?
+        .into_json()?;
+
+    resp.get("response")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow::anyhow!("Empty response"))
+}
+
+/// Anthropic Messages protocol: POST {base_url}/v1/messages with
+/// `x-api-key` + `anthropic-version` headers. Response text at
+/// `.content[0].text`.
+fn call_anthropic_messages(config: &ConsolidationConfig, prompt: &str) -> Result<String> {
+    let url = format!("{}/v1/messages", config.base_url.trim_end_matches('/'));
+    let resp: serde_json::Value = ureq::post(&url)
+        .set("x-api-key", &config.api_key)
+        .set("anthropic-version", "2023-06-01")
+        .set("content-type", "application/json")
+        .timeout(std::time::Duration::from_secs(120))
+        .send_json(serde_json::json!({
+            "model": config.model,
+            "max_tokens": 1024,
+            "messages": [{ "role": "user", "content": prompt }]
+        }))?
+        .into_json()?;
+
+    resp.get("content")
+        .and_then(|c| c.as_array())
+        .and_then(|arr| {
+            // Some Anthropic-compatible endpoints (e.g. Kimi) prepend
+            // `thinking` blocks — take the first block of type "text",
+            // falling back to any block carrying a text field.
+            arr.iter()
+                .find(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+                .or_else(|| arr.iter().find(|b| b.get("text").is_some()))
+        })
+        .and_then(|block| block.get("text"))
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow::anyhow!("Anthropic response missing a text content block"))
+}
+
+/// OpenAI-compatible chat completions: POST {base_url}/chat/completions
+/// with `Authorization: Bearer <key>`. Response text at
+/// `.choices[0].message.content`. Retries once without `response_format`
+/// for servers that reject it.
+fn call_openai_chat_completions(config: &ConsolidationConfig, prompt: &str) -> Result<String> {
+    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+    let send = |with_response_format: bool| -> std::result::Result<String, ureq::Error> {
+        let mut body = serde_json::json!({
+            "model": config.model,
+            "messages": [{ "role": "user", "content": prompt }],
+            "temperature": 0.1
+        });
+        if with_response_format {
+            body["response_format"] = serde_json::json!({ "type": "json_object" });
+        }
+        let mut req = ureq::post(&url)
+            .set("content-type", "application/json")
+            .timeout(std::time::Duration::from_secs(120));
+        if !config.api_key.is_empty() {
+            req = req.set("Authorization", &format!("Bearer {}", config.api_key));
+        }
+        let resp: serde_json::Value = req.send_json(body)?.into_json()?;
+        resp.get("choices")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|ch| ch.get("message"))
+            .and_then(|m| m.get("content"))
+            .and_then(|t| t.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| {
+                ureq::Error::Status(
+                    502,
+                    ureq::Response::new(502, "Bad Gateway", "missing choices[0].message.content")
+                        .unwrap(),
+                )
+            })
+    };
+
+    match send(true) {
+        Ok(text) => Ok(text),
+        Err(first_err) => {
+            // Some compatible servers (older vLLM, llama.cpp) reject
+            // response_format — retry without it before giving up.
+            send(false).map_err(|_| anyhow::anyhow!(first_err))
+        }
+    }
+}
+
+/// Parse the LLM merge decision out of a raw response string, tolerating
+/// Markdown code fences and surrounding prose.
+fn parse_merge_response(raw: &str) -> Result<LlmMergeResponse> {
+    let mut text = raw.trim();
+
+    // Strip a single wrapping code fence (```json ... ``` or ``` ... ```).
+    if text.starts_with("```") {
+        if let Some(first_nl) = text.find('\n') {
+            let inner = &text[first_nl + 1..];
+            text = inner.strip_suffix("```").unwrap_or(inner).trim();
+        }
+    }
+
+    if let Ok(parsed) = serde_json::from_str::<LlmMergeResponse>(text) {
+        return Ok(parsed);
+    }
+
+    // Fall back to the outermost JSON object in the string.
+    if let (Some(start), Some(end)) = (text.find('{'), text.rfind('}')) {
+        if start < end {
+            if let Ok(parsed) = serde_json::from_str::<LlmMergeResponse>(&text[start..=end]) {
+                return Ok(parsed);
+            }
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "Failed to parse LLM merge decision JSON from response"
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -831,6 +1097,105 @@ impl AtheneumGraph {
 mod tests {
     use super::*;
     use crate::{LintConfig, MaintainConfig};
+
+    #[test]
+    fn parse_merge_response_plain_json() {
+        let raw = r#"{"should_merge": true, "keeper_name": "Foo", "keeper_description": "Bar"}"#;
+        let parsed = parse_merge_response(raw).unwrap();
+        assert!(parsed.should_merge);
+        assert_eq!(parsed.keeper_name, "Foo");
+        assert_eq!(parsed.keeper_description, "Bar");
+    }
+
+    #[test]
+    fn parse_merge_response_code_fence() {
+        let raw = "```json\n{\"should_merge\": false, \"keeper_name\": \"\", \"keeper_description\": \"\"}\n```";
+        let parsed = parse_merge_response(raw).unwrap();
+        assert!(!parsed.should_merge);
+    }
+
+    #[test]
+    fn parse_merge_response_surrounding_prose() {
+        let raw = "Here is my decision:\n{\"should_merge\": true, \"keeper_name\": \"K\", \"keeper_description\": \"D\"}\nHope that helps.";
+        let parsed = parse_merge_response(raw).unwrap();
+        assert!(parsed.should_merge);
+        assert_eq!(parsed.keeper_name, "K");
+    }
+
+    #[test]
+    fn parse_merge_response_garbage_errors() {
+        assert!(parse_merge_response("no json here").is_err());
+    }
+
+    #[test]
+    fn consolidation_config_from_llm_config_anthropic() {
+        let llm = crate::config::LlmConfig {
+            provider: crate::config::LlmProvider::Anthropic,
+            base_url: "https://api.kimi.com/coding".to_string(),
+            model: "kimi-k3".to_string(),
+            api_key: "sk-test".to_string(),
+            swap_guard: crate::config::SwapGuardMode::Fallback,
+        };
+        let cfg = ConsolidationConfig::from_llm_config(&llm);
+        assert_eq!(cfg.provider, crate::config::LlmProvider::Anthropic);
+        assert_eq!(cfg.base_url, "https://api.kimi.com/coding");
+        assert_eq!(cfg.model, "kimi-k3");
+        assert_eq!(cfg.api_key, "sk-test");
+        // Legacy ollama default retained for the ollama path.
+        assert_eq!(cfg.ollama_url, "http://127.0.0.1:11434");
+    }
+
+    #[test]
+    fn consolidation_config_from_llm_config_ollama() {
+        let llm = crate::config::LlmConfig {
+            provider: crate::config::LlmProvider::Ollama,
+            base_url: "http://localhost:11434".to_string(),
+            model: "codellama".to_string(),
+            api_key: String::new(),
+            swap_guard: crate::config::SwapGuardMode::Adapt,
+        };
+        let cfg = ConsolidationConfig::from_llm_config(&llm);
+        assert_eq!(cfg.provider, crate::config::LlmProvider::Ollama);
+        assert_eq!(cfg.ollama_url, "http://localhost:11434");
+        assert_eq!(cfg.model, "codellama");
+        assert_eq!(cfg.swap_guard, crate::config::SwapGuardMode::Adapt);
+    }
+
+    #[test]
+    fn semantic_consolidation_dry_run_does_not_merge() {
+        let graph = AtheneumGraph::open_in_memory().unwrap();
+
+        for (name, desc) in [
+            ("Lexical Concept Test One", "Desc A"),
+            ("Lexical Concept Test On", "Desc B"),
+        ] {
+            let entity = sqlitegraph::GraphEntity {
+                id: 0,
+                kind: "Concept".to_string(),
+                name: name.to_string(),
+                file_path: None,
+                data: serde_json::json!({ "description": desc }),
+            };
+            graph.inner.insert_entity(&entity).unwrap();
+        }
+
+        let config = ConsolidationConfig {
+            similarity_threshold: 0.7,
+            ollama_url: "http://invalid-url-to-trigger-offline-fallback.local".to_string(),
+            dry_run: true,
+            ..Default::default()
+        };
+
+        let report = graph.semantic_consolidation(&config).unwrap();
+        assert!(report.dry_run);
+        assert_eq!(report.merges_completed, 0);
+        assert!(report.details.iter().any(|d| d.contains("[dry-run]")));
+        // Nothing was superseded.
+        let concepts = graph.entities_by_kind("Concept").unwrap();
+        assert!(concepts
+            .iter()
+            .all(|c| c.data.get("superseded_at").is_none()));
+    }
 
     #[test]
     fn trigram_jaccard_identical() {
@@ -1334,6 +1699,7 @@ mod tests {
             model: "gemma4:e2b".to_string(),
             ollama_url: "http://invalid-url-to-trigger-offline-fallback.local".to_string(),
             swap_guard: crate::config::SwapGuardMode::Fallback,
+            ..Default::default()
         };
 
         let report = graph.semantic_consolidation(&config).unwrap();
