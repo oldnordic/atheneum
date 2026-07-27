@@ -1070,7 +1070,8 @@ fn dream_semantic() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMc
             "similarity_threshold": { "type": "number", "default": 0.4, "description": "Min Jaccard lexical similarity to trigger merge decision." },
             "model": { "type": "string", "default": "gemma4:e2b", "description": "Llama model to run LLM merge evaluation." },
             "ollama_url": { "type": "string", "default": "http://127.0.0.1:11434", "description": "Host URL of local Ollama server." },
-            "swap_guard": { "type": "string", "default": "fallback", "description": "Swap guard mode (strict, adapt, fallback)." }
+            "swap_guard": { "type": "string", "default": "fallback", "description": "Swap guard mode (strict, adapt, fallback)." },
+            "dry_run": { "type": "boolean", "default": false, "description": "If true, report candidate merges without executing them." }
         }
     });
     let schema: Map<String, Value> = schema.as_object().unwrap().clone();
@@ -1087,11 +1088,13 @@ fn dream_semantic() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMc
                 let model = args["model"].as_str().map(String::from);
                 let ollama_url = args["ollama_url"].as_str().map(String::from);
                 let swap_guard = args["swap_guard"].as_str().map(String::from);
+                let dry_run = args["dry_run"].as_bool();
                 let params = crate::backend::DreamSemanticParams {
                     similarity_threshold,
                     model,
                     ollama_url,
                     swap_guard,
+                    dry_run,
                 };
                 match ctx.service.backend.dream_semantic(params).await {
                     Ok(v) => json_result(v),

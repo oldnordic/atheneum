@@ -1497,6 +1497,51 @@ fn run() -> anyhow::Result<()> {
             )?;
             print_json(serde_json::to_value(&report)?)?;
         }
+        "dream-semantic" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum dream-semantic <db-path> [--model M] [--ollama-url U] [--similarity-threshold F] [--swap-guard <strict|adapt|fallback>] [--dry-run|--apply]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let opts = parse_options(&args[3..])?;
+            let graph = AtheneumGraph::open(&db_path)?;
+
+            // Base LLM settings come from ~/.config/atheneum/config.toml
+            // [llm] (provider, base_url, model, api_key); flag overrides below.
+            let mut config = match atheneum::load_config() {
+                Ok(cfg) => atheneum::ConsolidationConfig::from_llm_config(&cfg.llm),
+                Err(_) => atheneum::ConsolidationConfig::default(),
+            };
+            if let Some(model) = opts.model {
+                config.model = model;
+            }
+            if let Some(ollama_url) = opts.ollama_url {
+                // Explicit --ollama-url selects the legacy ollama path.
+                config.provider = atheneum::LlmProvider::Ollama;
+                config.ollama_url = ollama_url;
+            }
+            if let Some(t) = opts.similarity_threshold.as_deref() {
+                config.similarity_threshold = t
+                    .parse::<f64>()
+                    .map_err(|e| anyhow::anyhow!("invalid similarity-threshold '{}': {}", t, e))?;
+            }
+            if let Some(sg) = opts.swap_guard.as_deref() {
+                config.swap_guard = match sg {
+                    "strict" => atheneum::SwapGuardMode::Strict,
+                    "adapt" => atheneum::SwapGuardMode::Adapt,
+                    "fallback" => atheneum::SwapGuardMode::Fallback,
+                    other => anyhow::bail!(
+                        "unknown swap-guard '{}' (expected strict|adapt|fallback)",
+                        other
+                    ),
+                };
+            }
+            // Default to dry-run unless --apply is passed explicitly.
+            config.dry_run = !opts.apply;
+
+            let report = graph.semantic_consolidation(&config)?;
+            print_json(serde_json::to_value(&report)?)?;
+        }
         "wiki-dream" => {
             if args.len() < 3 {
                 eprintln!(
@@ -1841,6 +1886,15 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     writeln!(writer)?;
     writeln!(
         writer,
+        "  dream-semantic <db> [--model M] [--ollama-url U] [--similarity-threshold F] [--swap-guard M] [--dry-run|--apply]"
+    )?;
+    writeln!(
+        writer,
+        "    Merge closely-related/redundant concepts via LLM (provider from config [llm]) with lexical fallback"
+    )?;
+    writeln!(writer)?;
+    writeln!(
+        writer,
         "  search <db-path> <query> [--k N] [--project P] [--max-tokens N]  HNSW/lexical search"
     )?;
     writeln!(
@@ -2109,6 +2163,10 @@ struct CliOptions {
     broken_link_mode: Option<String>,
     interval: Option<String>,
     exclude_projects: Vec<String>,
+    model: Option<String>,
+    ollama_url: Option<String>,
+    similarity_threshold: Option<String>,
+    swap_guard: Option<String>,
 }
 
 /// Read a required positional argument, rejecting flag-looking values.
@@ -2238,6 +2296,10 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
                 "--port" => opts.port = Some(value),
                 "--interval" => opts.interval = Some(value),
                 "--exclude-project" => opts.exclude_projects.push(value),
+                "--model" => opts.model = Some(value),
+                "--ollama-url" => opts.ollama_url = Some(value),
+                "--similarity-threshold" => opts.similarity_threshold = Some(value),
+                "--swap-guard" => opts.swap_guard = Some(value),
                 other => anyhow::bail!("unknown option: {}", other),
             }
             i += 2;
