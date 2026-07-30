@@ -69,15 +69,7 @@ impl backend::Backend for MockBackend {
     async fn list_events(&self, _l: i64) -> anyhow::Result<serde_json::Value> {
         Ok(json!({"events": []}))
     }
-    async fn navigate(
-        &self,
-        _q: &str,
-        _k: usize,
-        _d: u32,
-        _o: usize,
-        _l: usize,
-        _t: Option<bool>,
-    ) -> anyhow::Result<serde_json::Value> {
+    async fn navigate(&self, _p: backend::NavigateParams) -> anyhow::Result<serde_json::Value> {
         Ok(json!({"subgraphs": [], "count": 0}))
     }
     async fn graph_stats(&self) -> anyhow::Result<serde_json::Value> {

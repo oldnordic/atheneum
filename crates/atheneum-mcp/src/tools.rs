@@ -495,7 +495,13 @@ fn navigate() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServe
             "depth": { "type": "integer", "minimum": 1, "maximum": 5, "default": 2, "description": "BFS depth for subgraph traversal" },
             "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Entity offset for pagination (skip first N signal entities)" },
             "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50, "description": "Max signal entities to return per view (pagination)" },
-            "trace": { "type": "boolean", "default": false, "description": "If true, record a QueryTrace entity for this query" }
+            "trace": { "type": "boolean", "default": false, "description": "If true, record a QueryTrace entity for this query" },
+            "kind": {
+                "type": "string",
+                "enum": ["knowledge", "code", "all"],
+                "default": "knowledge",
+                "description": "knowledge = atheneum graph only (default, unchanged behavior). code = magellan/llmgrep cross-project subgraph walk only. all = both, merged and provenance-tagged."
+            }
         },
         "required": ["query"]
     });
@@ -510,13 +516,16 @@ fn navigate() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServe
         |ctx: rmcp::handler::server::tool::ToolCallContext<'_, AtheneumMcpServer>| {
             Box::pin(async move {
                 let args = extract_args(ctx.arguments);
-                let query = args["query"].as_str().unwrap_or("").to_string();
-                let k = args["k"].as_u64().unwrap_or(10) as usize;
-                let depth = args["depth"].as_u64().unwrap_or(2) as u32;
-                let offset = args["offset"].as_u64().unwrap_or(0) as usize;
-                let limit = args["limit"].as_u64().unwrap_or(50) as usize;
-                let trace = args["trace"].as_bool();
-                let result = ctx.service.backend.navigate(&query, k, depth, offset, limit, trace).await;
+                let params = crate::backend::NavigateParams {
+                    query: args["query"].as_str().unwrap_or("").to_string(),
+                    k: args["k"].as_u64().unwrap_or(10) as usize,
+                    depth: args["depth"].as_u64().map(|v| v as u32),
+                    offset: args["offset"].as_u64().unwrap_or(0) as usize,
+                    limit: args["limit"].as_u64().unwrap_or(50) as usize,
+                    trace: args["trace"].as_bool(),
+                    kind: crate::backend::SearchKind::from_str_default(args["kind"].as_str()),
+                };
+                let result = ctx.service.backend.navigate(params).await;
                 match result {
                     Ok(v) => json_result(v),
                     Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),

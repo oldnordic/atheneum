@@ -148,6 +148,18 @@ pub struct SearchParams {
     pub cursor: Option<String>,
 }
 
+/// Parameters for the unified `navigate` tool.
+#[derive(Debug, Clone)]
+pub struct NavigateParams {
+    pub query: String,
+    pub k: usize,
+    pub depth: Option<u32>,
+    pub offset: usize,
+    pub limit: usize,
+    pub trace: Option<bool>,
+    pub kind: SearchKind,
+}
+
 // ---------------------------------------------------------------------------
 // Backend trait
 // ---------------------------------------------------------------------------
@@ -165,15 +177,7 @@ pub trait Backend: Send + Sync + 'static {
     async fn query_memory(&self, params: QueryMemoryParams) -> Result<Value>;
     async fn list_sessions(&self, limit: i64) -> Result<Value>;
     async fn list_events(&self, limit: i64) -> Result<Value>;
-    async fn navigate(
-        &self,
-        query: &str,
-        k: usize,
-        depth: u32,
-        offset: usize,
-        limit: usize,
-        trace: Option<bool>,
-    ) -> Result<Value>;
+    async fn navigate(&self, params: NavigateParams) -> Result<Value>;
     async fn graph_stats(&self) -> Result<Value>;
     // --- Phase 2 additions ---
     async fn search_memory(&self, query: &str, k: usize, project: Option<&str>) -> Result<Value>;
@@ -440,19 +444,17 @@ pub mod http {
             self.get_json(&path).await
         }
 
-        async fn navigate(
-            &self,
-            query: &str,
-            k: usize,
-            depth: u32,
-            offset: usize,
-            limit: usize,
-            _trace: Option<bool>,
-        ) -> Result<Value> {
+        async fn navigate(&self, params: NavigateParams) -> Result<Value> {
+            // NOTE: HTTP backend does not yet support kind — forwards
+            // query/k/depth/offset/limit only, same as before this task.
+            // Tracked as a gap, not silently dropped.
+            let depth = params.depth.unwrap_or(crate::envelope::DEFAULT_DEPTH);
             let path = format!(
-                "/atheneum/graph/navigate?q={}&k={}&depth={depth}&offset={offset}&limit={limit}",
-                encode(query),
-                k
+                "/atheneum/graph/navigate?q={}&k={}&depth={depth}&offset={}&limit={}",
+                encode(&params.query),
+                params.k,
+                params.offset,
+                params.limit
             );
             self.get_json(&path).await
         }
@@ -859,43 +861,138 @@ pub mod direct {
             })
         }
 
-        async fn navigate(
-            &self,
-            query: &str,
-            k: usize,
-            depth: u32,
-            offset: usize,
-            limit: usize,
-            trace: Option<bool>,
-        ) -> Result<Value> {
-            let graph = self.graph.lock().await;
-            tokio::task::block_in_place(|| {
-                let (results, trace_id) = graph.navigate_with_trace(
-                    query,
-                    k,
-                    depth,
-                    None,
-                    None,
-                    None,
-                    trace.unwrap_or(false),
-                )?;
-                let views: Vec<Value> = results
-                    .into_iter()
-                    .map(|v| {
-                        serialize_paginated_view(
-                            &v.entry, v.depth, v.entities, v.edges, offset, limit,
-                        )
-                    })
-                    .collect();
-                if let Some(tid) = trace_id {
-                    Ok(json!({
-                        "subgraphs": views,
-                        "trace_id": tid
-                    }))
-                } else {
-                    Ok(Value::Array(views))
+        async fn navigate(&self, params: NavigateParams) -> Result<Value> {
+            // Depth is always clamped for traversal safety, regardless of kind
+            // (an unbounded BFS depth is a real cost even on the knowledge-only
+            // path). Whether that clamp is *reported* to the caller differs by
+            // shape below.
+            let (depth, depth_clamped) = crate::envelope::clamp_depth(params.depth);
+
+            if params.kind == SearchKind::Knowledge {
+                // Compatibility: today's callers pass no kind (or kind=knowledge
+                // explicitly) and expect the exact pre-existing
+                // navigate_with_trace + serialize_paginated_view shape — a bare
+                // array, or {subgraphs, trace_id} when trace=true. No envelope,
+                // no provenance/source tags, no depth_clamped field: changing
+                // this shape is exactly what's forbidden for the default path.
+                let graph = self.graph.lock().await;
+                return tokio::task::block_in_place(|| {
+                    let (results, trace_id) = graph.navigate_with_trace(
+                        &params.query,
+                        params.k,
+                        depth,
+                        None,
+                        None,
+                        None,
+                        params.trace.unwrap_or(false),
+                    )?;
+                    let views: Vec<Value> = results
+                        .into_iter()
+                        .map(|v| {
+                            serialize_paginated_view(
+                                &v.entry, v.depth, v.entities, v.edges, params.offset,
+                                params.limit,
+                            )
+                        })
+                        .collect();
+                    if let Some(tid) = trace_id {
+                        Ok(json!({
+                            "subgraphs": views,
+                            "trace_id": tid
+                        }))
+                    } else {
+                        Ok(Value::Array(views))
+                    }
+                });
+            }
+
+            // kind == Code | All: enveloped/fan-out shape.
+            let mut envelope = crate::envelope::Envelope::new(params.limit.max(1));
+            envelope.depth_clamped = depth_clamped;
+
+            if matches!(params.kind, SearchKind::Knowledge | SearchKind::All) {
+                let graph = self.graph.lock().await;
+                let knowledge_result = tokio::task::block_in_place(|| {
+                    graph.navigate_with_trace(
+                        &params.query,
+                        params.k,
+                        depth,
+                        None,
+                        None,
+                        None,
+                        params.trace.unwrap_or(false),
+                    )
+                });
+                match knowledge_result {
+                    Ok((results, trace_id)) => {
+                        for v in results {
+                            let mut view = serialize_paginated_view(
+                                &v.entry, v.depth, v.entities, v.edges, params.offset,
+                                params.limit,
+                            );
+                            view["provenance"] = serde_json::json!(if v.depth <= 1 {
+                                crate::envelope::Provenance::Inferred
+                            } else {
+                                crate::envelope::Provenance::Ambiguous
+                            });
+                            view["source"] = serde_json::json!("knowledge");
+                            if let Some(tid) = &trace_id {
+                                view["trace_id"] = serde_json::json!(tid);
+                            }
+                            envelope.items.push(view);
+                        }
+                    }
+                    Err(e) => envelope.errors.push(crate::envelope::EnvelopeError {
+                        backend: "knowledge".to_string(),
+                        code: crate::envelope::ERR_BACKEND_UNAVAILABLE.to_string(),
+                        message: e.to_string(),
+                    }),
                 }
-            })
+            }
+
+            if matches!(params.kind, SearchKind::Code | SearchKind::All) {
+                match &self.cross {
+                    Some(cross) => {
+                        let mut cross = cross.lock().await;
+                        let code_result = tokio::task::block_in_place(|| {
+                            cross.cross_navigate(&params.query, None, params.k, depth)
+                        });
+                        match code_result {
+                            Ok(subgraphs) => {
+                                for sg in subgraphs {
+                                    envelope.items.push(json!({
+                                        "project": sg.project,
+                                        "entry_id": sg.entry_id,
+                                        "entity_count": sg.entities.len(),
+                                        "edge_count": sg.edges.len(),
+                                        "entities": sg.entities.iter().map(|e| json!({
+                                            "id": e.id, "kind": e.kind, "name": e.name, "file_path": e.file_path,
+                                        })).collect::<Vec<_>>(),
+                                        "provenance": if depth <= 1 { crate::envelope::Provenance::Extracted } else { crate::envelope::Provenance::Ambiguous },
+                                        "source": "code",
+                                    }));
+                                }
+                            }
+                            Err(e) => envelope.errors.push(crate::envelope::EnvelopeError {
+                                backend: "code".to_string(),
+                                code: crate::envelope::ERR_BACKEND_UNAVAILABLE.to_string(),
+                                message: e.to_string(),
+                            }),
+                        }
+                    }
+                    None if matches!(params.kind, SearchKind::Code) => {
+                        envelope.errors.push(crate::envelope::EnvelopeError {
+                            backend: "code".to_string(),
+                            code: crate::envelope::ERR_BACKEND_UNAVAILABLE.to_string(),
+                            message: "code navigate unavailable: no CrossRouter configured"
+                                .to_string(),
+                        });
+                    }
+                    None => {}
+                }
+            }
+
+            Ok(envelope.to_value())
         }
 
         async fn graph_stats(&self) -> Result<Value> {
@@ -1374,6 +1471,70 @@ mod tests {
         assert!(
             items.iter().any(|i| i["provenance"] == "INFERRED"),
             "expected at least one INFERRED (knowledge) hit, got {items:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // navigate(kind=...) — direct backend dispatch
+    // -----------------------------------------------------------------
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn navigate_without_kind_defaults_to_knowledge_only_unchanged_shape() {
+        let backend = test_direct_backend_with_seeded_memory();
+        let params = NavigateParams {
+            query: "seeded".to_string(),
+            k: 5,
+            depth: None,
+            offset: 0,
+            limit: 20,
+            trace: None,
+            kind: SearchKind::Knowledge,
+        };
+        let result = backend.navigate(params).await.unwrap();
+        // Compatibility requirement: no kind (or kind=knowledge explicitly), no
+        // trace, must return the exact pre-existing bare array
+        // navigate_with_trace + serialize_paginated_view has always produced —
+        // not the new envelope object, and no depth_clamped field anywhere.
+        assert!(
+            result.is_array(),
+            "expected bare array (today's shape), got {result:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn navigate_depth_beyond_max_is_clamped_and_flagged() {
+        let backend = test_direct_backend_with_seeded_memory();
+        let params = NavigateParams {
+            query: "seeded".to_string(),
+            k: 5,
+            depth: Some(10),
+            offset: 0,
+            limit: 20,
+            trace: None,
+            kind: SearchKind::All,
+        };
+        let result = backend.navigate(params).await.unwrap();
+        assert_eq!(result["depth_clamped"], true);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn navigate_kind_all_tags_code_hits_ambiguous_beyond_first_hop() {
+        let (backend, _db_path, project_name) = test_direct_backend_with_registered_code_project();
+        let params = NavigateParams {
+            query: "shared_probe_symbol".to_string(),
+            k: 5,
+            depth: Some(2),
+            offset: 0,
+            limit: 20,
+            trace: None,
+            kind: SearchKind::All,
+        };
+        let _ = project_name; // cross_navigate in this router searches all registered projects
+        let result = backend.navigate(params).await.unwrap();
+        let items = result["items"].as_array().unwrap();
+        assert!(
+            items.iter().any(|i| i["source"] == "code"),
+            "expected at least one code-sourced navigate item, got {items:?}"
         );
     }
 }

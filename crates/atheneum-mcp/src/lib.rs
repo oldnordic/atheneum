@@ -189,15 +189,7 @@ mod tests {
         async fn list_events(&self, _l: i64) -> anyhow::Result<Value> {
             Ok(Value::Null)
         }
-        async fn navigate(
-            &self,
-            _q: &str,
-            _k: usize,
-            _d: u32,
-            _o: usize,
-            _l: usize,
-            _t: Option<bool>,
-        ) -> anyhow::Result<Value> {
+        async fn navigate(&self, _p: backend::NavigateParams) -> anyhow::Result<Value> {
             Ok(Value::Null)
         }
         async fn graph_stats(&self) -> anyhow::Result<Value> {
