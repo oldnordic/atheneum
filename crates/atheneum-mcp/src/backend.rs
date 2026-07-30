@@ -1105,10 +1105,18 @@ pub mod direct {
                 }
             };
 
+            // Blocks the long-form `--db`/`--db=<path>` clap convention used
+            // by every subcommand, plus magellan's `score` subcommand, which
+            // has its own hand-rolled parser accepting a bare `-d` shorthand
+            // for the same flag (magellan/src/cli/parsers/score.rs:23). That
+            // parser only recognizes `-d <path>` (next-token form, via
+            // parse_required_arg) — never `-d=<path>` — so no `-d=` guard is
+            // needed. No other magellan/llmgrep/mirage subcommand has a
+            // short `-d` alias (checked across magellan's parsers).
             if params
                 .args
                 .iter()
-                .any(|a| a == "--db" || a.starts_with("--db="))
+                .any(|a| a == "--db" || a.starts_with("--db=") || a == "-d")
             {
                 envelope.errors.push(crate::envelope::EnvelopeError {
                     backend: "code".to_string(),
@@ -1860,6 +1868,30 @@ mod tests {
                 .any(|e| e["code"] == crate::envelope::ERR_PARSE_ERROR),
             "expected ERR_PARSE_ERROR for --db=<path> override attempt, got {errors2:?}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn code_query_short_flag_db_override_on_score_subcommand_is_rejected() {
+        // magellan's `score` subcommand has its own hand-rolled arg parser
+        // (magellan/src/cli/parsers/score.rs) that accepts a bare `-d`
+        // shorthand for `--db`, unlike every other subcommand. Confirms the
+        // args-scan blocks this bypass too, not just the long-form flag.
+        let (backend, _db_path, project_name) = test_direct_backend_with_registered_code_project();
+        let params = CodeQueryParams {
+            project: project_name,
+            tool: "magellan".to_string(),
+            subcommand: "score".to_string(),
+            args: vec!["-d".to_string(), "/tmp/whatever".to_string()],
+        };
+        let result = backend.code_query(params).await.unwrap();
+        let errors = result["errors"].as_array().unwrap();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e["code"] == crate::envelope::ERR_PARSE_ERROR),
+            "expected ERR_PARSE_ERROR for -d override attempt, got {errors:?}"
+        );
+        assert!(result["items"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]
