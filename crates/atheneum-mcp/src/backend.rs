@@ -569,11 +569,19 @@ pub mod direct {
     pub struct DirectBackend {
         graph: Arc<tokio::sync::Mutex<AtheneumGraph>>,
         cross: Option<Arc<tokio::sync::Mutex<atheneum::CrossRouter>>>,
+        // ponytail: test-only override so code_query's subprocess spawn can be
+        // made to deterministically fail (bogus bin_dir) without depending on
+        // whether magellan/llmgrep/mirage happen to be on the real PATH.
+        code_bin_dir: Option<std::path::PathBuf>,
     }
 
     impl DirectBackend {
         pub fn new(graph: Arc<tokio::sync::Mutex<AtheneumGraph>>) -> Self {
-            Self { graph, cross: None }
+            Self {
+                graph,
+                cross: None,
+                code_bin_dir: None,
+            }
         }
 
         pub fn with_cross_router(
@@ -583,7 +591,14 @@ pub mod direct {
             Self {
                 graph,
                 cross: Some(Arc::new(tokio::sync::Mutex::new(cross))),
+                code_bin_dir: None,
             }
+        }
+
+        #[cfg(test)]
+        pub fn with_code_bin_dir(mut self, dir: std::path::PathBuf) -> Self {
+            self.code_bin_dir = Some(dir);
+            self
         }
     }
 
@@ -1090,13 +1105,30 @@ pub mod direct {
                 }
             };
 
+            if params
+                .args
+                .iter()
+                .any(|a| a == "--db" || a.starts_with("--db="))
+            {
+                envelope.errors.push(crate::envelope::EnvelopeError {
+                    backend: "code".to_string(),
+                    code: crate::envelope::ERR_PARSE_ERROR.to_string(),
+                    message: "args must not include --db; project is resolved server-side"
+                        .to_string(),
+                });
+                return Ok(envelope.to_value());
+            }
+
             let mut args = vec![
                 params.subcommand.clone(),
                 "--db".to_string(),
                 magellan_db.clone(),
             ];
             args.extend(params.args.clone());
-            let runner = crate::subprocess::CodeQueryRunner::new();
+            let runner = match &self.code_bin_dir {
+                Some(dir) => crate::subprocess::CodeQueryRunner::with_bin_dir(dir.clone()),
+                None => crate::subprocess::CodeQueryRunner::new(),
+            };
             match runner.run(&magellan_db, tool, args).await {
                 Ok(value) => {
                     let tagged = match value {
@@ -1744,6 +1776,117 @@ mod tests {
         assert!(
             items.iter().any(|i| i["source"] == "code"),
             "expected at least one code-sourced navigate item, got {items:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // code_query — DirectBackend dispatch logic
+    // -----------------------------------------------------------------
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn code_query_unknown_project_returns_project_not_found() {
+        let (backend, _db_path, _project_name) = test_direct_backend_with_registered_code_project();
+        let params = CodeQueryParams {
+            project: "totally-unknown-project-xyz".to_string(),
+            tool: "magellan".to_string(),
+            subcommand: "status".to_string(),
+            args: vec![],
+        };
+        let result = backend.code_query(params).await.unwrap();
+        let errors = result["errors"].as_array().unwrap();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e["code"] == crate::envelope::ERR_PROJECT_NOT_FOUND),
+            "expected ERR_PROJECT_NOT_FOUND, got {errors:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn code_query_unknown_tool_returns_parse_error() {
+        let (backend, _db_path, project_name) = test_direct_backend_with_registered_code_project();
+        let params = CodeQueryParams {
+            project: project_name,
+            tool: "not-a-real-tool".to_string(),
+            subcommand: "status".to_string(),
+            args: vec![],
+        };
+        let result = backend.code_query(params).await.unwrap();
+        let errors = result["errors"].as_array().unwrap();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e["code"] == crate::envelope::ERR_PARSE_ERROR),
+            "expected ERR_PARSE_ERROR, got {errors:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn code_query_args_db_override_is_rejected_before_spawning() {
+        let (backend, _db_path, project_name) = test_direct_backend_with_registered_code_project();
+        let params = CodeQueryParams {
+            project: project_name,
+            tool: "magellan".to_string(),
+            subcommand: "status".to_string(),
+            args: vec!["--db".to_string(), "/etc/passwd".to_string()],
+        };
+        let result = backend.code_query(params).await.unwrap();
+        let errors = result["errors"].as_array().unwrap();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e["code"] == crate::envelope::ERR_PARSE_ERROR),
+            "expected ERR_PARSE_ERROR for --db override attempt, got {errors:?}"
+        );
+        // Rejected before reaching the subprocess — no items should have
+        // been produced (a real spawn would either error differently or
+        // succeed and push an item).
+        assert!(result["items"].as_array().unwrap().is_empty());
+
+        // Same rejection for the `--db=<path>` spelling.
+        let (backend2, _db_path2, project_name2) =
+            test_direct_backend_with_registered_code_project();
+        let params2 = CodeQueryParams {
+            project: project_name2,
+            tool: "magellan".to_string(),
+            subcommand: "status".to_string(),
+            args: vec!["--db=/etc/passwd".to_string()],
+        };
+        let result2 = backend2.code_query(params2).await.unwrap();
+        let errors2 = result2["errors"].as_array().unwrap();
+        assert!(
+            errors2
+                .iter()
+                .any(|e| e["code"] == crate::envelope::ERR_PARSE_ERROR),
+            "expected ERR_PARSE_ERROR for --db=<path> override attempt, got {errors2:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn code_query_subprocess_spawn_failure_maps_to_backend_unavailable() {
+        let (backend, _db_path, project_name) = test_direct_backend_with_registered_code_project();
+        let backend = backend.with_code_bin_dir(std::path::PathBuf::from("/nonexistent-bin-dir"));
+        let params = CodeQueryParams {
+            project: project_name,
+            tool: "magellan".to_string(),
+            subcommand: "status".to_string(),
+            args: vec![],
+        };
+        let result = backend.code_query(params).await.unwrap();
+        let errors = result["errors"].as_array().unwrap();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e["code"] == crate::envelope::ERR_BACKEND_UNAVAILABLE),
+            "expected ERR_BACKEND_UNAVAILABLE (not a bare Err) for spawn failure, got {errors:?}"
+        );
+        // The caller-visible message must not leak raw subprocess
+        // stderr/stdout (Finding 1) — a spawn failure has none to leak
+        // anyway, but assert the message stays terse regardless.
+        let message = errors[0]["message"].as_str().unwrap();
+        assert!(
+            message.contains("magellan"),
+            "expected message to name the failing tool, got {message:?}"
         );
     }
 }

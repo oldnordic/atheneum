@@ -84,10 +84,16 @@ impl CodeQueryRunner {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            return Err(anyhow!(
-                "`{label}` exited with status {}: stderr: {stderr}; stdout: {stdout}",
-                output.status
-            ));
+            // Raw stderr/stdout is logged server-side only — never forwarded
+            // into the caller-visible error message (envelope.errors[]).
+            tracing::warn!(
+                label,
+                status = %output.status,
+                %stderr,
+                %stdout,
+                "code_query subprocess exited non-zero"
+            );
+            return Err(anyhow!("`{label}` exited with status {}", output.status));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -147,5 +153,32 @@ mod tests {
         let value = runner.run_command(cmd, "test_echo").await.unwrap();
         assert_eq!(value["tool"], "test_echo");
         assert!(value["output"].as_str().unwrap().contains("plain text"));
+    }
+
+    #[tokio::test]
+    async fn run_command_failure_message_excludes_raw_stderr_and_stdout() {
+        // Global constraint: caller-visible errors must never contain raw
+        // subprocess stderr/stdout text.
+        let runner = CodeQueryRunner::with_bin_dir(std::path::PathBuf::from("/bin"));
+        let mut cmd = tokio::process::Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg("echo SECRET_STDOUT_MARKER_ABC123; echo SECRET_STDERR_MARKER_XYZ789 >&2; exit 7");
+        let err = runner
+            .run_command(cmd, "test_sh")
+            .await
+            .expect_err("expected non-zero exit to produce an Err");
+        let message = err.to_string();
+        assert!(
+            !message.contains("SECRET_STDOUT_MARKER_ABC123"),
+            "raw stdout leaked into caller-visible error message: {message:?}"
+        );
+        assert!(
+            !message.contains("SECRET_STDERR_MARKER_XYZ789"),
+            "raw stderr leaked into caller-visible error message: {message:?}"
+        );
+        assert!(
+            message.contains("test_sh") && message.contains("exit status: 7"),
+            "expected message to still identify the failing command and status, got {message:?}"
+        );
     }
 }
