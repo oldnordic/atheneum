@@ -169,6 +169,13 @@ pub struct CodeQueryParams {
     pub args: Vec<String>,
 }
 
+/// Parameters for the `event` tool (envoy multi-agent coordination passthrough).
+#[derive(Debug, Clone)]
+pub struct EventParams {
+    pub verb: String,
+    pub payload: Value,
+}
+
 // ---------------------------------------------------------------------------
 // Backend trait
 // ---------------------------------------------------------------------------
@@ -241,6 +248,42 @@ pub trait Backend: Send + Sync + 'static {
     async fn dream_semantic(&self, params: DreamSemanticParams) -> Result<Value>;
     async fn pin_entity(&self, id: i64) -> Result<Value>;
     async fn unpin_entity(&self, id: i64) -> Result<Value>;
+    async fn event(&self, params: EventParams) -> Result<Value>;
+}
+
+/// Shared implementation for the `event` tool — identical for
+/// [`http::HttpBackend`] and [`direct::DirectBackend`] since it's a
+/// separate envoy connection, independent of which atheneum backend mode
+/// is active.
+async fn event_impl(params: EventParams) -> Result<Value> {
+    let mut envelope = crate::envelope::Envelope::new(1);
+    let Some(verb) = crate::events::EnvoyVerb::from_str(&params.verb) else {
+        envelope.errors.push(crate::envelope::EnvelopeError {
+            backend: "event".to_string(),
+            code: crate::envelope::ERR_PARSE_ERROR.to_string(),
+            message: format!(
+                "unknown event verb '{}', expected send|claim|heartbeat|create_dependency",
+                params.verb
+            ),
+        });
+        return Ok(envelope.to_value());
+    };
+    let base_url =
+        std::env::var("ENVOY_URL").unwrap_or_else(|_| "http://localhost:9876".to_string());
+    let client = crate::events::EnvoyClient::new(base_url);
+    match client.call(verb, params.payload).await {
+        Ok(v) => envelope.items.push(v),
+        Err(e) => envelope.errors.push(crate::envelope::EnvelopeError {
+            backend: "event".to_string(),
+            code: if e.to_string().contains("timed out") {
+                crate::envelope::ERR_TIMEOUT.to_string()
+            } else {
+                crate::envelope::ERR_BACKEND_UNAVAILABLE.to_string()
+            },
+            message: e.to_string(),
+        }),
+    }
+    Ok(envelope.to_value())
 }
 
 #[cfg(any(feature = "direct", test))]
@@ -551,6 +594,10 @@ pub mod http {
         }
         async fn unpin_entity(&self, _id: i64) -> Result<Value> {
             Err(not_direct("unpin_entity"))
+        }
+
+        async fn event(&self, params: EventParams) -> Result<Value> {
+            super::event_impl(params).await
         }
     }
 }
@@ -1408,6 +1455,10 @@ pub mod direct {
                 graph.unpin_entity(id)?;
                 Ok(serde_json::json!({ "status": "success", "id": id, "pinned": false }))
             })
+        }
+
+        async fn event(&self, params: EventParams) -> Result<Value> {
+            super::event_impl(params).await
         }
     }
 }

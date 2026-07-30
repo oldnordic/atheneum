@@ -27,15 +27,16 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
 shellexpand = "3.1"
 
-# HTTP mode deps
-reqwest = { version = "0.12", features = ["json"], optional = true }
+# Used unconditionally by the event tool's envoy adapter (events.rs), and
+# by HttpBackend when the `http` feature is enabled.
+reqwest = { version = "0.12", features = ["json"] }
 
 # Direct mode deps
 atheneum = { path = "../atheneum", optional = true }
 
 [features]
 default = ["direct"]
-http = ["dep:reqwest"]
+http = []
 direct = ["dep:atheneum"]
 
 [dev-dependencies]

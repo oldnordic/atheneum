@@ -5,6 +5,7 @@
 
 pub mod backend;
 pub mod envelope;
+pub mod events;
 pub mod subprocess;
 pub mod tools;
 
@@ -296,6 +297,9 @@ mod tests {
         async fn unpin_entity(&self, id: i64) -> anyhow::Result<Value> {
             Ok(serde_json::json!({ "status": "success", "id": id, "pinned": false }))
         }
+        async fn event(&self, _p: backend::EventParams) -> anyhow::Result<Value> {
+            Ok(Value::Null)
+        }
     }
 
     fn mock_server() -> AtheneumMcpServer {
@@ -344,7 +348,8 @@ mod tests {
         assert!(names.contains(&"dream"));
         assert!(names.contains(&"maintain"));
         assert!(names.contains(&"seed_memory"));
-        assert_eq!(tools.len(), 30);
+        assert!(names.contains(&"event"));
+        assert_eq!(tools.len(), 31);
     }
 
     #[test]

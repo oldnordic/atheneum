@@ -47,6 +47,7 @@ pub fn register_all(router: &mut ToolRouter<AtheneumMcpServer>) {
     router.add_route(dream_semantic());
     router.add_route(pin_entity());
     router.add_route(unpin_entity());
+    router.add_route(event());
 }
 
 // ---------------------------------------------------------------------------
@@ -1220,6 +1221,43 @@ fn unpin_entity() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpS
                 let args = extract_args(ctx.arguments);
                 let id = args["id"].as_i64().unwrap_or(0);
                 match ctx.service.backend.unpin_entity(id).await {
+                    Ok(v) => json_result(v),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            })
+        },
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Tool: event
+// ---------------------------------------------------------------------------
+
+fn event() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServer> {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "verb": { "type": "string", "enum": ["send", "claim", "heartbeat", "create_dependency"] },
+            "payload": { "type": "object", "description": "Verb-specific payload, forwarded as-is to envoy" }
+        },
+        "required": ["verb", "payload"]
+    });
+    let schema: Map<String, Value> = schema.as_object().unwrap().clone();
+
+    rmcp::handler::server::router::tool::ToolRoute::new_dyn(
+        Tool::new(
+            "event",
+            "Envoy multi-agent coordination passthrough (send/claim/heartbeat/create_dependency). Payload forwarded as-is; response wrapped in the shared envelope.",
+            schema,
+        ),
+        |ctx: rmcp::handler::server::tool::ToolCallContext<'_, AtheneumMcpServer>| {
+            Box::pin(async move {
+                let args = extract_args(ctx.arguments);
+                let params = crate::backend::EventParams {
+                    verb: args["verb"].as_str().unwrap_or("").to_string(),
+                    payload: args["payload"].clone(),
+                };
+                match ctx.service.backend.event(params).await {
                     Ok(v) => json_result(v),
                     Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
                 }

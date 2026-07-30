@@ -174,6 +174,9 @@ impl backend::Backend for MockBackend {
     async fn unpin_entity(&self, id: i64) -> anyhow::Result<serde_json::Value> {
         Ok(serde_json::json!({ "status": "success", "id": id, "pinned": false }))
     }
+    async fn event(&self, _p: backend::EventParams) -> anyhow::Result<serde_json::Value> {
+        Ok(serde_json::Value::Null)
+    }
 }
 
 async fn send_json(w: &mut tokio::io::WriteHalf<tokio::io::DuplexStream>, msg: serde_json::Value) {
@@ -258,7 +261,8 @@ async fn mcp_server_initializes_and_lists_tools() {
     assert!(names.contains(&"maintain"));
     assert!(names.contains(&"seed_memory"));
     assert!(names.contains(&"code_query"));
-    assert_eq!(tools.len(), 30);
+    assert!(names.contains(&"event"));
+    assert_eq!(tools.len(), 31);
 
     // Call graph_stats tool
     send_json(
