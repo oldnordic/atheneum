@@ -4,6 +4,7 @@
 //! and knowledge graph as MCP tools.
 
 pub mod backend;
+pub mod envelope;
 pub mod tools;
 
 use rmcp::handler::server::router::tool::ToolRouter;
