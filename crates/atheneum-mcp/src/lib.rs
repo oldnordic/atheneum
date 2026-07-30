@@ -159,7 +159,7 @@ mod tests {
         async fn query_knowledge(&self, _t: &str, _p: Option<&str>) -> anyhow::Result<Value> {
             Ok(Value::Null)
         }
-        async fn search(&self, _q: &str, _k: usize, _p: Option<&str>) -> anyhow::Result<Value> {
+        async fn search(&self, _params: backend::SearchParams) -> anyhow::Result<Value> {
             Ok(Value::Null)
         }
         async fn store_memory(&self, _p: backend::StoreMemoryParams) -> anyhow::Result<Value> {

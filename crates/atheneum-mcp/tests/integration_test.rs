@@ -22,12 +22,7 @@ impl backend::Backend for MockBackend {
     ) -> anyhow::Result<serde_json::Value> {
         Ok(json!({"target": "test", "discoveries": []}))
     }
-    async fn search(
-        &self,
-        _q: &str,
-        _k: usize,
-        _p: Option<&str>,
-    ) -> anyhow::Result<serde_json::Value> {
+    async fn search(&self, _params: backend::SearchParams) -> anyhow::Result<serde_json::Value> {
         Ok(json!({"results": [], "count": 0}))
     }
     async fn store_memory(

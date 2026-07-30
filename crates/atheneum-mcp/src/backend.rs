@@ -118,6 +118,36 @@ const MIN_EDGE_LIMIT: usize = 32;
 #[cfg(any(feature = "direct", test))]
 const MAX_EDGE_LIMIT: usize = 200;
 
+/// Which backend(s) `search` fans out to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SearchKind {
+    #[default]
+    Knowledge,
+    Code,
+    All,
+}
+
+impl SearchKind {
+    pub fn from_str_default(s: Option<&str>) -> Self {
+        match s {
+            Some("code") => SearchKind::Code,
+            Some("all") => SearchKind::All,
+            _ => SearchKind::Knowledge,
+        }
+    }
+}
+
+/// Parameters for the unified `search` tool.
+#[derive(Debug, Clone)]
+pub struct SearchParams {
+    pub query: String,
+    pub k: usize,
+    pub project: Option<String>,
+    pub kind: SearchKind,
+    pub limit: Option<usize>,
+    pub cursor: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Backend trait
 // ---------------------------------------------------------------------------
@@ -126,7 +156,7 @@ const MAX_EDGE_LIMIT: usize = 200;
 pub trait Backend: Send + Sync + 'static {
     async fn store_discovery(&self, params: StoreDiscoveryParams) -> Result<Value>;
     async fn query_knowledge(&self, target: &str, project: Option<&str>) -> Result<Value>;
-    async fn search(&self, query: &str, k: usize, project: Option<&str>) -> Result<Value>;
+    async fn search(&self, params: SearchParams) -> Result<Value>;
     async fn store_memory(&self, params: StoreMemoryParams) -> Result<Value>;
     async fn update_memory(&self, params: UpdateMemoryParams) -> Result<Value>;
     async fn add_memory(&self, params: AddMemoryParams) -> Result<Value>;
@@ -349,9 +379,12 @@ pub mod http {
             self.get_json(&path).await
         }
 
-        async fn search(&self, query: &str, k: usize, project: Option<&str>) -> Result<Value> {
-            let mut path = format!("/atheneum/search?q={}&k={}", encode(query), k);
-            if let Some(p) = project {
+        async fn search(&self, params: SearchParams) -> Result<Value> {
+            // NOTE: HTTP backend does not yet support kind/limit/cursor — forwards
+            // query/k/project only, same as before this task. Tracked as a gap,
+            // not silently dropped.
+            let mut path = format!("/atheneum/search?q={}&k={}", encode(&params.query), params.k);
+            if let Some(p) = params.project.as_deref() {
                 path.push_str(&format!("&project={}", encode(p)));
             }
             self.get_json(&path).await
@@ -513,11 +546,22 @@ pub mod direct {
 
     pub struct DirectBackend {
         graph: Arc<tokio::sync::Mutex<AtheneumGraph>>,
+        cross: Option<Arc<tokio::sync::Mutex<atheneum::CrossRouter>>>,
     }
 
     impl DirectBackend {
         pub fn new(graph: Arc<tokio::sync::Mutex<AtheneumGraph>>) -> Self {
-            Self { graph }
+            Self { graph, cross: None }
+        }
+
+        pub fn with_cross_router(
+            graph: Arc<tokio::sync::Mutex<AtheneumGraph>>,
+            cross: atheneum::CrossRouter,
+        ) -> Self {
+            Self {
+                graph,
+                cross: Some(Arc::new(tokio::sync::Mutex::new(cross))),
+            }
         }
     }
 
@@ -561,12 +605,92 @@ pub mod direct {
             })
         }
 
-        async fn search(&self, query: &str, k: usize, project: Option<&str>) -> Result<Value> {
-            let graph = self.graph.lock().await;
-            tokio::task::block_in_place(|| {
-                let results = graph.lexical_search(query, k, project, None, None)?;
-                Ok(serde_json::to_value(results)?)
-            })
+        async fn search(&self, params: SearchParams) -> Result<Value> {
+            let limit = crate::envelope::clamp_limit(params.limit);
+            let mut envelope = crate::envelope::Envelope::new(limit);
+
+            if matches!(params.kind, SearchKind::Knowledge | SearchKind::All) {
+                let graph = self.graph.lock().await;
+                let knowledge_results = tokio::task::block_in_place(|| {
+                    graph.lexical_search(&params.query, params.k, params.project.as_deref(), None, None)
+                });
+                match knowledge_results {
+                    Ok(results) => {
+                        for r in results {
+                            let mut v = serde_json::to_value(&r)?;
+                            v["provenance"] = serde_json::json!(crate::envelope::Provenance::Inferred);
+                            v["source"] = serde_json::json!("knowledge");
+                            envelope.items.push(v);
+                        }
+                    }
+                    Err(e) => envelope.errors.push(crate::envelope::EnvelopeError {
+                        backend: "knowledge".to_string(),
+                        code: crate::envelope::ERR_BACKEND_UNAVAILABLE.to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+
+            if matches!(params.kind, SearchKind::Code | SearchKind::All) {
+                match &self.cross {
+                    Some(cross) => {
+                        let mut cross = cross.lock().await;
+                        let code_results = tokio::task::block_in_place(|| {
+                            cross.cross_search(&params.query, None, params.k)
+                        });
+                        match code_results {
+                            Ok(results) => {
+                                for r in results {
+                                    envelope.items.push(json!({
+                                        "project": r.project,
+                                        "id": r.id,
+                                        "kind": r.kind,
+                                        "name": r.name,
+                                        "file_path": r.file_path,
+                                        "data": r.data,
+                                        "provenance": crate::envelope::Provenance::Extracted,
+                                        "source": "code",
+                                    }));
+                                }
+                            }
+                            Err(e) => envelope.errors.push(crate::envelope::EnvelopeError {
+                                backend: "code".to_string(),
+                                code: crate::envelope::ERR_BACKEND_UNAVAILABLE.to_string(),
+                                message: e.to_string(),
+                            }),
+                        }
+                    }
+                    None => {
+                        if matches!(params.kind, SearchKind::Code) {
+                            envelope.errors.push(crate::envelope::EnvelopeError {
+                                backend: "code".to_string(),
+                                code: crate::envelope::ERR_BACKEND_UNAVAILABLE.to_string(),
+                                message: "code search unavailable: no CrossRouter configured"
+                                    .to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+
+            let offset = params
+                .cursor
+                .as_deref()
+                .and_then(crate::envelope::decode_cursor)
+                .map(|c| c.offset)
+                .unwrap_or(0);
+            let total = envelope.items.len();
+            let page: Vec<Value> = envelope.items.into_iter().skip(offset).take(limit).collect();
+            envelope.has_more = offset + page.len() < total;
+            envelope.items = page;
+            if envelope.has_more {
+                envelope.cursor = Some(crate::envelope::encode_cursor(&crate::envelope::Cursor {
+                    backend: "search".to_string(),
+                    offset: offset + envelope.items.len(),
+                }));
+            }
+
+            Ok(envelope.to_value())
         }
 
         async fn store_memory(&self, params: StoreMemoryParams) -> Result<Value> {
@@ -1027,6 +1151,7 @@ fn encode(s: &str) -> String {
 mod tests {
     use super::*;
     use atheneum::{GraphEdge, GraphEntity};
+    use std::sync::Arc;
 
     fn entity(id: i64, kind: &str, name: &str) -> GraphEntity {
         GraphEntity {
@@ -1076,5 +1201,125 @@ mod tests {
         assert_eq!(serialized_edges[0]["to_id"], 2);
         assert_eq!(view["total_signal_edges"], 1);
         assert_eq!(view["edges_has_more"], false);
+    }
+
+    // -----------------------------------------------------------------
+    // search(kind=...) — direct backend dispatch
+    // -----------------------------------------------------------------
+
+    fn test_direct_backend_with_seeded_memory() -> direct::DirectBackend {
+        let graph = atheneum::AtheneumGraph::open_in_memory().unwrap();
+        graph
+            .store_memory(
+                "seeded_test_key",
+                "seeded content for search test",
+                "agent",
+                0.8,
+                None,
+                None,
+            )
+            .unwrap();
+        direct::DirectBackend::new(Arc::new(tokio::sync::Mutex::new(graph)))
+    }
+
+    /// Builds a temp magellan-shaped SQLite db (same shape as
+    /// `atheneum::cross::tests::make_magellan_like_db`) with one
+    /// `graph_entities` row named `shared_probe_symbol`, registers it via a
+    /// temp `MetaRouter`/`meta.register_project`, and returns a `DirectBackend`
+    /// wired up with a `CrossRouter` pointed at that temp `meta.db`.
+    fn test_direct_backend_with_registered_code_project(
+    ) -> (direct::DirectBackend, std::path::PathBuf, String) {
+        let tmp_dir = tempfile::tempdir().unwrap().keep();
+        let meta_path = tmp_dir.join("meta.db");
+        let magellan_db = tmp_dir.join("code_project.db");
+
+        {
+            let conn = rusqlite::Connection::open(&magellan_db).unwrap();
+            conn.execute(
+                "CREATE TABLE graph_entities (
+                    id INTEGER PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    file_path TEXT,
+                    data TEXT NOT NULL DEFAULT '{}'
+                )",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "CREATE TABLE graph_edges (
+                    id INTEGER PRIMARY KEY,
+                    edge_type TEXT NOT NULL,
+                    from_id INTEGER NOT NULL,
+                    to_id INTEGER NOT NULL,
+                    data TEXT NOT NULL DEFAULT '{}'
+                )",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO graph_entities (id, kind, name, file_path, data) VALUES
+                 (1, 'Symbol', 'shared_probe_symbol', 'src/lib.rs', '{}')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let project_name = "code_probe_project".to_string();
+        let mut meta = atheneum::MetaRouter::open_at(&meta_path).unwrap();
+        meta.register_project(
+            &project_name,
+            "/code_probe_project",
+            magellan_db.to_str().unwrap(),
+            None,
+            Some("rust"),
+        )
+        .unwrap();
+
+        let cross = atheneum::CrossRouter::from_meta(meta, 4);
+        let graph = atheneum::AtheneumGraph::open_in_memory().unwrap();
+        let backend = direct::DirectBackend::with_cross_router(
+            Arc::new(tokio::sync::Mutex::new(graph)),
+            cross,
+        );
+        (backend, magellan_db, project_name)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn search_without_kind_defaults_to_knowledge_only_unchanged_shape() {
+        let backend = test_direct_backend_with_seeded_memory();
+        let params = SearchParams {
+            query: "seeded".to_string(),
+            k: 10,
+            project: None,
+            kind: SearchKind::Knowledge,
+            limit: None,
+            cursor: None,
+        };
+        let result = backend.search(params).await.unwrap();
+        // Envelope shape: items present, no code-backend errors since kind=Knowledge
+        // never touches CrossRouter.
+        assert!(result["items"].is_array());
+        assert!(result["errors"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn search_kind_all_merges_knowledge_and_code_with_provenance_tags() {
+        let (backend, _magellan_db_path, project_name) =
+            test_direct_backend_with_registered_code_project();
+        let params = SearchParams {
+            query: "shared_probe_symbol".to_string(),
+            k: 10,
+            project: Some(project_name),
+            kind: SearchKind::All,
+            limit: None,
+            cursor: None,
+        };
+        let result = backend.search(params).await.unwrap();
+        let items = result["items"].as_array().unwrap();
+        assert!(
+            items.iter().any(|i| i["provenance"] == "EXTRACTED"),
+            "expected at least one EXTRACTED (code) hit, got {items:?}"
+        );
     }
 }

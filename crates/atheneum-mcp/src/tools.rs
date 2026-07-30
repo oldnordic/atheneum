@@ -162,26 +162,35 @@ fn search() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServer>
         "type": "object",
         "properties": {
             "query": { "type": "string", "description": "Search query" },
-            "k": { "type": "integer", "minimum": 1, "maximum": 100, "default": 10, "description": "Number of results" },
-            "project": { "type": "string", "description": "Optional project scope" }
+            "k": { "type": "integer", "minimum": 1, "maximum": 100, "default": 10, "description": "Number of results to consider before pagination" },
+            "project": { "type": "string", "description": "Optional project scope" },
+            "kind": {
+                "type": "string",
+                "enum": ["knowledge", "code", "all"],
+                "default": "knowledge",
+                "description": "knowledge = atheneum only (default, unchanged behavior). code = magellan/llmgrep cross-project symbol search only. all = both, merged and provenance-tagged."
+            },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20, "description": "Page size" },
+            "cursor": { "type": "string", "description": "Opaque pagination cursor from a previous call's has_more response" }
         },
         "required": ["query"]
     });
     let schema: Map<String, Value> = schema.as_object().unwrap().clone();
 
     rmcp::handler::server::router::tool::ToolRoute::new_dyn(
-        Tool::new("search", "Lexical search over the knowledge graph.", schema),
+        Tool::new("search", "Search the knowledge graph and/or cross-project code index. Impact/affected-style code results are a first-pass heuristic, not certainty.", schema),
         |ctx: rmcp::handler::server::tool::ToolCallContext<'_, AtheneumMcpServer>| {
             Box::pin(async move {
                 let args = extract_args(ctx.arguments);
-                let query = args["query"].as_str().unwrap_or("").to_string();
-                let k = args["k"].as_u64().unwrap_or(10) as usize;
-                let project = args["project"].as_str().map(String::from);
-                let result = ctx
-                    .service
-                    .backend
-                    .search(&query, k, project.as_deref())
-                    .await;
+                let params = crate::backend::SearchParams {
+                    query: args["query"].as_str().unwrap_or("").to_string(),
+                    k: args["k"].as_u64().unwrap_or(10) as usize,
+                    project: args["project"].as_str().map(String::from),
+                    kind: crate::backend::SearchKind::from_str_default(args["kind"].as_str()),
+                    limit: args["limit"].as_u64().map(|v| v as usize),
+                    cursor: args["cursor"].as_str().map(String::from),
+                };
+                let result = ctx.service.backend.search(params).await;
                 match result {
                     Ok(v) => json_result(v),
                     Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
