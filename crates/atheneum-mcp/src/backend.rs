@@ -606,6 +606,24 @@ pub mod direct {
         }
 
         async fn search(&self, params: SearchParams) -> Result<Value> {
+            // Compatibility: today's callers pass no kind/limit/cursor and expect
+            // the bare array lexical_search has always returned — not the new
+            // envelope shape. Only opt into the envelope when the caller asks
+            // for something the old shape can't express (code fan-out or
+            // pagination). Errors propagate as Err here, exactly like before
+            // this task, instead of being swallowed into envelope.errors.
+            if params.kind == SearchKind::Knowledge
+                && params.limit.is_none()
+                && params.cursor.is_none()
+            {
+                let graph = self.graph.lock().await;
+                return tokio::task::block_in_place(|| {
+                    let results =
+                        graph.lexical_search(&params.query, params.k, params.project.as_deref(), None, None)?;
+                    Ok(serde_json::to_value(results)?)
+                });
+            }
+
             let limit = crate::envelope::clamp_limit(params.limit);
             let mut envelope = crate::envelope::Envelope::new(limit);
 
@@ -1278,6 +1296,18 @@ mod tests {
 
         let cross = atheneum::CrossRouter::from_meta(meta, 4);
         let graph = atheneum::AtheneumGraph::open_in_memory().unwrap();
+        // Seed a knowledge-side hit that overlaps the code-side query term, so
+        // kind=all tests genuinely exercise a merge of both provenance types.
+        graph
+            .store_memory(
+                "shared_probe_symbol_note",
+                "note about shared_probe_symbol",
+                "agent",
+                0.8,
+                Some(project_name.as_str()),
+                None,
+            )
+            .unwrap();
         let backend = direct::DirectBackend::with_cross_router(
             Arc::new(tokio::sync::Mutex::new(graph)),
             cross,
@@ -1297,8 +1327,28 @@ mod tests {
             cursor: None,
         };
         let result = backend.search(params).await.unwrap();
-        // Envelope shape: items present, no code-backend errors since kind=Knowledge
-        // never touches CrossRouter.
+        // Compatibility requirement: no kind/limit/cursor (or kind=knowledge
+        // explicitly) must return the exact bare array lexical_search has
+        // always produced — not the new envelope object.
+        assert!(
+            result.is_array(),
+            "expected bare array (today's shape), got {result:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn search_with_explicit_limit_returns_enveloped_shape() {
+        let backend = test_direct_backend_with_seeded_memory();
+        let params = SearchParams {
+            query: "seeded".to_string(),
+            k: 10,
+            project: None,
+            kind: SearchKind::Knowledge,
+            limit: Some(5),
+            cursor: None,
+        };
+        let result = backend.search(params).await.unwrap();
+        // Explicit limit opts into the new envelope shape even with kind=knowledge.
         assert!(result["items"].is_array());
         assert!(result["errors"].as_array().unwrap().is_empty());
     }
@@ -1320,6 +1370,10 @@ mod tests {
         assert!(
             items.iter().any(|i| i["provenance"] == "EXTRACTED"),
             "expected at least one EXTRACTED (code) hit, got {items:?}"
+        );
+        assert!(
+            items.iter().any(|i| i["provenance"] == "INFERRED"),
+            "expected at least one INFERRED (knowledge) hit, got {items:?}"
         );
     }
 }
