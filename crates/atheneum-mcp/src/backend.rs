@@ -1972,4 +1972,52 @@ mod tests {
             "expected message to name the failing tool, got {message:?}"
         );
     }
+
+    #[tokio::test]
+    async fn event_impl_unknown_verb_returns_parse_error() {
+        let result = event_impl(EventParams {
+            verb: "not-a-real-verb".to_string(),
+            payload: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+        let errors = result["errors"].as_array().unwrap();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e["code"] == crate::envelope::ERR_PARSE_ERROR),
+            "expected ERR_PARSE_ERROR for unknown verb, got {errors:?}"
+        );
+        assert!(result["items"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn event_impl_unreachable_envoy_returns_backend_unavailable_error() {
+        // ponytail: ENVOY_URL is process-global; safe here because no other
+        // test in this crate reads/writes it, but a second test doing the
+        // same concurrently would race. Port 9 is the "discard" service —
+        // same unreachable-envoy stand-in events.rs's own test uses.
+        // SAFETY: single-threaded env mutation, no other test touches this var.
+        unsafe {
+            std::env::set_var("ENVOY_URL", "http://127.0.0.1:9");
+        }
+        let result = event_impl(EventParams {
+            verb: "heartbeat".to_string(),
+            payload: serde_json::json!({"agent_id": "test"}),
+        })
+        .await
+        .unwrap();
+        unsafe {
+            std::env::remove_var("ENVOY_URL");
+        }
+        let errors = result["errors"].as_array().unwrap();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e["code"] == crate::envelope::ERR_BACKEND_UNAVAILABLE
+                    || e["code"] == crate::envelope::ERR_TIMEOUT),
+            "expected BACKEND_UNAVAILABLE or TIMEOUT for unreachable envoy, got {errors:?}"
+        );
+        assert!(result["items"].as_array().unwrap().is_empty());
+    }
 }
