@@ -51,6 +51,9 @@ pub struct CrossRouter {
     lru: VecDeque<String>,
     max_attached: usize,
     schema_counter: usize,
+    /// Always searched alongside registered projects, even though it is not
+    /// itself registered in meta.db (see `with_central_knowledge_db`).
+    central_knowledge_db: Option<std::path::PathBuf>,
 }
 
 impl CrossRouter {
@@ -67,6 +70,7 @@ impl CrossRouter {
             lru: VecDeque::new(),
             max_attached: max_attached.min(125),
             schema_counter: 0,
+            central_knowledge_db: None,
         })
     }
 
@@ -78,7 +82,34 @@ impl CrossRouter {
             lru: VecDeque::new(),
             max_attached: max_attached.min(125),
             schema_counter: 0,
+            central_knowledge_db: None,
         }
+    }
+
+    /// Always include this knowledge-store db in every cross_search/cross_navigate
+    /// call, even though it is not registered in magellan's meta.db project
+    /// registry. Fixes the gap where the central atheneum knowledge store would
+    /// otherwise be unreachable from cross-tool graph navigation.
+    pub fn with_central_knowledge_db(mut self, path: std::path::PathBuf) -> Self {
+        self.central_knowledge_db = Some(path);
+        self
+    }
+
+    const CENTRAL_KNOWLEDGE_PROJECT_NAME: &'static str = "__atheneum_central__";
+
+    fn central_project_info(&self) -> Option<ProjectInfo> {
+        self.central_knowledge_db.as_ref().map(|path| ProjectInfo {
+            name: Self::CENTRAL_KNOWLEDGE_PROJECT_NAME.to_string(),
+            root_path: String::new(),
+            magellan_db: path.to_string_lossy().into_owned(),
+            atheneum_db: None,
+            language: None,
+            enabled: true,
+            last_indexed: None,
+            file_count: 0,
+            symbol_count: 0,
+            created_at: String::new(),
+        })
     }
 
     /// Immutable borrow of the underlying meta router.
@@ -152,11 +183,16 @@ impl CrossRouter {
         language: Option<&str>,
         k: usize,
     ) -> Result<Vec<CrossSearchResult>> {
-        let projects = if let Some(lang) = language {
+        let mut projects = if let Some(lang) = language {
             self.meta.list_projects_by_language(lang)?
         } else {
             self.meta.list_projects()?
         };
+        if let Some(central) = self.central_project_info() {
+            if !projects.iter().any(|p| p.name == central.name) {
+                projects.push(central);
+            }
+        }
 
         let pattern = format!("%{}%", query);
         let mut results = Vec::new();
@@ -261,6 +297,11 @@ impl CrossRouter {
     }
 
     fn ensure_attached_for_name(&mut self, project_name: &str) -> Result<String> {
+        if project_name == Self::CENTRAL_KNOWLEDGE_PROJECT_NAME {
+            if let Some(central) = self.central_project_info() {
+                return self.ensure_attached(&central);
+            }
+        }
         let project = self
             .meta
             .get_project(project_name)?
@@ -470,6 +511,50 @@ mod tests {
             .cross_search("build_router", Some("rust"), 10)
             .unwrap();
         assert_eq!(hits2.len(), 1);
+    }
+
+    #[test]
+    fn test_cross_search_always_includes_central_knowledge_db_even_when_unregistered() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let meta_path = tmp_dir.path().join("meta.db");
+        let magellan_a = tmp_dir.path().join("a.db");
+        let central = tmp_dir.path().join("central_atheneum.db");
+
+        {
+            let ca = make_magellan_like_db(&magellan_a);
+            ca.execute(
+                "INSERT INTO graph_entities (id, kind, name, file_path, data) VALUES
+                 (1, 'Symbol', 'unique_code_symbol', 'src/lib.rs', '{}')",
+                [],
+            )
+            .unwrap();
+        }
+        {
+            let cc = make_magellan_like_db(&central);
+            cc.execute(
+                "INSERT INTO graph_entities (id, kind, name, file_path, data) VALUES
+                 (1, 'Memory', 'unique_code_symbol_note', NULL, '{}')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let mut meta = MetaRouter::open_at(&meta_path).unwrap();
+        // Note: "atheneum" / the central store is deliberately NEVER registered
+        // via meta.register_project — that is exactly the gap being fixed.
+        meta.register_project("alpha", "/alpha", magellan_a.to_str().unwrap(), None, Some("rust"))
+            .unwrap();
+
+        let mut cross = CrossRouter::from_meta(meta, 4).with_central_knowledge_db(central.clone());
+
+        let hits = cross.cross_search("unique_code_symbol", None, 10).unwrap();
+        let projects: Vec<_> = hits.iter().map(|h| h.project.as_str()).collect();
+
+        assert!(projects.contains(&"alpha"), "expected alpha hit, got {projects:?}");
+        assert!(
+            projects.contains(&"__atheneum_central__"),
+            "central knowledge db must always be searched even when unregistered as a project, got {projects:?}"
+        );
     }
 
     #[test]
