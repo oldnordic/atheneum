@@ -160,6 +160,15 @@ pub struct NavigateParams {
     pub kind: SearchKind,
 }
 
+/// Parameters for the unified `code_query` tool.
+#[derive(Debug, Clone)]
+pub struct CodeQueryParams {
+    pub project: String,
+    pub tool: String,
+    pub subcommand: String,
+    pub args: Vec<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Backend trait
 // ---------------------------------------------------------------------------
@@ -178,6 +187,7 @@ pub trait Backend: Send + Sync + 'static {
     async fn list_sessions(&self, limit: i64) -> Result<Value>;
     async fn list_events(&self, limit: i64) -> Result<Value>;
     async fn navigate(&self, params: NavigateParams) -> Result<Value>;
+    async fn code_query(&self, params: CodeQueryParams) -> Result<Value>;
     async fn graph_stats(&self) -> Result<Value>;
     // --- Phase 2 additions ---
     async fn search_memory(&self, query: &str, k: usize, project: Option<&str>) -> Result<Value>;
@@ -387,7 +397,11 @@ pub mod http {
             // NOTE: HTTP backend does not yet support kind/limit/cursor — forwards
             // query/k/project only, same as before this task. Tracked as a gap,
             // not silently dropped.
-            let mut path = format!("/atheneum/search?q={}&k={}", encode(&params.query), params.k);
+            let mut path = format!(
+                "/atheneum/search?q={}&k={}",
+                encode(&params.query),
+                params.k
+            );
             if let Some(p) = params.project.as_deref() {
                 path.push_str(&format!("&project={}", encode(p)));
             }
@@ -457,6 +471,12 @@ pub mod http {
                 params.limit
             );
             self.get_json(&path).await
+        }
+
+        async fn code_query(&self, _params: CodeQueryParams) -> Result<Value> {
+            Err(anyhow::anyhow!(
+                "code_query not supported over HTTP backend"
+            ))
         }
 
         async fn graph_stats(&self) -> Result<Value> {
@@ -620,8 +640,13 @@ pub mod direct {
             {
                 let graph = self.graph.lock().await;
                 return tokio::task::block_in_place(|| {
-                    let results =
-                        graph.lexical_search(&params.query, params.k, params.project.as_deref(), None, None)?;
+                    let results = graph.lexical_search(
+                        &params.query,
+                        params.k,
+                        params.project.as_deref(),
+                        None,
+                        None,
+                    )?;
                     Ok(serde_json::to_value(results)?)
                 });
             }
@@ -632,13 +657,20 @@ pub mod direct {
             if matches!(params.kind, SearchKind::Knowledge | SearchKind::All) {
                 let graph = self.graph.lock().await;
                 let knowledge_results = tokio::task::block_in_place(|| {
-                    graph.lexical_search(&params.query, params.k, params.project.as_deref(), None, None)
+                    graph.lexical_search(
+                        &params.query,
+                        params.k,
+                        params.project.as_deref(),
+                        None,
+                        None,
+                    )
                 });
                 match knowledge_results {
                     Ok(results) => {
                         for r in results {
                             let mut v = serde_json::to_value(&r)?;
-                            v["provenance"] = serde_json::json!(crate::envelope::Provenance::Inferred);
+                            v["provenance"] =
+                                serde_json::json!(crate::envelope::Provenance::Inferred);
                             v["source"] = serde_json::json!("knowledge");
                             envelope.items.push(v);
                         }
@@ -700,7 +732,12 @@ pub mod direct {
                 .map(|c| c.offset)
                 .unwrap_or(0);
             let total = envelope.items.len();
-            let page: Vec<Value> = envelope.items.into_iter().skip(offset).take(limit).collect();
+            let page: Vec<Value> = envelope
+                .items
+                .into_iter()
+                .skip(offset)
+                .take(limit)
+                .collect();
             envelope.has_more = offset + page.len() < total;
             envelope.items = page;
             if envelope.has_more {
@@ -890,7 +927,11 @@ pub mod direct {
                         .into_iter()
                         .map(|v| {
                             serialize_paginated_view(
-                                &v.entry, v.depth, v.entities, v.edges, params.offset,
+                                &v.entry,
+                                v.depth,
+                                v.entities,
+                                v.edges,
+                                params.offset,
                                 params.limit,
                             )
                         })
@@ -927,7 +968,11 @@ pub mod direct {
                     Ok((results, trace_id)) => {
                         for v in results {
                             let mut view = serialize_paginated_view(
-                                &v.entry, v.depth, v.entities, v.edges, params.offset,
+                                &v.entry,
+                                v.depth,
+                                v.entities,
+                                v.edges,
+                                params.offset,
                                 params.limit,
                             );
                             view["provenance"] = serde_json::json!(if v.depth <= 1 {
@@ -989,6 +1034,99 @@ pub mod direct {
                         });
                     }
                     None => {}
+                }
+            }
+
+            Ok(envelope.to_value())
+        }
+
+        async fn code_query(&self, params: CodeQueryParams) -> Result<Value> {
+            let mut envelope = crate::envelope::Envelope::new(1);
+            let Some(cross) = &self.cross else {
+                envelope.errors.push(crate::envelope::EnvelopeError {
+                    backend: "code".to_string(),
+                    code: crate::envelope::ERR_BACKEND_UNAVAILABLE.to_string(),
+                    message: "code_query unavailable: no CrossRouter configured".to_string(),
+                });
+                return Ok(envelope.to_value());
+            };
+
+            let magellan_db = {
+                let cross = cross.lock().await;
+                match cross.meta().get_project(&params.project) {
+                    Ok(Some(project)) => project.magellan_db,
+                    Ok(None) => {
+                        envelope.errors.push(crate::envelope::EnvelopeError {
+                            backend: "code".to_string(),
+                            code: crate::envelope::ERR_PROJECT_NOT_FOUND.to_string(),
+                            message: format!("project '{}' not found in meta.db", params.project),
+                        });
+                        return Ok(envelope.to_value());
+                    }
+                    Err(e) => {
+                        envelope.errors.push(crate::envelope::EnvelopeError {
+                            backend: "code".to_string(),
+                            code: crate::envelope::ERR_BACKEND_UNAVAILABLE.to_string(),
+                            message: e.to_string(),
+                        });
+                        return Ok(envelope.to_value());
+                    }
+                }
+            };
+
+            let tool = match params.tool.as_str() {
+                "magellan" => crate::subprocess::CodeTool::Magellan,
+                "llmgrep" => crate::subprocess::CodeTool::Llmgrep,
+                "mirage" => crate::subprocess::CodeTool::Mirage,
+                other => {
+                    envelope.errors.push(crate::envelope::EnvelopeError {
+                        backend: "code".to_string(),
+                        code: crate::envelope::ERR_PARSE_ERROR.to_string(),
+                        message: format!(
+                            "unknown tool '{other}', expected magellan|llmgrep|mirage"
+                        ),
+                    });
+                    return Ok(envelope.to_value());
+                }
+            };
+
+            let mut args = vec![
+                params.subcommand.clone(),
+                "--db".to_string(),
+                magellan_db.clone(),
+            ];
+            args.extend(params.args.clone());
+            let runner = crate::subprocess::CodeQueryRunner::new();
+            match runner.run(&magellan_db, tool, args).await {
+                Ok(value) => {
+                    let tagged = match value {
+                        Value::Object(mut map) => {
+                            map.insert(
+                                "provenance".to_string(),
+                                serde_json::json!(crate::envelope::Provenance::Extracted),
+                            );
+                            map.insert("source".to_string(), serde_json::json!("code"));
+                            Value::Object(map)
+                        }
+                        value => json!({
+                            "value": value,
+                            "provenance": crate::envelope::Provenance::Extracted,
+                            "source": "code",
+                        }),
+                    };
+                    envelope.items.push(tagged);
+                }
+                Err(e) => {
+                    let message = e.to_string();
+                    envelope.errors.push(crate::envelope::EnvelopeError {
+                        backend: "code".to_string(),
+                        code: if message.contains("timed out") {
+                            crate::envelope::ERR_TIMEOUT.to_string()
+                        } else {
+                            crate::envelope::ERR_BACKEND_UNAVAILABLE.to_string()
+                        },
+                        message,
+                    });
                 }
             }
 
@@ -1533,12 +1671,16 @@ mod tests {
                 .upsert_concept(&format!("unrelated_node_{hop}"), &serde_json::json!({}))
                 .unwrap();
             graph
-                .insert_edge(prev_id, id, atheneum::EdgeType::RelatedTo, serde_json::json!({}))
+                .insert_edge(
+                    prev_id,
+                    id,
+                    atheneum::EdgeType::RelatedTo,
+                    serde_json::json!({}),
+                )
                 .unwrap();
             prev_id = id;
         }
-        let backend =
-            direct::DirectBackend::new(Arc::new(tokio::sync::Mutex::new(graph)));
+        let backend = direct::DirectBackend::new(Arc::new(tokio::sync::Mutex::new(graph)));
         let params = NavigateParams {
             query: "zqx7rootanchor".to_string(),
             k: 5,

@@ -26,6 +26,7 @@ pub fn register_all(router: &mut ToolRouter<AtheneumMcpServer>) {
     router.add_route(list_sessions());
     router.add_route(list_events());
     router.add_route(navigate());
+    router.add_route(code_query());
     router.add_route(graph_stats());
     // Phase 3 additions
     router.add_route(search_memory());
@@ -527,6 +528,54 @@ fn navigate() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServe
                 };
                 let result = ctx.service.backend.navigate(params).await;
                 match result {
+                    Ok(v) => json_result(v),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            })
+        },
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Tool: code_query
+// ---------------------------------------------------------------------------
+
+fn code_query() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServer> {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "project": { "type": "string", "description": "Project name, resolved via magellan's project registry." },
+            "tool": { "type": "string", "enum": ["magellan", "llmgrep", "mirage"] },
+            "subcommand": { "type": "string", "description": "Subcommand to run, for example refs, cfg, or context." },
+            "args": { "type": "array", "items": { "type": "string" }, "description": "Extra CLI arguments beyond --db." }
+        },
+        "required": ["project", "tool", "subcommand"]
+    });
+    let schema: Map<String, Value> = schema.as_object().unwrap().clone();
+
+    rmcp::handler::server::router::tool::ToolRoute::new_dyn(
+        Tool::new(
+            "code_query",
+            "Deep structural code query via magellan/llmgrep/mirage, resolved by project name. Results are EXTRACTED; impact-style answers are a first-pass heuristic.",
+            schema,
+        ),
+        |ctx: rmcp::handler::server::tool::ToolCallContext<'_, AtheneumMcpServer>| {
+            Box::pin(async move {
+                let args = extract_args(ctx.arguments);
+                let params = crate::backend::CodeQueryParams {
+                    project: args["project"].as_str().unwrap_or("").to_string(),
+                    tool: args["tool"].as_str().unwrap_or("").to_string(),
+                    subcommand: args["subcommand"].as_str().unwrap_or("").to_string(),
+                    args: args["args"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                };
+                match ctx.service.backend.code_query(params).await {
                     Ok(v) => json_result(v),
                     Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
                 }

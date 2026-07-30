@@ -130,7 +130,10 @@ mod tests {
 
     #[test]
     fn cursor_round_trips_through_encode_decode() {
-        let c = Cursor { backend: "knowledge".to_string(), offset: 42 };
+        let c = Cursor {
+            backend: "knowledge".to_string(),
+            offset: 42,
+        };
         let encoded = encode_cursor(&c);
         let decoded = decode_cursor(&encoded).expect("cursor should decode");
         assert_eq!(decoded.backend, "knowledge");
@@ -163,8 +166,17 @@ mod tests {
 
     #[test]
     fn provenance_serializes_as_uppercase_tag() {
-        assert_eq!(serde_json::to_value(Provenance::Extracted).unwrap(), "EXTRACTED");
-        assert_eq!(serde_json::to_value(Provenance::Inferred).unwrap(), "INFERRED");
-        assert_eq!(serde_json::to_value(Provenance::Ambiguous).unwrap(), "AMBIGUOUS");
+        assert_eq!(
+            serde_json::to_value(Provenance::Extracted).unwrap(),
+            "EXTRACTED"
+        );
+        assert_eq!(
+            serde_json::to_value(Provenance::Inferred).unwrap(),
+            "INFERRED"
+        );
+        assert_eq!(
+            serde_json::to_value(Provenance::Ambiguous).unwrap(),
+            "AMBIGUOUS"
+        );
     }
 }

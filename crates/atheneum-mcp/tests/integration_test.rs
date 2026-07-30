@@ -72,6 +72,9 @@ impl backend::Backend for MockBackend {
     async fn navigate(&self, _p: backend::NavigateParams) -> anyhow::Result<serde_json::Value> {
         Ok(json!({"subgraphs": [], "count": 0}))
     }
+    async fn code_query(&self, _p: backend::CodeQueryParams) -> anyhow::Result<serde_json::Value> {
+        Ok(serde_json::Value::Null)
+    }
     async fn graph_stats(&self) -> anyhow::Result<serde_json::Value> {
         Ok(json!({"entity_count": 0, "edge_count": 0, "kinds": []}))
     }
@@ -254,7 +257,8 @@ async fn mcp_server_initializes_and_lists_tools() {
     assert!(names.contains(&"add_memory"));
     assert!(names.contains(&"maintain"));
     assert!(names.contains(&"seed_memory"));
-    assert_eq!(tools.len(), 29);
+    assert!(names.contains(&"code_query"));
+    assert_eq!(tools.len(), 30);
 
     // Call graph_stats tool
     send_json(

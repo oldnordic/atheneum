@@ -5,6 +5,7 @@
 
 pub mod backend;
 pub mod envelope;
+pub mod subprocess;
 pub mod tools;
 
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -73,9 +74,10 @@ impl ServerHandler for AtheneumMcpServer {
             .with_protocol_version(rmcp::model::ProtocolVersion::V_2025_03_26)
     }
 
-    // reason: needs the explicit `+ MaybeSendFuture` bound `async fn` sugar
-    // can't express on stable.
-    #[allow(clippy::manual_async_fn)]
+    #[expect(
+        clippy::manual_async_fn,
+        reason = "needs explicit + MaybeSendFuture bound that async fn sugar cannot express on stable"
+    )]
     fn list_tools(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
@@ -190,6 +192,9 @@ mod tests {
             Ok(Value::Null)
         }
         async fn navigate(&self, _p: backend::NavigateParams) -> anyhow::Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn code_query(&self, _p: backend::CodeQueryParams) -> anyhow::Result<Value> {
             Ok(Value::Null)
         }
         async fn graph_stats(&self) -> anyhow::Result<Value> {
@@ -307,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn all_twenty_tools_registered() {
+    fn all_tools_registered() {
         let server = mock_server();
         let tools = server.router.list_all();
         let names: Vec<_> = tools.iter().map(|t| t.name.as_ref()).collect();
@@ -322,6 +327,7 @@ mod tests {
         assert!(names.contains(&"list_sessions"));
         assert!(names.contains(&"list_events"));
         assert!(names.contains(&"navigate"));
+        assert!(names.contains(&"code_query"));
         assert!(names.contains(&"graph_stats"));
         // Phase 3 additions
         assert!(names.contains(&"search_memory"));
@@ -338,7 +344,7 @@ mod tests {
         assert!(names.contains(&"dream"));
         assert!(names.contains(&"maintain"));
         assert!(names.contains(&"seed_memory"));
-        assert_eq!(tools.len(), 29);
+        assert_eq!(tools.len(), 30);
     }
 
     #[test]

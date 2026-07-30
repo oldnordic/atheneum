@@ -542,15 +542,24 @@ mod tests {
         let mut meta = MetaRouter::open_at(&meta_path).unwrap();
         // Note: "atheneum" / the central store is deliberately NEVER registered
         // via meta.register_project — that is exactly the gap being fixed.
-        meta.register_project("alpha", "/alpha", magellan_a.to_str().unwrap(), None, Some("rust"))
-            .unwrap();
+        meta.register_project(
+            "alpha",
+            "/alpha",
+            magellan_a.to_str().unwrap(),
+            None,
+            Some("rust"),
+        )
+        .unwrap();
 
         let mut cross = CrossRouter::from_meta(meta, 4).with_central_knowledge_db(central.clone());
 
         let hits = cross.cross_search("unique_code_symbol", None, 10).unwrap();
         let projects: Vec<_> = hits.iter().map(|h| h.project.as_str()).collect();
 
-        assert!(projects.contains(&"alpha"), "expected alpha hit, got {projects:?}");
+        assert!(
+            projects.contains(&"alpha"),
+            "expected alpha hit, got {projects:?}"
+        );
         assert!(
             projects.contains(&"__atheneum_central__"),
             "central knowledge db must always be searched even when unregistered as a project, got {projects:?}"
