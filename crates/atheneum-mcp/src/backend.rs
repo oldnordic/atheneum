@@ -1502,6 +1502,73 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn navigate_default_path_traversal_is_bounded_by_clamped_depth() {
+        // Proves the *traversal itself* uses the clamped depth (3) on the
+        // default kind=Knowledge path, not the raw requested depth (10) —
+        // the compatibility-shape test above only proves the response shape
+        // is unchanged, not that clamp_depth's result actually reaches
+        // navigate_with_trace through the early-return branch.
+        let graph = atheneum::AtheneumGraph::open_in_memory().unwrap();
+        // Query token must be unique to the root entity — lexical_search
+        // scores by fraction-of-tokens-matched, so a shared substring (e.g.
+        // "chain") between root and hop names would make every hop its own
+        // extra entry point and hide an unclamped traversal behind a false
+        // positive. "zqx7rootanchor" appears nowhere else in this fixture.
+        let root_id = graph
+            .store_memory(
+                "zqx7rootanchor",
+                "zqx7rootanchor unique entry point for depth clamp chain test",
+                "agent",
+                0.8,
+                None,
+                None,
+            )
+            .unwrap();
+        // Chain: root -[related_to]-> hop_1 -> hop_2 -> hop_3 -> hop_4.
+        // hop_3 is 3 hops out (within the clamp), hop_4 is 4 hops out
+        // (beyond it) and must not appear if the clamp is actually applied.
+        let mut prev_id = root_id;
+        for hop in 1..=4 {
+            let id = graph
+                .upsert_concept(&format!("unrelated_node_{hop}"), &serde_json::json!({}))
+                .unwrap();
+            graph
+                .insert_edge(prev_id, id, atheneum::EdgeType::RelatedTo, serde_json::json!({}))
+                .unwrap();
+            prev_id = id;
+        }
+        let backend =
+            direct::DirectBackend::new(Arc::new(tokio::sync::Mutex::new(graph)));
+        let params = NavigateParams {
+            query: "zqx7rootanchor".to_string(),
+            k: 5,
+            depth: Some(10),
+            offset: 0,
+            limit: 50,
+            trace: None,
+            kind: SearchKind::Knowledge,
+        };
+        let result = backend.navigate(params).await.unwrap();
+        let names: Vec<String> = result
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|view| view["entities"].as_array().unwrap().iter())
+            .filter_map(|e| e["name"].as_str().map(str::to_string))
+            .collect();
+        assert!(
+            names.contains(&"unrelated_node_3".to_string()),
+            "expected hop_3 (3 hops, within clamp) to be reachable, got {names:?}"
+        );
+        assert!(
+            !names.contains(&"unrelated_node_4".to_string()),
+            "expected traversal to be capped at depth 3 (clamp_depth's result), \
+             but hop_4 (4 hops from entry) was reached — the raw requested \
+             depth (10) leaked into navigate_with_trace: {names:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn navigate_depth_beyond_max_is_clamped_and_flagged() {
         let backend = test_direct_backend_with_seeded_memory();
         let params = NavigateParams {
