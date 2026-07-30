@@ -177,6 +177,9 @@ impl backend::Backend for MockBackend {
     async fn event(&self, _p: backend::EventParams) -> anyhow::Result<serde_json::Value> {
         Ok(serde_json::Value::Null)
     }
+    async fn refresh(&self, _p: backend::RefreshParams) -> anyhow::Result<serde_json::Value> {
+        Ok(json!({"refreshed": true}))
+    }
 }
 
 async fn send_json(w: &mut tokio::io::WriteHalf<tokio::io::DuplexStream>, msg: serde_json::Value) {
@@ -262,7 +265,8 @@ async fn mcp_server_initializes_and_lists_tools() {
     assert!(names.contains(&"seed_memory"));
     assert!(names.contains(&"code_query"));
     assert!(names.contains(&"event"));
-    assert_eq!(tools.len(), 31);
+    assert!(names.contains(&"refresh"));
+    assert_eq!(tools.len(), 32);
 
     // Call graph_stats tool
     send_json(

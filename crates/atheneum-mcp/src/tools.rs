@@ -48,6 +48,7 @@ pub fn register_all(router: &mut ToolRouter<AtheneumMcpServer>) {
     router.add_route(pin_entity());
     router.add_route(unpin_entity());
     router.add_route(event());
+    router.add_route(refresh());
 }
 
 // ---------------------------------------------------------------------------
@@ -1258,6 +1259,43 @@ fn event() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServer> 
                     payload: args["payload"].clone(),
                 };
                 match ctx.service.backend.event(params).await {
+                    Ok(v) => json_result(v),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            })
+        },
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Tool: refresh
+// ---------------------------------------------------------------------------
+
+fn refresh() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServer> {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "project": { "type": "string", "description": "Project name, resolved via magellan's project registry." },
+            "refresh_code": { "type": "boolean", "default": true, "description": "If true, run `magellan refresh` for the resolved project. llmgrep/mirage need no separate refresh since they read magellan's db." }
+        },
+        "required": ["project"]
+    });
+    let schema: Map<String, Value> = schema.as_object().unwrap().clone();
+
+    rmcp::handler::server::router::tool::ToolRoute::new_dyn(
+        Tool::new(
+            "refresh",
+            "Refresh a project's code index (magellan refresh). This is the `update` CRUD split's code-side propagation step — llmgrep/mirage pick up changes automatically since they read magellan's own db.",
+            schema,
+        ),
+        |ctx: rmcp::handler::server::tool::ToolCallContext<'_, AtheneumMcpServer>| {
+            Box::pin(async move {
+                let args = extract_args(ctx.arguments);
+                let params = crate::backend::RefreshParams {
+                    project: args["project"].as_str().unwrap_or("").to_string(),
+                    refresh_code: args["refresh_code"].as_bool().unwrap_or(true),
+                };
+                match ctx.service.backend.refresh(params).await {
                     Ok(v) => json_result(v),
                     Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
                 }

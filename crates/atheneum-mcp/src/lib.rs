@@ -300,6 +300,9 @@ mod tests {
         async fn event(&self, _p: backend::EventParams) -> anyhow::Result<Value> {
             Ok(Value::Null)
         }
+        async fn refresh(&self, _p: backend::RefreshParams) -> anyhow::Result<Value> {
+            Ok(Value::Null)
+        }
     }
 
     fn mock_server() -> AtheneumMcpServer {
@@ -349,7 +352,8 @@ mod tests {
         assert!(names.contains(&"maintain"));
         assert!(names.contains(&"seed_memory"));
         assert!(names.contains(&"event"));
-        assert_eq!(tools.len(), 31);
+        assert!(names.contains(&"refresh"));
+        assert_eq!(tools.len(), 32);
     }
 
     #[test]

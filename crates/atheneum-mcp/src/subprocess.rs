@@ -68,6 +68,32 @@ impl CodeQueryRunner {
         self.run_command(cmd, tool.bin_name()).await
     }
 
+    /// Checks whether a project's magellan index has pending changes.
+    ///
+    /// `magellan status --output json` (verified 2026-07-30 against a real
+    /// db) returns only aggregate counts (`files`, `symbols`, `references`,
+    /// `calls`, `code_chunks`, `coverage`) — there is no dirty/pending-file
+    /// field to read. `magellan refresh --dry-run --output json` is the
+    /// actual mechanism that answers "is this index stale": it diffs the
+    /// indexed state against the git working tree and reports `updated`/
+    /// `deleted`/`added` file arrays without mutating anything. Staleness is
+    /// "any of those three arrays is non-empty".
+    pub async fn is_code_index_stale(&self, magellan_db: &str) -> Result<bool> {
+        let mut cmd = Command::new(self.resolve("magellan"));
+        cmd.env_clear();
+        cmd.args([
+            "refresh",
+            "--db",
+            magellan_db,
+            "--dry-run",
+            "--output",
+            "json",
+        ]);
+        let status = self.run_command(cmd, "magellan_refresh_dry_run").await?;
+        let pending = |field: &str| status[field].as_array().is_some_and(|a| !a.is_empty());
+        Ok(pending("updated") || pending("deleted") || pending("added"))
+    }
+
     pub async fn run_command(&self, mut cmd: Command, label: &str) -> Result<Value> {
         let run = async {
             cmd.stdout(std::process::Stdio::piped())
@@ -114,6 +140,55 @@ impl Default for CodeQueryRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Writes a fake `magellan` executable into a fresh temp dir that
+    /// ignores its args and prints `json_stdout`, so `is_code_index_stale`
+    /// can be tested without a real magellan binary or db.
+    fn fake_magellan_bin_dir(json_stdout: &str) -> tempfile::TempDir {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let script_path = dir.path().join("magellan");
+        let mut file = std::fs::File::create(&script_path).unwrap();
+        writeln!(file, "#!/bin/sh").unwrap();
+        writeln!(file, "cat <<'EOF'\n{json_stdout}\nEOF").unwrap();
+        drop(file);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        dir
+    }
+
+    #[tokio::test]
+    async fn is_code_index_stale_reports_false_for_freshly_indexed_fixture() {
+        // Fixture mirrors real `magellan refresh --dry-run --output json`
+        // output for a project with no pending changes (confirmed shape:
+        // `{"updated":[],"deleted":[],"added":[],"unchanged":N,"dry_run":true}`,
+        // captured against ~/.magellan/atheneum/atheneum-mcp.db on 2026-07-30).
+        let dir = fake_magellan_bin_dir(
+            r#"{"updated":[],"deleted":[],"added":[],"unchanged":4,"dry_run":true}"#,
+        );
+        let runner = CodeQueryRunner::with_bin_dir(dir.path().to_path_buf());
+        let stale = runner
+            .is_code_index_stale("/tmp/does-not-matter.db")
+            .await
+            .unwrap();
+        assert!(!stale, "freshly indexed fixture must report not-stale");
+    }
+
+    #[tokio::test]
+    async fn is_code_index_stale_reports_true_when_files_are_pending() {
+        let dir = fake_magellan_bin_dir(
+            r#"{"updated":["src/lib.rs"],"deleted":[],"added":[],"unchanged":3,"dry_run":true}"#,
+        );
+        let runner = CodeQueryRunner::with_bin_dir(dir.path().to_path_buf());
+        let stale = runner
+            .is_code_index_stale("/tmp/does-not-matter.db")
+            .await
+            .unwrap();
+        assert!(stale, "pending `updated` entry must report stale");
+    }
 
     #[tokio::test]
     async fn run_returns_backend_unavailable_error_shape_when_binary_missing() {

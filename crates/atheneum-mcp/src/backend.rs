@@ -176,6 +176,15 @@ pub struct EventParams {
     pub payload: Value,
 }
 
+/// Parameters for the `refresh` tool — triggers `magellan refresh` for a
+/// resolved project. llmgrep/mirage need no separate refresh call since
+/// they read magellan's own db.
+#[derive(Debug, Clone)]
+pub struct RefreshParams {
+    pub project: String,
+    pub refresh_code: bool,
+}
+
 // ---------------------------------------------------------------------------
 // Backend trait
 // ---------------------------------------------------------------------------
@@ -249,6 +258,7 @@ pub trait Backend: Send + Sync + 'static {
     async fn pin_entity(&self, id: i64) -> Result<Value>;
     async fn unpin_entity(&self, id: i64) -> Result<Value>;
     async fn event(&self, params: EventParams) -> Result<Value>;
+    async fn refresh(&self, params: RefreshParams) -> Result<Value>;
 }
 
 /// Shared implementation for the `event` tool — identical for
@@ -599,6 +609,10 @@ pub mod http {
         async fn event(&self, params: EventParams) -> Result<Value> {
             super::event_impl(params).await
         }
+
+        async fn refresh(&self, _params: RefreshParams) -> Result<Value> {
+            Err(anyhow::anyhow!("refresh not supported over HTTP backend"))
+        }
     }
 }
 
@@ -783,6 +797,34 @@ pub mod direct {
                                     .to_string(),
                             });
                         }
+                    }
+                }
+
+                // code_stale: cheap magellan-side check, only meaningful when
+                // a single project was actually resolved (cross_search above
+                // fans out across every attached project, so there's no
+                // single index to report on unless the caller scoped the
+                // call with `project`). None means "not applicable to this
+                // call", not "checked and clean".
+                if let (Some(cross), Some(project_name)) = (&self.cross, params.project.as_deref())
+                {
+                    let magellan_db = {
+                        let cross = cross.lock().await;
+                        cross
+                            .meta()
+                            .get_project(project_name)
+                            .ok()
+                            .flatten()
+                            .map(|p| p.magellan_db)
+                    };
+                    if let Some(magellan_db) = magellan_db {
+                        let runner = match &self.code_bin_dir {
+                            Some(dir) => {
+                                crate::subprocess::CodeQueryRunner::with_bin_dir(dir.clone())
+                            }
+                            None => crate::subprocess::CodeQueryRunner::new(),
+                        };
+                        envelope.code_stale = runner.is_code_index_stale(&magellan_db).await.ok();
                     }
                 }
             }
@@ -1097,6 +1139,14 @@ pub mod direct {
                     }
                     None => {}
                 }
+
+                // code_stale intentionally left None here: unlike `search`,
+                // `NavigateParams` carries no `project` field to resolve a
+                // single magellan db against — cross_navigate fans out across
+                // every attached project (each subgraph in `envelope.items`
+                // can belong to a different project), so there is no single
+                // index whose staleness a bool could represent. Adding a
+                // `project` scope to navigate is out of this task's scope.
             }
 
             Ok(envelope.to_value())
@@ -1459,6 +1509,96 @@ pub mod direct {
 
         async fn event(&self, params: EventParams) -> Result<Value> {
             super::event_impl(params).await
+        }
+
+        async fn refresh(&self, params: RefreshParams) -> Result<Value> {
+            let mut envelope = crate::envelope::Envelope::new(1);
+            let Some(cross) = &self.cross else {
+                envelope.errors.push(crate::envelope::EnvelopeError {
+                    backend: "code".to_string(),
+                    code: crate::envelope::ERR_BACKEND_UNAVAILABLE.to_string(),
+                    message: "refresh unavailable: no CrossRouter configured".to_string(),
+                });
+                return Ok(envelope.to_value());
+            };
+
+            let magellan_db = {
+                let cross = cross.lock().await;
+                match cross.meta().get_project(&params.project) {
+                    Ok(Some(project)) => project.magellan_db,
+                    Ok(None) => {
+                        envelope.errors.push(crate::envelope::EnvelopeError {
+                            backend: "code".to_string(),
+                            code: crate::envelope::ERR_PROJECT_NOT_FOUND.to_string(),
+                            message: format!("project '{}' not found in meta.db", params.project),
+                        });
+                        return Ok(envelope.to_value());
+                    }
+                    Err(e) => {
+                        envelope.errors.push(crate::envelope::EnvelopeError {
+                            backend: "code".to_string(),
+                            code: crate::envelope::ERR_BACKEND_UNAVAILABLE.to_string(),
+                            message: e.to_string(),
+                        });
+                        return Ok(envelope.to_value());
+                    }
+                }
+            };
+
+            if !params.refresh_code {
+                envelope.items.push(json!({
+                    "project": params.project,
+                    "refreshed": false,
+                }));
+                return Ok(envelope.to_value());
+            }
+
+            let runner = match &self.code_bin_dir {
+                Some(dir) => crate::subprocess::CodeQueryRunner::with_bin_dir(dir.clone()),
+                None => crate::subprocess::CodeQueryRunner::new(),
+            };
+            let args = vec![
+                "refresh".to_string(),
+                "--db".to_string(),
+                magellan_db.clone(),
+            ];
+            match runner
+                .run(&magellan_db, crate::subprocess::CodeTool::Magellan, args)
+                .await
+            {
+                Ok(value) => {
+                    let tagged = match value {
+                        Value::Object(mut map) => {
+                            map.insert(
+                                "provenance".to_string(),
+                                serde_json::json!(crate::envelope::Provenance::Extracted),
+                            );
+                            map.insert("source".to_string(), serde_json::json!("code"));
+                            Value::Object(map)
+                        }
+                        value => json!({
+                            "value": value,
+                            "provenance": crate::envelope::Provenance::Extracted,
+                            "source": "code",
+                        }),
+                    };
+                    envelope.items.push(tagged);
+                }
+                Err(e) => {
+                    let message = e.to_string();
+                    envelope.errors.push(crate::envelope::EnvelopeError {
+                        backend: "code".to_string(),
+                        code: if message.contains("timed out") {
+                            crate::envelope::ERR_TIMEOUT.to_string()
+                        } else {
+                            crate::envelope::ERR_BACKEND_UNAVAILABLE.to_string()
+                        },
+                        message,
+                    });
+                }
+            }
+
+            Ok(envelope.to_value())
         }
     }
 }
@@ -2019,5 +2159,142 @@ mod tests {
             "expected BACKEND_UNAVAILABLE or TIMEOUT for unreachable envoy, got {errors:?}"
         );
         assert!(result["items"].as_array().unwrap().is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // refresh — DirectBackend dispatch logic
+    // -----------------------------------------------------------------
+
+    /// Writes a fake `magellan` executable into a fresh temp dir that
+    /// ignores its args and prints `json_stdout` — mirrors
+    /// `subprocess::tests::fake_magellan_bin_dir`, duplicated here since
+    /// that helper lives in a different module's private test mod.
+    fn fake_magellan_bin_dir(json_stdout: &str) -> tempfile::TempDir {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let script_path = dir.path().join("magellan");
+        let mut file = std::fs::File::create(&script_path).unwrap();
+        writeln!(file, "#!/bin/sh").unwrap();
+        writeln!(file, "cat <<'EOF'\n{json_stdout}\nEOF").unwrap();
+        drop(file);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        dir
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn refresh_unknown_project_returns_project_not_found() {
+        let (backend, _db_path, _project_name) = test_direct_backend_with_registered_code_project();
+        let params = RefreshParams {
+            project: "totally-unknown-project-xyz".to_string(),
+            refresh_code: true,
+        };
+        let result = backend.refresh(params).await.unwrap();
+        let errors = result["errors"].as_array().unwrap();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e["code"] == crate::envelope::ERR_PROJECT_NOT_FOUND),
+            "expected ERR_PROJECT_NOT_FOUND, got {errors:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn refresh_code_false_skips_subprocess_entirely() {
+        let (backend, _db_path, project_name) = test_direct_backend_with_registered_code_project();
+        // Points at a nonexistent bin dir so any accidental spawn attempt
+        // would fail loudly instead of silently succeeding.
+        let backend = backend.with_code_bin_dir(std::path::PathBuf::from("/nonexistent-bin-dir"));
+        let params = RefreshParams {
+            project: project_name,
+            refresh_code: false,
+        };
+        let result = backend.refresh(params).await.unwrap();
+        assert!(result["errors"].as_array().unwrap().is_empty());
+        assert_eq!(result["items"][0]["refreshed"], false);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn refresh_code_true_spawn_failure_maps_to_backend_unavailable() {
+        let (backend, _db_path, project_name) = test_direct_backend_with_registered_code_project();
+        let backend = backend.with_code_bin_dir(std::path::PathBuf::from("/nonexistent-bin-dir"));
+        let params = RefreshParams {
+            project: project_name,
+            refresh_code: true,
+        };
+        let result = backend.refresh(params).await.unwrap();
+        let errors = result["errors"].as_array().unwrap();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e["code"] == crate::envelope::ERR_BACKEND_UNAVAILABLE),
+            "expected ERR_BACKEND_UNAVAILABLE for spawn failure, got {errors:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn refresh_code_true_success_tags_result_extracted_code() {
+        let (backend, _db_path, project_name) = test_direct_backend_with_registered_code_project();
+        let bin_dir = fake_magellan_bin_dir(
+            r#"{"updated":[],"deleted":[],"added":[],"unchanged":4,"dry_run":false}"#,
+        );
+        let backend = backend.with_code_bin_dir(bin_dir.path().to_path_buf());
+        let params = RefreshParams {
+            project: project_name,
+            refresh_code: true,
+        };
+        let result = backend.refresh(params).await.unwrap();
+        assert!(result["errors"].as_array().unwrap().is_empty());
+        assert_eq!(result["items"][0]["provenance"], "EXTRACTED");
+        assert_eq!(result["items"][0]["source"], "code");
+    }
+
+    // -----------------------------------------------------------------
+    // code_stale — search wiring
+    // -----------------------------------------------------------------
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn search_kind_code_with_project_scope_populates_code_stale() {
+        let (backend, _db_path, project_name) = test_direct_backend_with_registered_code_project();
+        let bin_dir = fake_magellan_bin_dir(
+            r#"{"updated":[],"deleted":[],"added":[],"unchanged":4,"dry_run":true}"#,
+        );
+        let backend = backend.with_code_bin_dir(bin_dir.path().to_path_buf());
+        let params = SearchParams {
+            query: "shared_probe_symbol".to_string(),
+            k: 10,
+            project: Some(project_name),
+            kind: SearchKind::Code,
+            limit: None,
+            cursor: None,
+        };
+        let result = backend.search(params).await.unwrap();
+        assert_eq!(
+            result["code_stale"], false,
+            "expected code_stale to be checked and false for a clean fixture, got {result:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn search_kind_code_without_project_leaves_code_stale_none() {
+        // No `project` scope means no single magellan db to check — spec's
+        // "None means not applicable to this call".
+        let (backend, _db_path, _project_name) = test_direct_backend_with_registered_code_project();
+        let params = SearchParams {
+            query: "shared_probe_symbol".to_string(),
+            k: 10,
+            project: None,
+            kind: SearchKind::Code,
+            limit: None,
+            cursor: None,
+        };
+        let result = backend.search(params).await.unwrap();
+        assert!(
+            result["code_stale"].is_null(),
+            "expected code_stale to stay None without a project scope, got {result:?}"
+        );
     }
 }
