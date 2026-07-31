@@ -1706,6 +1706,31 @@ mod tests {
         direct::DirectBackend::new(Arc::new(tokio::sync::Mutex::new(graph)))
     }
 
+    /// Same seeded-memory knowledge graph as `test_direct_backend_with_seeded_memory`,
+    /// but wired to a `CrossRouter` over a fresh temp `meta.db` with zero
+    /// registered projects and no central knowledge db configured. The code
+    /// branch of a `kind=all` search has nothing to find (and nothing to
+    /// crash on) — proves a code-side miss doesn't take the knowledge
+    /// branch's results down with it.
+    fn test_direct_backend_with_seeded_memory_and_empty_cross_router() -> direct::DirectBackend {
+        let graph = atheneum::AtheneumGraph::open_in_memory().unwrap();
+        graph
+            .store_memory(
+                "seeded_test_key",
+                "seeded content for search test",
+                "agent",
+                0.8,
+                None,
+                None,
+            )
+            .unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap().keep();
+        let meta_path = tmp_dir.join("meta.db");
+        let meta = atheneum::MetaRouter::open_at(&meta_path).unwrap();
+        let cross = atheneum::CrossRouter::from_meta(meta, 4);
+        direct::DirectBackend::with_cross_router(Arc::new(tokio::sync::Mutex::new(graph)), cross)
+    }
+
     /// Builds a temp magellan-shaped SQLite db (same shape as
     /// `atheneum::cross::tests::make_magellan_like_db`) with one
     /// `graph_entities` row named `shared_probe_symbol`, registers it via a
@@ -1840,6 +1865,27 @@ mod tests {
         assert!(
             items.iter().any(|i| i["provenance"] == "INFERRED"),
             "expected at least one INFERRED (knowledge) hit, got {items:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn search_kind_all_partial_failure_returns_working_backend_results() {
+        // Cross router pointed at a meta.db with zero registered projects and
+        // no central knowledge db configured -> code branch has nothing to
+        // return, knowledge branch (seeded) still returns its items.
+        let backend = test_direct_backend_with_seeded_memory_and_empty_cross_router();
+        let params = SearchParams {
+            query: "seeded".to_string(),
+            k: 10,
+            project: None,
+            kind: SearchKind::All,
+            limit: None,
+            cursor: None,
+        };
+        let result = backend.search(params).await.unwrap();
+        assert!(
+            !result["items"].as_array().unwrap().is_empty(),
+            "knowledge results must survive a code-side miss, got {result:?}"
         );
     }
 
@@ -2002,6 +2048,22 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn code_query_unknown_project_returns_project_not_found_not_panic() {
+        let backend = test_direct_backend_with_registered_code_project().0;
+        let params = CodeQueryParams {
+            project: "definitely-not-a-registered-project".to_string(),
+            tool: "magellan".to_string(),
+            subcommand: "status".to_string(),
+            args: vec![],
+        };
+        let result = backend.code_query(params).await.unwrap();
+        assert_eq!(
+            result["errors"][0]["code"],
+            crate::envelope::ERR_PROJECT_NOT_FOUND
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn code_query_unknown_tool_returns_parse_error() {
         let (backend, _db_path, project_name) = test_direct_backend_with_registered_code_project();
         let params = CodeQueryParams {
@@ -2159,6 +2221,24 @@ mod tests {
             "expected BACKEND_UNAVAILABLE or TIMEOUT for unreachable envoy, got {errors:?}"
         );
         assert!(result["items"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn event_connection_failure_surfaces_in_errors_not_as_panic_or_exception() {
+        let backend = test_direct_backend_with_seeded_memory();
+        // ENVOY_URL left unset/default in test env — if envoy happens to be
+        // running locally during `cargo test`, this call instead succeeds;
+        // either branch proves no panic/unhandled exception ever escapes
+        // event() past the envelope boundary.
+        let params = EventParams {
+            verb: "heartbeat".to_string(),
+            payload: serde_json::json!({"agent_id": "test"}),
+        };
+        let result = backend.event(params).await;
+        assert!(
+            result.is_ok(),
+            "event() must never return a raw exception, always Ok(envelope): {result:?}"
+        );
     }
 
     // -----------------------------------------------------------------
