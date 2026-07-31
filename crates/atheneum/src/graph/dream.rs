@@ -640,9 +640,11 @@ impl ConsolidationConfig {
     /// are populated; for remote providers `base_url`/`model`/`api_key` are
     /// taken verbatim from the config.
     pub fn from_llm_config(llm: &crate::config::LlmConfig) -> Self {
-        let mut cfg = Self::default();
-        cfg.provider = llm.provider.clone();
-        cfg.swap_guard = llm.swap_guard;
+        let mut cfg = Self {
+            provider: llm.provider.clone(),
+            swap_guard: llm.swap_guard,
+            ..Self::default()
+        };
         match llm.provider {
             crate::config::LlmProvider::Ollama => {
                 if !llm.base_url.is_empty() {
@@ -1016,7 +1018,7 @@ fn call_anthropic_messages(config: &ConsolidationConfig, prompt: &str) -> Result
 /// for servers that reject it.
 fn call_openai_chat_completions(config: &ConsolidationConfig, prompt: &str) -> Result<String> {
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
-    let send = |with_response_format: bool| -> std::result::Result<String, ureq::Error> {
+    let send = |with_response_format: bool| -> std::result::Result<String, Box<ureq::Error>> {
         let mut body = serde_json::json!({
             "model": config.model,
             "messages": [{ "role": "user", "content": prompt }],
@@ -1031,7 +1033,11 @@ fn call_openai_chat_completions(config: &ConsolidationConfig, prompt: &str) -> R
         if !config.api_key.is_empty() {
             req = req.set("Authorization", &format!("Bearer {}", config.api_key));
         }
-        let resp: serde_json::Value = req.send_json(body)?.into_json()?;
+        let resp: serde_json::Value = req
+            .send_json(body)
+            .map_err(Box::new)?
+            .into_json()
+            .map_err(|e| Box::new(ureq::Error::from(e)))?;
         resp.get("choices")
             .and_then(|c| c.as_array())
             .and_then(|arr| arr.first())
@@ -1040,11 +1046,11 @@ fn call_openai_chat_completions(config: &ConsolidationConfig, prompt: &str) -> R
             .and_then(|t| t.as_str())
             .map(|s| s.to_string())
             .ok_or_else(|| {
-                ureq::Error::Status(
+                Box::new(ureq::Error::Status(
                     502,
                     ureq::Response::new(502, "Bad Gateway", "missing choices[0].message.content")
                         .unwrap(),
-                )
+                ))
             })
     };
 
@@ -1825,33 +1831,32 @@ mod tests {
 
     #[test]
     fn test_swap_guard() {
-        // discover_available_models() makes real network calls to
-        // OLLAMA_HOST/LLAMACPP_HOST with no injection seam, so this test
-        // previously only passed by accident (whenever the dev machine
-        // happened to have nothing bound on the default Ollama/llama.cpp
-        // ports). Point both at addresses guaranteed to refuse connection
-        // so "no models loaded" is actually true, not just usually true.
-        // SAFETY: no other test in this crate reads/writes these two vars
-        // (verified via crate-wide grep), so no cross-test race.
-        unsafe {
-            std::env::set_var("OLLAMA_HOST", "http://127.0.0.1:1");
-            std::env::set_var("LLAMACPP_HOST", "http://127.0.0.1:1");
-        }
-
+        // Exercises the swap-guard decision logic through the
+        // apply_swap_guard_with_models seam with an empty model list
+        // ("no models loaded"), so no network discovery or environment
+        // manipulation is involved.
         let graph = AtheneumGraph::open_in_memory().unwrap();
+        let no_models: [crate::graph::models::ModelInfo; 0] = [];
 
         // preferred model = "gemma4:e2b"
 
         // 1. Strict mode should return ModelSwapBlocked error
-        let res_strict = graph.apply_swap_guard("gemma4:e2b", crate::config::SwapGuardMode::Strict);
+        let res_strict = graph.apply_swap_guard_with_models(
+            "gemma4:e2b",
+            crate::config::SwapGuardMode::Strict,
+            &no_models,
+        );
         assert!(matches!(
             res_strict,
             Err(crate::graph::types::AtheneumError::ModelSwapBlocked { .. })
         ));
 
         // 2. Fallback mode should return ModelSwapBlocked error
-        let res_fallback =
-            graph.apply_swap_guard("gemma4:e2b", crate::config::SwapGuardMode::Fallback);
+        let res_fallback = graph.apply_swap_guard_with_models(
+            "gemma4:e2b",
+            crate::config::SwapGuardMode::Fallback,
+            &no_models,
+        );
         assert!(matches!(
             res_fallback,
             Err(crate::graph::types::AtheneumError::ModelSwapBlocked { .. })
@@ -1859,13 +1864,12 @@ mod tests {
 
         // 3. Adapt mode should return the preferred model itself if no models are loaded
         let res_adapt = graph
-            .apply_swap_guard("gemma4:e2b", crate::config::SwapGuardMode::Adapt)
+            .apply_swap_guard_with_models(
+                "gemma4:e2b",
+                crate::config::SwapGuardMode::Adapt,
+                &no_models,
+            )
             .unwrap();
         assert_eq!(res_adapt, "gemma4:e2b");
-
-        unsafe {
-            std::env::remove_var("OLLAMA_HOST");
-            std::env::remove_var("LLAMACPP_HOST");
-        }
     }
 }

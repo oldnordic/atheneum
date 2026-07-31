@@ -12,12 +12,28 @@ pub struct ModelInfo {
 
 impl crate::AtheneumGraph {
     /// Discovers available models on local Ollama or llama.cpp servers.
+    ///
+    /// Reads `OLLAMA_HOST` / `LLAMACPP_HOST` (with default URLs) and
+    /// delegates to [`Self::discover_available_models_from`].
     pub fn discover_available_models(&self) -> Result<Vec<ModelInfo>> {
-        let mut models = Vec::new();
-
-        // 1. Attempt to query Ollama at the default URL or environment override
         let ollama_url =
             std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://127.0.0.1:11434".to_string());
+        let llamacpp_url =
+            std::env::var("LLAMACPP_HOST").unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
+        Self::discover_available_models_from(&ollama_url, &llamacpp_url)
+    }
+
+    /// Discovers available models against explicit server base URLs.
+    ///
+    /// Test seam: callers (including tests) can inject hosts without
+    /// touching process environment variables.
+    pub(crate) fn discover_available_models_from(
+        ollama_url: &str,
+        llamacpp_url: &str,
+    ) -> Result<Vec<ModelInfo>> {
+        let mut models = Vec::new();
+
+        // 1. Attempt to query Ollama
         if let Ok(resp) = ureq::get(&format!("{}/api/ps", ollama_url))
             .timeout(Duration::from_secs(1))
             .call()
@@ -43,9 +59,7 @@ impl crate::AtheneumGraph {
             }
         }
 
-        // 2. Attempt to query llama.cpp at default URL
-        let llamacpp_url =
-            std::env::var("LLAMACPP_HOST").unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
+        // 2. Attempt to query llama.cpp
         if let Ok(resp) = ureq::get(&format!("{}/health", llamacpp_url))
             .timeout(Duration::from_secs(1))
             .call()
@@ -88,6 +102,19 @@ impl crate::AtheneumGraph {
         mode: crate::config::SwapGuardMode,
     ) -> Result<String, crate::graph::types::AtheneumError> {
         let loaded = self.discover_available_models().unwrap_or_default();
+        self.apply_swap_guard_with_models(preferred_model, mode, &loaded)
+    }
+
+    /// Swap-guard decision against an explicit model list.
+    ///
+    /// Test seam: the full decision logic is exercised without network
+    /// discovery or process environment variables.
+    pub(crate) fn apply_swap_guard_with_models(
+        &self,
+        preferred_model: &str,
+        mode: crate::config::SwapGuardMode,
+        loaded: &[ModelInfo],
+    ) -> Result<String, crate::graph::types::AtheneumError> {
         let is_loaded = loaded
             .iter()
             .any(|m| m.name == preferred_model || m.name.starts_with(preferred_model));

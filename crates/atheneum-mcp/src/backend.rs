@@ -266,6 +266,16 @@ pub trait Backend: Send + Sync + 'static {
 /// separate envoy connection, independent of which atheneum backend mode
 /// is active.
 async fn event_impl(params: EventParams) -> Result<Value> {
+    let base_url =
+        std::env::var("ENVOY_URL").unwrap_or_else(|_| "http://localhost:9876".to_string());
+    event_impl_with_base(&base_url, params).await
+}
+
+/// `event_impl` with an explicit envoy base URL.
+///
+/// Test seam: callers (including tests) can inject the envoy address
+/// without touching process environment variables.
+async fn event_impl_with_base(base_url: &str, params: EventParams) -> Result<Value> {
     let mut envelope = crate::envelope::Envelope::new(1);
     let Ok(verb) = params.verb.parse::<crate::events::EnvoyVerb>() else {
         envelope.errors.push(crate::envelope::EnvelopeError {
@@ -278,9 +288,7 @@ async fn event_impl(params: EventParams) -> Result<Value> {
         });
         return Ok(envelope.to_value());
     };
-    let base_url =
-        std::env::var("ENVOY_URL").unwrap_or_else(|_| "http://localhost:9876".to_string());
-    let client = crate::events::EnvoyClient::new(base_url);
+    let client = crate::events::EnvoyClient::new(base_url.to_string());
     match client.call(verb, params.payload).await {
         Ok(v) => envelope.items.push(v),
         Err(e) => envelope.errors.push(crate::envelope::EnvelopeError {
@@ -634,6 +642,10 @@ pub mod direct {
         // made to deterministically fail (bogus bin_dir) without depending on
         // whether magellan/llmgrep/mirage happen to be on the real PATH.
         code_bin_dir: Option<std::path::PathBuf>,
+        // Test-only envoy base-URL override so event() can be pointed at a
+        // guaranteed-unreachable address without mutating the process-global
+        // ENVOY_URL env var.
+        envoy_base_url: Option<String>,
     }
 
     impl DirectBackend {
@@ -642,6 +654,7 @@ pub mod direct {
                 graph,
                 cross: None,
                 code_bin_dir: None,
+                envoy_base_url: None,
             }
         }
 
@@ -653,12 +666,19 @@ pub mod direct {
                 graph,
                 cross: Some(Arc::new(tokio::sync::Mutex::new(cross))),
                 code_bin_dir: None,
+                envoy_base_url: None,
             }
         }
 
         #[cfg(test)]
         pub fn with_code_bin_dir(mut self, dir: std::path::PathBuf) -> Self {
             self.code_bin_dir = Some(dir);
+            self
+        }
+
+        #[cfg(test)]
+        pub fn with_envoy_base_url(mut self, base_url: &str) -> Self {
+            self.envoy_base_url = Some(base_url.to_string());
             self
         }
     }
@@ -1543,7 +1563,10 @@ pub mod direct {
         }
 
         async fn event(&self, params: EventParams) -> Result<Value> {
-            super::event_impl(params).await
+            match &self.envoy_base_url {
+                Some(base_url) => super::event_impl_with_base(base_url, params).await,
+                None => super::event_impl(params).await,
+            }
         }
 
         async fn refresh(&self, params: RefreshParams) -> Result<Value> {
@@ -1671,17 +1694,6 @@ mod tests {
     use super::*;
     use atheneum::{GraphEdge, GraphEntity};
     use std::sync::Arc;
-
-    // ponytail: ENVOY_URL is process-global env state; two tests now mutate
-    // it (`event_impl_unreachable_envoy_returns_backend_unavailable_error`
-    // and `event_connection_failure_surfaces_in_errors_not_as_panic_or_exception`),
-    // and cargo's default test harness runs tests concurrently across
-    // threads. This lock serializes just those two so neither observes the
-    // other's env mutation mid-call. tokio::sync::Mutex (not std) because
-    // the guard must stay held across the `.await` on the envoy call.
-    // Upgrade to a per-call injected base_url (no global env var at all) if
-    // a third test ever needs ENVOY_URL.
-    static ENVOY_URL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     fn entity(id: i64, kind: &str, name: &str) -> GraphEntity {
         GraphEntity {
@@ -2426,24 +2438,18 @@ mod tests {
 
     #[tokio::test]
     async fn event_impl_unreachable_envoy_returns_backend_unavailable_error() {
-        // ponytail: ENVOY_URL is process-global; guarded by ENVOY_URL_LOCK
-        // (see its doc comment) against the sibling test below, which also
-        // mutates it. Port 9 is the "discard" service — same
-        // unreachable-envoy stand-in events.rs's own test uses.
-        let _guard = ENVOY_URL_LOCK.lock().await;
-        // SAFETY: env mutation serialized by ENVOY_URL_LOCK above.
-        unsafe {
-            std::env::set_var("ENVOY_URL", "http://127.0.0.1:9");
-        }
-        let result = event_impl(EventParams {
-            verb: "heartbeat".to_string(),
-            payload: serde_json::json!({"agent_id": "test"}),
-        })
+        // Port 9 is the "discard" service — same unreachable-envoy stand-in
+        // events.rs's own test uses. Injected via the event_impl_with_base
+        // seam, so no process-global env state is touched.
+        let result = event_impl_with_base(
+            "http://127.0.0.1:9",
+            EventParams {
+                verb: "heartbeat".to_string(),
+                payload: serde_json::json!({"agent_id": "test"}),
+            },
+        )
         .await
         .unwrap();
-        unsafe {
-            std::env::remove_var("ENVOY_URL");
-        }
         let errors = result["errors"].as_array().unwrap();
         assert!(
             errors
@@ -2458,28 +2464,22 @@ mod tests {
     #[tokio::test]
     async fn event_connection_failure_surfaces_in_errors_not_as_panic_or_exception() {
         // Distinct from `event_impl_unreachable_envoy_returns_backend_unavailable_error`:
-        // that test calls the free function `event_impl` directly. This one
+        // that test calls the free function `event_impl_with_base` directly. This one
         // goes through the actual `Backend::event()` trait method on a real
         // `DirectBackend` (the path the MCP server dispatches through),
         // proving the trait-level wiring also turns a connection failure
         // into Ok(envelope-with-errors), not just event_impl in isolation.
-        let backend = test_direct_backend_with_seeded_memory();
-        let _guard = ENVOY_URL_LOCK.lock().await;
-        // Pinned to a guaranteed-unreachable address (see sibling test) —
-        // left at the default, envoy commonly *is* running locally in this
-        // dev environment, which would make this assert nothing.
-        // SAFETY: env mutation serialized by ENVOY_URL_LOCK above.
-        unsafe {
-            std::env::set_var("ENVOY_URL", "http://127.0.0.1:9");
-        }
+        // Pinned to a guaranteed-unreachable address via the test-only
+        // with_envoy_base_url override (see sibling test) — left at the
+        // default, envoy commonly *is* running locally in this dev
+        // environment, which would make this assert nothing.
+        let backend =
+            test_direct_backend_with_seeded_memory().with_envoy_base_url("http://127.0.0.1:9");
         let params = EventParams {
             verb: "heartbeat".to_string(),
             payload: serde_json::json!({"agent_id": "test"}),
         };
         let result = backend.event(params).await;
-        unsafe {
-            std::env::remove_var("ENVOY_URL");
-        }
         let result =
             result.expect("event() must never return a raw exception, always Ok(envelope)");
         let errors = result["errors"].as_array().unwrap();
