@@ -43,7 +43,29 @@ async fn main() -> anyhow::Result<()> {
                 path.display()
             );
             let graph = atheneum::AtheneumGraph::open(&path)?;
-            Arc::new(backend::direct::direct_from_graph(graph))
+            let graph = Arc::new(tokio::sync::Mutex::new(graph));
+            // Wire the code side of the unified tool API: with a CrossRouter
+            // configured, code_query/refresh and search/navigate kind=code|all
+            // reach magellan/llmgrep/mirage via meta.db. Without it every
+            // code-side call degrades to BACKEND_UNAVAILABLE.
+            match atheneum::CrossRouter::open() {
+                Ok(cross) => {
+                    let cross = cross.with_central_knowledge_db(path.clone());
+                    tracing::info!(
+                        "CrossRouter configured (meta.db open); code-side tools enabled"
+                    );
+                    Arc::new(backend::direct::DirectBackend::with_cross_router(
+                        graph, cross,
+                    ))
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "CrossRouter unavailable ({err}); falling back to graph-only \
+                         backend — code-side tools will return BACKEND_UNAVAILABLE"
+                    );
+                    Arc::new(backend::direct::DirectBackend::new(graph))
+                }
+            }
         }
         #[cfg(not(feature = "direct"))]
         {

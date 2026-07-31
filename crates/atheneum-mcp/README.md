@@ -77,11 +77,16 @@ atheneum-mcp ── Backend trait (backend.rs:192)
   even though it is not registered in `meta.db`
   (`crates/atheneum/src/cross.rs:89-113`). The `DirectBackend` holds the
   router as an `Option` (`backend.rs:640`), populated by
-  `DirectBackend::with_cross_router` (`backend.rs:661-671`); when no router
-  is configured — which includes the stock `main.rs` wiring, that uses
-  `direct_from_graph` (`main.rs:46`, `backend.rs:686-690`) — every
-  code-side call degrades to a `BACKEND_UNAVAILABLE` entry in `errors[]`
-  reading "no CrossRouter configured" (`backend.rs:830-835`,
+  `DirectBackend::with_cross_router` (`backend.rs:661-671`). The stock
+  `main.rs` direct-mode wiring configures it at startup: it opens the
+  default `meta.db` via `CrossRouter::open()`, attaches the resolved
+  atheneum db as the central knowledge store, and builds the backend with
+  `with_cross_router` (`main.rs:45-60`). The `BACKEND_UNAVAILABLE`
+  degradation now applies only when `meta.db` cannot be opened at startup
+  — in that case `main.rs` logs a warning and falls back to the
+  graph-only `DirectBackend::new` (`main.rs:61-67`), and every code-side
+  call degrades to a `BACKEND_UNAVAILABLE` entry in `errors[]` reading
+  "no CrossRouter configured" (`backend.rs:830-835`,
   `backend.rs:1173-1178`, `backend.rs:1196-1202`, `backend.rs:1574-1580`),
   while knowledge-side results still return normally.
 

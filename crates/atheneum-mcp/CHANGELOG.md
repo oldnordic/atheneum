@@ -91,6 +91,12 @@ inter-component contract is documented in
   (removes the unsafe env manipulation flagged by semgrep).
 - `EnvoyVerb` parsing is a real `FromStr` impl instead of an
   `#[allow]`-suppressed ad-hoc match.
+- The stock binary now configures `CrossRouter` at startup
+  (`main.rs` direct mode) — code-side tools (`code_query`/`refresh`,
+  `search`/`navigate kind=code|all`) no longer degrade to
+  `BACKEND_UNAVAILABLE` when meta.db is present. If meta.db cannot be
+  opened, the server logs a warning and falls back to the previous
+  graph-only behavior.
 
 ---
 
