@@ -1825,9 +1825,21 @@ mod tests {
 
     #[test]
     fn test_swap_guard() {
+        // discover_available_models() makes real network calls to
+        // OLLAMA_HOST/LLAMACPP_HOST with no injection seam, so this test
+        // previously only passed by accident (whenever the dev machine
+        // happened to have nothing bound on the default Ollama/llama.cpp
+        // ports). Point both at addresses guaranteed to refuse connection
+        // so "no models loaded" is actually true, not just usually true.
+        // SAFETY: no other test in this crate reads/writes these two vars
+        // (verified via crate-wide grep), so no cross-test race.
+        unsafe {
+            std::env::set_var("OLLAMA_HOST", "http://127.0.0.1:1");
+            std::env::set_var("LLAMACPP_HOST", "http://127.0.0.1:1");
+        }
+
         let graph = AtheneumGraph::open_in_memory().unwrap();
 
-        // Since there are no loaded models under testing, discover_available_models should return empty list.
         // preferred model = "gemma4:e2b"
 
         // 1. Strict mode should return ModelSwapBlocked error
@@ -1850,5 +1862,10 @@ mod tests {
             .apply_swap_guard("gemma4:e2b", crate::config::SwapGuardMode::Adapt)
             .unwrap();
         assert_eq!(res_adapt, "gemma4:e2b");
+
+        unsafe {
+            std::env::remove_var("OLLAMA_HOST");
+            std::env::remove_var("LLAMACPP_HOST");
+        }
     }
 }
