@@ -1772,6 +1772,54 @@ proving the wiring beyond what Tasks 1-8's mocked unit tests cover."
 
 ---
 
+### Task 10: Wire `CrossRouter` into `main.rs` production startup
+
+**Added 2026-07-31, post-merge.** Tasks 1-9 were merged (f100c11..8983e81) with
+every gate green — and the deployed binary's entire code side was dead. Root
+cause: this plan specified the `with_cross_router` seam (Task 3) and proved it
+in Task 9's e2e test, but **no task wired it into production startup**.
+`main.rs`'s direct-mode branch built the backend via `direct_from_graph`
+(`cross: None`), so `code_query`, `refresh`, and `search`/`navigate` with
+`kind=code|all` all returned `BACKEND_UNAVAILABLE` / "no CrossRouter
+configured" on every real install. Discovered by a live `code_query` call
+against the installed v0.6.0 binary — the one check Tasks 1-9 never ran.
+**Lesson, now standing policy for this repo: an integration test that
+constructs its own wiring proves nothing about the binary's startup path —
+verify the deployed artifact with a live call before declaring done.**
+
+**Files:**
+- Modify: `crates/atheneum-mcp/src/main.rs` (direct-mode branch only; http mode untouched)
+- Modify: `crates/atheneum-mcp/README.md` (the "no CrossRouter configured" paragraph becomes fallback-only)
+- Modify: `crates/atheneum-mcp/CHANGELOG.md` (Fixed entry under the same release)
+
+**Interfaces:**
+- Consumes: `atheneum::cross::CrossRouter::open()` (cross.rs), builder
+  `.with_central_knowledge_db(path)`; `DirectBackend::with_cross_router` (Task 3).
+
+- [ ] **Step 1: Wire the router in the direct-mode branch**
+
+After opening the `AtheneumGraph`, attempt `CrossRouter::open()`; on success
+attach `.with_central_knowledge_db(<resolved atheneum db path>)` and construct
+the backend via `DirectBackend::with_cross_router`. On failure, log
+`tracing::warn!` and fall back to `direct_from_graph(graph)` — a missing
+`meta.db` must never crash the server, it degrades exactly as documented.
+
+- [ ] **Step 2: Update README + CHANGELOG** so the degradation paragraph
+describes only the fallback case, citing the new `main.rs` lines.
+
+- [ ] **Step 3: Verify against the built binary, not the test harness**
+
+`cargo build --release -p atheneum-mcp`, then drive a real stdio MCP session
+(initialize + `tools/call`) against the binary: `code_query` with
+`{"project":"magellan","tool":"magellan","subcommand":"status"}` MUST return
+magellan's real status JSON in `items[]` tagged `provenance: "EXTRACTED"`, and
+`search kind=all` MUST return code-side items. Paste the verbatim transcript
+as the evidence — this is the acceptance gate, not the test suite.
+
+Implemented on branch `wire-cross-router-main` (kanban t_6986c004).
+
+---
+
 ## Self-Review Notes
 
 **Spec coverage:** Architecture (Tasks 3-6 extend atheneum-mcp in place, no new server) — covered. Components (dispatch/resolve = Task 5's project lookup + Task 1's central-store fix; code-tool adapter = Task 5; knowledge adapter = existing DirectBackend, extended in Tasks 3/4; event adapter = Task 6; envelope assembly = Task 2) — covered. Data flow (orient-first call is NOT separately implemented — see gap below). Error handling (Task 8). Testing (every task; Task 9 e2e). Two-tier staleness + refresh (Task 7). Depth cap (Task 2 + Task 4). Pagination/cursor (Task 2 + Tasks 3/4). Provenance tri-tag (Tasks 3/4/5).
