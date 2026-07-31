@@ -34,6 +34,14 @@ Current core crate release: `atheneum` `0.12.0`.
 | [`atheneum`](./crates/atheneum) | Core library + CLI | [![Crates.io](https://img.shields.io/crates/v/atheneum)](https://crates.io/crates/atheneum) |
 | [`atheneum-mcp`](./crates/atheneum-mcp) | MCP server (optional) | — |
 
+As of `atheneum-mcp` 0.6.0, the MCP server is the single agent-facing
+front door for both sides of the stack: the atheneum knowledge graph and
+the magellan/llmgrep/mirage code-intelligence tools now sit behind one
+unified tool API with a shared response envelope, pagination, provenance
+tags, and a common error contract. See the
+[atheneum-mcp README](./crates/atheneum-mcp/README.md) for the full
+inter-component data flow and per-tool reference.
+
 ## Plugins
 
 | Plugin | Description |
