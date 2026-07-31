@@ -768,6 +768,20 @@ pub mod direct {
                         });
                         match code_results {
                             Ok(results) => {
+                                // Finding 5: cross_search fans out across every
+                                // attached project (it has no per-project
+                                // scoping of its own). When the caller passed
+                                // `project`, scope the *results* down to that
+                                // project here — otherwise `code_stale` below
+                                // (which IS scoped to `params.project`) would
+                                // describe a single project while `items`
+                                // silently contained hits from every project.
+                                let results: Vec<_> = match params.project.as_deref() {
+                                    Some(p) => {
+                                        results.into_iter().filter(|r| r.project == p).collect()
+                                    }
+                                    None => results,
+                                };
                                 for r in results {
                                     envelope.items.push(json!({
                                         "project": r.project,
@@ -789,14 +803,16 @@ pub mod direct {
                         }
                     }
                     None => {
-                        if matches!(params.kind, SearchKind::Code) {
-                            envelope.errors.push(crate::envelope::EnvelopeError {
-                                backend: "code".to_string(),
-                                code: crate::envelope::ERR_BACKEND_UNAVAILABLE.to_string(),
-                                message: "code search unavailable: no CrossRouter configured"
-                                    .to_string(),
-                            });
-                        }
+                        // Finding 3: push this for `All` too, not just `Code`
+                        // — a `kind=all` caller must see the code backend's
+                        // unavailability in `errors[]`, not a clean-looking
+                        // response that's silently missing an entire source.
+                        envelope.errors.push(crate::envelope::EnvelopeError {
+                            backend: "code".to_string(),
+                            code: crate::envelope::ERR_BACKEND_UNAVAILABLE.to_string(),
+                            message: "code search unavailable: no CrossRouter configured"
+                                .to_string(),
+                        });
                     }
                 }
 
@@ -1129,7 +1145,11 @@ pub mod direct {
                             }),
                         }
                     }
-                    None if matches!(params.kind, SearchKind::Code) => {
+                    None => {
+                        // Finding 3: push this for `All` too, not just `Code`
+                        // — a `kind=all` caller must see the code backend's
+                        // unavailability in `errors[]`, not a clean-looking
+                        // response that's silently missing an entire source.
                         envelope.errors.push(crate::envelope::EnvelopeError {
                             backend: "code".to_string(),
                             code: crate::envelope::ERR_BACKEND_UNAVAILABLE.to_string(),
@@ -1137,7 +1157,6 @@ pub mod direct {
                                 .to_string(),
                         });
                     }
-                    None => {}
                 }
 
                 // code_stale intentionally left None here: unlike `search`,
@@ -1201,6 +1220,22 @@ pub mod direct {
                     return Ok(envelope.to_value());
                 }
             };
+
+            if !tool
+                .allowed_subcommands()
+                .contains(&params.subcommand.as_str())
+            {
+                envelope.errors.push(crate::envelope::EnvelopeError {
+                    backend: "code".to_string(),
+                    code: crate::envelope::ERR_PARSE_ERROR.to_string(),
+                    message: format!(
+                        "subcommand '{}' is not permitted via code_query; code_query is \
+                         read-only — use the dedicated refresh tool to mutate the index",
+                        params.subcommand
+                    ),
+                });
+                return Ok(envelope.to_value());
+            }
 
             // Blocks the long-form `--db`/`--db=<path>` clap convention used
             // by every subcommand, plus magellan's `score` subcommand, which
@@ -1830,6 +1865,138 @@ mod tests {
         (backend, magellan_db, project_name)
     }
 
+    /// Two registered magellan-shaped projects, each with an entity sharing
+    /// the *same* name (`cross_project_probe_symbol`) so an unscoped
+    /// `cross_search` genuinely returns hits from both. Used to prove
+    /// `search(project=...)` actually scopes code results down to one
+    /// project (Finding 5) instead of returning every project's hits.
+    fn test_direct_backend_with_two_registered_code_projects(
+    ) -> (direct::DirectBackend, String, String) {
+        let tmp_dir = tempfile::tempdir().unwrap().keep();
+        let meta_path = tmp_dir.join("meta.db");
+        let magellan_db_a = tmp_dir.join("project_a.db");
+        let magellan_db_b = tmp_dir.join("project_b.db");
+
+        let make_db = |path: &std::path::Path| {
+            let conn = rusqlite::Connection::open(path).unwrap();
+            conn.execute(
+                "CREATE TABLE graph_entities (
+                    id INTEGER PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    file_path TEXT,
+                    data TEXT NOT NULL DEFAULT '{}'
+                )",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "CREATE TABLE graph_edges (
+                    id INTEGER PRIMARY KEY,
+                    edge_type TEXT NOT NULL,
+                    from_id INTEGER NOT NULL,
+                    to_id INTEGER NOT NULL,
+                    data TEXT NOT NULL DEFAULT '{}'
+                )",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO graph_entities (id, kind, name, file_path, data) VALUES
+                 (1, 'Symbol', 'cross_project_probe_symbol', 'src/lib.rs', '{}')",
+                [],
+            )
+            .unwrap();
+        };
+        make_db(&magellan_db_a);
+        make_db(&magellan_db_b);
+
+        let project_a = "project_a".to_string();
+        let project_b = "project_b".to_string();
+        let mut meta = atheneum::MetaRouter::open_at(&meta_path).unwrap();
+        meta.register_project(
+            &project_a,
+            "/project_a",
+            magellan_db_a.to_str().unwrap(),
+            None,
+            Some("rust"),
+        )
+        .unwrap();
+        meta.register_project(
+            &project_b,
+            "/project_b",
+            magellan_db_b.to_str().unwrap(),
+            None,
+            Some("rust"),
+        )
+        .unwrap();
+
+        let cross = atheneum::CrossRouter::from_meta(meta, 4);
+        let graph = atheneum::AtheneumGraph::open_in_memory().unwrap();
+        let backend = direct::DirectBackend::with_cross_router(
+            Arc::new(tokio::sync::Mutex::new(graph)),
+            cross,
+        );
+        (backend, project_a, project_b)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn search_kind_all_with_project_scopes_code_results_to_that_project() {
+        let (backend, project_a, project_b) =
+            test_direct_backend_with_two_registered_code_projects();
+        let params = SearchParams {
+            query: "cross_project_probe_symbol".to_string(),
+            k: 10,
+            project: Some(project_a.clone()),
+            kind: SearchKind::All,
+            limit: None,
+            cursor: None,
+        };
+        let result = backend.search(params).await.unwrap();
+        let items = result["items"].as_array().unwrap();
+        assert!(
+            !items.is_empty(),
+            "expected at least the scoped project's hit, got {items:?}"
+        );
+        assert!(
+            items.iter().all(|i| i["project"] != project_b),
+            "search(project={project_a:?}) leaked a hit from unscoped project \
+             {project_b:?}, got {items:?}"
+        );
+        assert!(
+            items
+                .iter()
+                .any(|i| i["project"] == project_a && i["provenance"] == "EXTRACTED"),
+            "expected the scoped project's own hit to survive filtering, got {items:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn search_kind_all_without_project_returns_hits_from_every_project() {
+        // Companion to the scoped test above: no `project` means the
+        // existing unscoped (searches-all-projects) behavior is preserved.
+        let (backend, project_a, project_b) =
+            test_direct_backend_with_two_registered_code_projects();
+        let params = SearchParams {
+            query: "cross_project_probe_symbol".to_string(),
+            k: 10,
+            project: None,
+            kind: SearchKind::All,
+            limit: None,
+            cursor: None,
+        };
+        let result = backend.search(params).await.unwrap();
+        let items = result["items"].as_array().unwrap();
+        assert!(
+            items.iter().any(|i| i["project"] == project_a),
+            "expected a hit from project_a, got {items:?}"
+        );
+        assert!(
+            items.iter().any(|i| i["project"] == project_b),
+            "expected a hit from project_b, got {items:?}"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn search_without_kind_defaults_to_knowledge_only_unchanged_shape() {
         let backend = test_direct_backend_with_seeded_memory();
@@ -2114,6 +2281,35 @@ mod tests {
                 .iter()
                 .any(|e| e["code"] == crate::envelope::ERR_PARSE_ERROR),
             "expected ERR_PARSE_ERROR, got {errors:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn code_query_mutating_subcommand_is_rejected_before_spawning() {
+        // `index` writes to the magellan db — code_query is supposed to be
+        // read-only (Finding 6). Using a bogus bin_dir too: if the allowlist
+        // check were somehow skipped, the subprocess would still fail to
+        // spawn, but we want to prove *this* is what caught it (PARSE_ERROR,
+        // not BACKEND_UNAVAILABLE), and that no subprocess was even attempted.
+        let (backend, _db_path, project_name) = test_direct_backend_with_registered_code_project();
+        let backend = backend.with_code_bin_dir(std::path::PathBuf::from("/nonexistent-bin-dir"));
+        let params = CodeQueryParams {
+            project: project_name,
+            tool: "magellan".to_string(),
+            subcommand: "index".to_string(),
+            args: vec![],
+        };
+        let result = backend.code_query(params).await.unwrap();
+        let errors = result["errors"].as_array().unwrap();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e["code"] == crate::envelope::ERR_PARSE_ERROR),
+            "expected ERR_PARSE_ERROR for mutating subcommand 'index', got {errors:?}"
+        );
+        assert!(
+            result["items"].as_array().unwrap().is_empty(),
+            "rejected subcommand must not reach the subprocess and produce an item"
         );
     }
 

@@ -27,6 +27,103 @@ impl CodeTool {
             CodeTool::Mirage => "mirage",
         }
     }
+
+    /// Read-only subcommands reachable via `code_query`.
+    ///
+    /// magellan/llmgrep/mirage are meant to be read-only, derived-from-source
+    /// tools behind this endpoint — `refresh` is the one sanctioned mutation
+    /// path and has its own dedicated MCP tool. Lists verified against
+    /// `magellan --help-full`, `llmgrep --help`, `mirage --help` (2026-07-31)
+    /// and manually split into read-only vs. mutating:
+    ///
+    /// magellan excludes: watch, index, delete, backfill, refresh, migrate,
+    /// migrate-backend, repair-edges, temporal-sweep, candidate-fact (submit/
+    /// validate mutate; list/review-queue don't, but the subcommand string
+    /// doesn't disambiguate the two here so the whole verb is excluded),
+    /// registry/catalog (db-discovery side effects, unclear/unneeded).
+    /// llmgrep excludes: vector-create (writes a new embedding index),
+    /// evolve (mutates labels/scores unless `--dry-run`, which this
+    /// allowlist can't verify since it only sees the subcommand name).
+    /// mirage excludes: migrate.
+    ///
+    /// ponytail: this only gates the subcommand name, not `args` — e.g.
+    /// `magellan doctor --fix` still mutates if a caller passes `--fix` in
+    /// `args`. `context`'s `build` sub-verb has similar ambiguity. Filtering
+    /// `args` too is out of scope for this pass; upgrade if a real caller
+    /// abuses it.
+    pub fn allowed_subcommands(self) -> &'static [&'static str] {
+        match self {
+            CodeTool::Magellan => &[
+                "status",
+                "features",
+                "query",
+                "search",
+                "find",
+                "refs",
+                "get",
+                "get-file",
+                "chunks",
+                "chunk-by-span",
+                "chunk-by-symbol",
+                "files",
+                "label",
+                "collisions",
+                "ast",
+                "find-ast",
+                "reachable",
+                "dead-code",
+                "cycles",
+                "condense",
+                "paths",
+                "slice",
+                "source-inventory",
+                "context",
+                "hopgraph",
+                "navigate",
+                "orient",
+                "temporal-status",
+                "temporal-barcode",
+                "as-of",
+                "doctor",
+                "verify",
+            ],
+            CodeTool::Llmgrep => &[
+                "search",
+                "ast",
+                "find-ast",
+                "complete",
+                "lookup",
+                "explore",
+                "navigate",
+                "stats",
+                "vector-search",
+                "export-symbols",
+            ],
+            CodeTool::Mirage => &[
+                "status",
+                "paths",
+                "cfg",
+                "dominators",
+                "loops",
+                "unreachable",
+                "patterns",
+                "frontiers",
+                "verify",
+                "blast-zone",
+                "cycles",
+                "slice",
+                "hotspots",
+                "hotpaths",
+                "diff",
+                "icfg",
+                "coverage",
+                "docs",
+                "risk",
+                "suggest",
+                "stats",
+            ],
+        }
+    }
 }
 
 pub struct CodeQueryRunner {
