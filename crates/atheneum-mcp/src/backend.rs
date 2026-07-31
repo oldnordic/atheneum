@@ -267,7 +267,7 @@ pub trait Backend: Send + Sync + 'static {
 /// is active.
 async fn event_impl(params: EventParams) -> Result<Value> {
     let mut envelope = crate::envelope::Envelope::new(1);
-    let Some(verb) = crate::events::EnvoyVerb::from_str(&params.verb) else {
+    let Ok(verb) = params.verb.parse::<crate::events::EnvoyVerb>() else {
         envelope.errors.push(crate::envelope::EnvelopeError {
             backend: "event".to_string(),
             code: crate::envelope::ERR_PARSE_ERROR.to_string(),

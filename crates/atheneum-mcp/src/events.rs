@@ -25,17 +25,18 @@ impl EnvoyVerb {
             EnvoyVerb::CreateDependency => "/dependencies",
         }
     }
+}
 
-    // ponytail: inherent `from_str` (not the `FromStr` trait) per the task
-    // brief's interface spec — backend.rs calls it as `EnvoyVerb::from_str`.
-    #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Option<Self> {
+impl std::str::FromStr for EnvoyVerb {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "send" => Some(EnvoyVerb::Send),
-            "claim" => Some(EnvoyVerb::Claim),
-            "heartbeat" => Some(EnvoyVerb::Heartbeat),
-            "create_dependency" => Some(EnvoyVerb::CreateDependency),
-            _ => None,
+            "send" => Ok(EnvoyVerb::Send),
+            "claim" => Ok(EnvoyVerb::Claim),
+            "heartbeat" => Ok(EnvoyVerb::Heartbeat),
+            "create_dependency" => Ok(EnvoyVerb::CreateDependency),
+            _ => Err(()),
         }
     }
 }
