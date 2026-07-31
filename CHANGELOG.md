@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `CrossRouter` now always attaches the central atheneum knowledge store
+  alongside magellan-registered projects: `cross_search`/`cross_navigate`
+  previously only reached databases registered as projects in magellan's
+  `meta.db`, so the central `.atheneum/atheneum.db` was silently
+  unreachable from cross-tool graph navigation. The store is included via
+  an explicit synthetic project entry
+  (`CrossRouter::with_central_knowledge_db`, `crates/atheneum/src/cross.rs`)
+  rather than a registry row.
+- `test_swap_guard` no longer depends on real Ollama/llama.cpp state:
+  `discover_available_models()` makes live network calls with no injection
+  seam, so the test previously passed only when nothing happened to be
+  bound on the default ports. New `pub(crate)` seams in
+  `crates/atheneum/src/graph/models.rs`
+  (`discover_available_models_from(ollama_host, llamacpp_host)` and
+  `apply_swap_guard_with_models(preferred, mode, &[ModelInfo])`) let the
+  test exercise the decision logic with an empty model list — no env
+  manipulation, no network. Same pattern in `atheneum-mcp`: the `event`
+  tests now inject the envoy address via `event_impl_with_base(base_url,
+  params)` instead of mutating the process-global `ENVOY_URL`, removing
+  all unsafe env manipulation flagged by semgrep
+  (`rust.lang.security.unsafe-usage`).
+- Clippy (MSRV-stable CI runs `-D warnings`):
+  `field_reassign_with_default` in
+  `ConsolidationConfig::from_llm_config` (struct-update syntax instead of
+  default-then-reassign) and `result_large_err` in
+  `call_openai_chat_completions` (closure now returns
+  `Result<String, Box<ureq::Error>>`; the `into_json` io error is wrapped
+  via `ureq::Error::from`). No behavior change.
+
 ## [0.12.1] - 2026-07-21
 
 ### Added — Kimi Code CLI plugin set (`plugin/atheneum-decisions`)

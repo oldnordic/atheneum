@@ -6,6 +6,94 @@ Format: Keep a Changelog. Versions: `major.minor.patch`.
 
 ---
 
+## [0.6.0] — 2026-07-31
+
+The Unified Tool API release: `atheneum-mcp` becomes the single MCP front
+door for both the atheneum knowledge graph and the magellan/llmgrep/mirage
+code-intelligence stack, plus an envoy coordination passthrough — 32 tools
+total, with a shared response envelope across every dispatch path. The full
+inter-component contract is documented in
+[`crates/atheneum-mcp/README.md`](./README.md).
+
+### Added
+
+- **`code_query` tool**: deep structural code queries resolved by project
+  name. The project is resolved server-side through magellan's `meta.db`
+  project registry (`CrossRouter::meta().get_project()`), then the request
+  is dispatched as a subprocess to the `magellan`, `llmgrep`, or `mirage`
+  CLI binary with the resolved `--db` path. Guardrails: a read-only
+  subcommand allowlist per binary (mutating verbs rejected before spawn —
+  `refresh` is the one sanctioned mutation path and has its own tool), a
+  `--db`/`--db=`/`-d` override ban in caller-supplied `args`, and caller-
+  visible errors that never contain raw subprocess stderr/stdout.
+- **`event` tool**: envoy multi-agent coordination passthrough. Verbs
+  `send` / `claim` / `heartbeat` / `create_dependency` map to envoy's HTTP
+  bridge endpoints; the payload is forwarded as-is and the response is
+  wrapped in the shared envelope. Base URL from `ENVOY_URL`, default
+  `http://localhost:9876`; 5-second timeout.
+- **`refresh` tool**: triggers `magellan refresh` for a resolved project —
+  the code-side propagation step of the update path. `llmgrep`/`mirage`
+  need no separate refresh since they read magellan's own db.
+- **Shared response envelope** (`src/envelope.rs`): every unified dispatch
+  path returns the same shape — `items[]`, `limit`, `cursor`, `has_more`,
+  `code_stale`, `knowledge_stale`, `depth_clamped`, and
+  `errors[]` (`{backend, code, message}`). Includes the pagination cursor
+  codec (base64-wrapped `{backend, offset}` JSON, `DEFAULT_LIMIT` 20 /
+  `MAX_LIMIT` 100, `DEFAULT_DEPTH` 2 / `MAX_DEPTH` 3), the provenance
+  tri-tag (`EXTRACTED` / `INFERRED` / `AMBIGUOUS`), and the error-code
+  constants `PROJECT_NOT_FOUND`, `BACKEND_UNAVAILABLE`, `PARSE_ERROR`,
+  `TIMEOUT`.
+- **Subprocess adapter** (`src/subprocess.rs`): `CodeQueryRunner` resolves
+  binaries from `GROUNDED_BIN_DIR` (default `~/.local/bin`), spawns with a
+  cleared environment, enforces a 10-second timeout, parses stdout as JSON
+  with a `{"tool", "output"}` text fallback, and logs raw subprocess output
+  server-side only.
+- **Two-tier staleness signal**: `search` reports `code_stale` for the
+  resolved project by running `magellan refresh --dry-run --output json`
+  and checking the `updated`/`deleted`/`added` arrays — `None` means "not
+  applicable to this call", not "checked and clean". `knowledge_stale` is a
+  reserved envelope field for the knowledge-side signal.
+- **Real end-to-end test** for `kind=all` search: a fixture meta.db with
+  attached project dbs proves resolve → fan-out → merge → provenance
+  tagging beyond mocks, alongside regression tests for the partial-failure,
+  project-not-found, depth-clamp, and default-shape compatibility paths.
+
+### Changed
+
+- **`search`**: new optional `kind=knowledge|code|all` (default
+  `knowledge`), `limit`, and `cursor` parameters. `kind=code` fans out
+  across per-project magellan databases via the atheneum crate's
+  `CrossRouter` (lazy, read-only `ATTACH DATABASE` against magellan's
+  `meta.db` registry). `kind=all` merges knowledge and code results, each
+  item tagged `provenance` + `source`; a backend that fails lands in
+  `errors[]` while the surviving backend's items still return. The default
+  call shape (no `kind`/`limit`/`cursor`) returns the same bare array as
+  before — backward compatible.
+- **`navigate`**: new optional `kind` parameter and a server-side depth
+  clamp (requested depth is clamped to `MAX_DEPTH` 3 and reported via
+  `depth_clamped` on the enveloped shape; the knowledge-only default shape
+  is unchanged). `kind=code|all` walks per-project subgraphs via
+  `CrossRouter::cross_navigate`.
+- **Versioning**: `atheneum-mcp` no longer inherits
+  `[workspace.package] version` — it now carries its own version field so
+  its release line is independent of the workspace root and of the
+  `atheneum` library's 0.12.x line.
+
+### Fixed
+
+- `code_query` error sanitization: subprocess failures surface only the
+  tool label and exit status in `errors[]`; raw stderr/stdout is logged
+  server-side only, never forwarded to the caller.
+- `magellan score`'s hand-rolled `-d <path>` db-override shorthand is
+  blocked alongside `--db`/`--db=`.
+- `event` tests no longer mutate the process-global `ENVOY_URL`: the envoy
+  base URL is injected through `event_impl_with_base(base_url, params)`
+  (removes the unsafe env manipulation flagged by semgrep).
+- `EnvoyVerb` parsing is a real `FromStr` impl instead of an
+  `#[allow]`-suppressed ad-hoc match.
+
+---
+
 ## [0.5.0] — 2026-07-21
 
 ### Added
@@ -25,6 +113,16 @@ Format: Keep a Changelog. Versions: `major.minor.patch`.
 - **`pin_entity` / `unpin_entity` tools**: mark entities as always-included
   in `seed_memory` and immune to cache eviction.
 
+### Changed
+
+- `query_memory` is now documented and schematized as an exact key lookup,
+  matching the direct graph API and the existing integration tests.
+- `store_memory` now accepts optional `key`, `scope`, and `project` fields
+  instead of forcing every caller into a content-derived key with implicit
+  `agent` scope.
+- `query_memory` now accepts optional `scope` and `project` filters plus a
+  deprecated `query` alias for backward compatibility.
+
 ### Fixed
 
 - Direct-mode `atheneum-mcp` failed to start entirely
@@ -32,95 +130,6 @@ Format: Keep a Changelog. Versions: `major.minor.patch`.
   due to a stale `sqlitegraph` lockfile pin in the `atheneum` workspace —
   see the `atheneum` 0.11.0 changelog entry. Any MCP client configured to
   launch this server silently lost it from its tool list on every session.
-
----
-
-## [Unreleased] — Pending
-
-> **Status: Verified end-to-end.** Store→query round-trip confirmed via MCP protocol against a real Atheneum graph. The "same-process empty result" was a test artifact from pipelining requests without waiting for responses — real MCP clients are not affected.
-
-### Changed
-
-- `query_memory` is now documented and schematized as an exact key lookup, matching the direct graph API and the existing integration tests.
-- `store_memory` now accepts optional `key`, `scope`, and `project` fields instead of forcing every caller into a content-derived key with implicit `agent` scope.
-- `query_memory` now accepts optional `scope` and `project` filters plus a deprecated `query` alias for backward compatibility.
-
-### What Works (Verified)
-
-| Item | Evidence | Notes |
-|------|----------|-------|
-| Compiles with `--features http` | `cargo check --all-targets` | Default feature set |
-| Compiles with `--features direct` | `cargo check --all-targets --features direct` | Requires `atheneum` crate |
-| MCP protocol handshake | `tests/integration_test.rs` | Mock backend only |
-| Tool registration (9 tools) | Unit test `all_nine_tools_registered` | |
-| Tool schema validation | Unit test `get_tool_by_name` | |
-| Server info response | Unit test `server_info_is_correct` | |
-
-### What Is Implemented But NOT Verified Against Real Data
-
-> These backends have code but **no integration test exercises them with a real `AtheneumGraph`**.
-
-#### HTTP Backend (default)
-
-| Method | Status | Risk |
-|--------|--------|------|
-| `store_discovery` | Calls envoy `/atheneum/discoveries` | **UNTESTED** — payload structure inferred from envoy source, not verified live |
-| `query_knowledge` | Calls envoy `/atheneum/knowledge` | **UNTESTED** — no live envoy in test suite |
-| `search` | Calls envoy `/atheneum/search` | **UNTESTED** — no live envoy in test suite |
-| `store_memory` | Returns hard error | **By design** — memory does not go through envoy; use direct backend |
-| `query_memory` | Returns hard error | **By design** — memory does not go through envoy; use direct backend |
-| `list_sessions` | Calls envoy `/atheneum/sessions` | **UNTESTED** — no live envoy in test suite |
-| `list_events` | Calls envoy `/atheneum/events` | **UNTESTED** — no live envoy in test suite |
-| `navigate` | Calls envoy `/atheneum/graph/navigate` | **UNTESTED** — no live envoy in test suite |
-| `graph_stats` | Calls envoy `/atheneum/graph/stats` | **UNTESTED** — no live envoy in test suite |
-
-#### Direct Backend (`--features direct`)
-
-| Method | Status | Risk |
-|--------|--------|------|
-| `store_discovery` | Calls `graph.store_discovery_in_project()` | **UNTESTED** — implemented but never run against real graph via MCP protocol |
-| `query_knowledge` | Calls `graph.query_knowledge()` | **UNTESTED** |
-| `search` | Calls `graph.lexical_search()` | **UNTESTED** |
-| `store_memory` | Calls `graph.store_memory()` | **UNTESTED** |
-| `query_memory` | Calls `graph.query_memory()` | **UNTESTED** |
-| `list_sessions` | Calls `graph.query_sessions()` | **UNTESTED** |
-| `list_events` | Calls `graph.query_events()` | **UNTESTED** |
-| `navigate` | Calls `graph.navigate()` | **UNTESTED** |
-| `graph_stats` | Calls `graph.runtime_stats()` | **UNTESTED** |
-
-### Known Issues / TODO
-
-1. **No end-to-end test with real graph**  
-   The integration tests use a `MockBackend` that returns hardcoded JSON. There is no test that spins up `AtheneumGraph::open_in_memory()`, connects an MCP client over a duplex stream, calls a tool, and verifies the graph mutated.
-
-2. ~~`store_memory` tags are dropped~~ **FIXED in atheneum v0.3.3**  
-   The atheneum `store_memory()` API now accepts `tags: Option<&[String]>`. The MCP direct backend passes tags through. Call sites updated across tests and production code.
-
-3. **No error propagation contract**  
-   Backend errors are converted to `CallToolResult::error()` with the message as text. There is no structured error format, and clients cannot distinguish "graph not found" from "invalid params".
-
-4. **Direct backend uses `tokio::task::block_in_place`**  
-   This is a temporary bridge because `AtheneumGraph` methods are synchronous. It works but ties up a Tokio worker thread per call. Long-term, the graph should expose async methods or the backend should use a dedicated blocking pool.
-
-5. **Tool schemas are hand-written JSON**  
-   No `schemars` derivation means schemas can drift from the actual parameter structs (`StoreDiscoveryParams`, `StoreMemoryParams`) without compile-time detection.
-
-6. **HTTP backend lacks memory endpoints**  
-   `store_memory` and `query_memory` always return errors in HTTP mode. The envoy bridge needs memory route handlers, or the MCP server needs to document that memory operations require direct mode.
-
-7. **No graceful shutdown**  
-   The server drops the stream to terminate. There is no `exit` signal or lifecycle hook.
-
-8. **No logging / tracing integration**  
-   `tracing` is a dependency but nothing is instrumented.
-
-### Blockers Before Release
-
-- [ ] Write an integration test that uses a real `AtheneumGraph` (in-memory) and exercises each tool via the MCP protocol.
-- [ ] Verify HTTP backend against a running envoy instance (or document that it requires envoy).
-- [ ] Decide on `store_memory` tags: either update atheneum API or remove tags from tool schema.
-- [ ] Add structured error responses.
-- [ ] Test with at least one real MCP client (Claude Desktop, Cline, etc.).
 
 ---
 
