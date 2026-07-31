@@ -1637,6 +1637,17 @@ mod tests {
     use atheneum::{GraphEdge, GraphEntity};
     use std::sync::Arc;
 
+    // ponytail: ENVOY_URL is process-global env state; two tests now mutate
+    // it (`event_impl_unreachable_envoy_returns_backend_unavailable_error`
+    // and `event_connection_failure_surfaces_in_errors_not_as_panic_or_exception`),
+    // and cargo's default test harness runs tests concurrently across
+    // threads. This lock serializes just those two so neither observes the
+    // other's env mutation mid-call. tokio::sync::Mutex (not std) because
+    // the guard must stay held across the `.await` on the envoy call.
+    // Upgrade to a per-call injected base_url (no global env var at all) if
+    // a third test ever needs ENVOY_URL.
+    static ENVOY_URL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     fn entity(id: i64, kind: &str, name: &str) -> GraphEntity {
         GraphEntity {
             id,
@@ -1707,12 +1718,21 @@ mod tests {
     }
 
     /// Same seeded-memory knowledge graph as `test_direct_backend_with_seeded_memory`,
-    /// but wired to a `CrossRouter` over a fresh temp `meta.db` with zero
-    /// registered projects and no central knowledge db configured. The code
-    /// branch of a `kind=all` search has nothing to find (and nothing to
-    /// crash on) — proves a code-side miss doesn't take the knowledge
-    /// branch's results down with it.
-    fn test_direct_backend_with_seeded_memory_and_empty_cross_router() -> direct::DirectBackend {
+    /// wired to a `CrossRouter` whose meta.db has had its own project
+    /// registry table (`project_overlay` — the table `MetaRouter::open_at`'s
+    /// non-magellan-attached `list_projects()` queries, per
+    /// `MetaRouter::projects_source`) dropped out from under it after setup.
+    ///
+    /// This is the only way to make `CrossRouter::cross_search` itself
+    /// return `Err`: a bad *individual* project (missing db file,
+    /// incompatible schema) is caught internally in `cross_search`'s loop
+    /// (`ensure_attached`/prepare/query failures all `tracing::warn!` +
+    /// `continue`, never surfaced as `cross_search`'s own `Err`) — only a
+    /// failure of the `self.meta.list_projects()` call that seeds that loop
+    /// propagates out. Simply registering zero projects makes `list_projects`
+    /// return `Ok(vec![])`, not `Err`, which doesn't exercise the
+    /// `envelope.errors.push(...)` arm for the code backend at all.
+    fn test_direct_backend_with_seeded_memory_and_broken_cross_router() -> direct::DirectBackend {
         let graph = atheneum::AtheneumGraph::open_in_memory().unwrap();
         graph
             .store_memory(
@@ -1727,6 +1747,10 @@ mod tests {
         let tmp_dir = tempfile::tempdir().unwrap().keep();
         let meta_path = tmp_dir.join("meta.db");
         let meta = atheneum::MetaRouter::open_at(&meta_path).unwrap();
+        {
+            let conn = rusqlite::Connection::open(&meta_path).unwrap();
+            conn.execute("DROP TABLE project_overlay", []).unwrap();
+        }
         let cross = atheneum::CrossRouter::from_meta(meta, 4);
         direct::DirectBackend::with_cross_router(Arc::new(tokio::sync::Mutex::new(graph)), cross)
     }
@@ -1870,10 +1894,12 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn search_kind_all_partial_failure_returns_working_backend_results() {
-        // Cross router pointed at a meta.db with zero registered projects and
-        // no central knowledge db configured -> code branch has nothing to
-        // return, knowledge branch (seeded) still returns its items.
-        let backend = test_direct_backend_with_seeded_memory_and_empty_cross_router();
+        // meta.db's own project registry table is dropped out from under the
+        // CrossRouter -> `cross_search`'s `list_projects()` call genuinely
+        // returns `Err`, exercising the code-branch `envelope.errors.push`
+        // arm in `search` (not just an empty-but-successful code result) —
+        // and the seeded knowledge branch must still return its item.
+        let backend = test_direct_backend_with_seeded_memory_and_broken_cross_router();
         let params = SearchParams {
             query: "seeded".to_string(),
             k: 10,
@@ -1885,7 +1911,16 @@ mod tests {
         let result = backend.search(params).await.unwrap();
         assert!(
             !result["items"].as_array().unwrap().is_empty(),
-            "knowledge results must survive a code-side miss, got {result:?}"
+            "knowledge results must survive a code-side failure, got {result:?}"
+        );
+        let errors = result["errors"].as_array().unwrap();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e["backend"] == "code"
+                    && e["code"] == crate::envelope::ERR_BACKEND_UNAVAILABLE),
+            "expected a genuine code-backend ERR_BACKEND_UNAVAILABLE from the broken \
+             meta.db, got {errors:?}"
         );
     }
 
@@ -2195,11 +2230,12 @@ mod tests {
 
     #[tokio::test]
     async fn event_impl_unreachable_envoy_returns_backend_unavailable_error() {
-        // ponytail: ENVOY_URL is process-global; safe here because no other
-        // test in this crate reads/writes it, but a second test doing the
-        // same concurrently would race. Port 9 is the "discard" service —
-        // same unreachable-envoy stand-in events.rs's own test uses.
-        // SAFETY: single-threaded env mutation, no other test touches this var.
+        // ponytail: ENVOY_URL is process-global; guarded by ENVOY_URL_LOCK
+        // (see its doc comment) against the sibling test below, which also
+        // mutates it. Port 9 is the "discard" service — same
+        // unreachable-envoy stand-in events.rs's own test uses.
+        let _guard = ENVOY_URL_LOCK.lock().await;
+        // SAFETY: env mutation serialized by ENVOY_URL_LOCK above.
         unsafe {
             std::env::set_var("ENVOY_URL", "http://127.0.0.1:9");
         }
@@ -2225,20 +2261,41 @@ mod tests {
 
     #[tokio::test]
     async fn event_connection_failure_surfaces_in_errors_not_as_panic_or_exception() {
+        // Distinct from `event_impl_unreachable_envoy_returns_backend_unavailable_error`:
+        // that test calls the free function `event_impl` directly. This one
+        // goes through the actual `Backend::event()` trait method on a real
+        // `DirectBackend` (the path the MCP server dispatches through),
+        // proving the trait-level wiring also turns a connection failure
+        // into Ok(envelope-with-errors), not just event_impl in isolation.
         let backend = test_direct_backend_with_seeded_memory();
-        // ENVOY_URL left unset/default in test env — if envoy happens to be
-        // running locally during `cargo test`, this call instead succeeds;
-        // either branch proves no panic/unhandled exception ever escapes
-        // event() past the envelope boundary.
+        let _guard = ENVOY_URL_LOCK.lock().await;
+        // Pinned to a guaranteed-unreachable address (see sibling test) —
+        // left at the default, envoy commonly *is* running locally in this
+        // dev environment, which would make this assert nothing.
+        // SAFETY: env mutation serialized by ENVOY_URL_LOCK above.
+        unsafe {
+            std::env::set_var("ENVOY_URL", "http://127.0.0.1:9");
+        }
         let params = EventParams {
             verb: "heartbeat".to_string(),
             payload: serde_json::json!({"agent_id": "test"}),
         };
         let result = backend.event(params).await;
+        unsafe {
+            std::env::remove_var("ENVOY_URL");
+        }
+        let result =
+            result.expect("event() must never return a raw exception, always Ok(envelope)");
+        let errors = result["errors"].as_array().unwrap();
         assert!(
-            result.is_ok(),
-            "event() must never return a raw exception, always Ok(envelope): {result:?}"
+            errors
+                .iter()
+                .any(|e| e["code"] == crate::envelope::ERR_BACKEND_UNAVAILABLE
+                    || e["code"] == crate::envelope::ERR_TIMEOUT),
+            "expected BACKEND_UNAVAILABLE or TIMEOUT for unreachable envoy via backend.event(), \
+             got {errors:?}"
         );
+        assert!(result["items"].as_array().unwrap().is_empty());
     }
 
     // -----------------------------------------------------------------
