@@ -24,6 +24,7 @@ pub mod extraction;
 pub mod handoff;
 mod hashing;
 pub mod knowledge;
+pub mod ledger;
 pub mod lint;
 pub mod magellan_bridge;
 pub mod memory;
@@ -46,6 +47,9 @@ pub use dream::{
 };
 #[cfg(feature = "extract")]
 pub use extract_decisions::{run_extract, ExtractConfig, ExtractMode, ExtractStats};
+pub use ledger::{
+    export_ledger, import_ledger, LedgerCounts, LedgerKind, LedgerRecord,
+};
 pub use lint::{BrokenLinkMode, LintConfig, LintReport, MaintainConfig, MaintainReport};
 pub use models::ModelInfo;
 pub use navigation::{estimate_entity_tokens, truncate_subgraph};

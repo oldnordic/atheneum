@@ -690,10 +690,124 @@ fn run() -> anyhow::Result<()> {
                     }
                 }
             }
+            // General content-hash dedup guard (all discovery types). Skips
+            // when an identical (agent, type, target, content_hash) Discovery
+            // already exists and reports the existing id. This is the guard
+            // bulk import paths rely on; probe-verified broken before the
+            // ledger reconciliation fix (identical payload stored 3x produced
+            // 3 discoveries).
+            if dedup && !force {
+                if let Some(existing_id) = graph.find_discovery_by_content_hash(
+                    agent,
+                    discovery_type,
+                    target,
+                    &metadata,
+                )? {
+                    print_json(json!({
+                        "discovery_id": existing_id,
+                        "deduped": true,
+                        "agent": agent,
+                        "type": discovery_type,
+                        "target": target,
+                    }))?;
+                    return Ok(());
+                }
+            }
             let id = graph.store_discovery(agent, discovery_type, target, metadata)?;
             print_json(
                 json!({"discovery_id": id, "agent": agent, "type": discovery_type, "target": target}),
             )?;
+        }
+        "export-ledger" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum export-ledger <db-path> [--until <rfc3339>] [--kinds discoveries,memories,tasks]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let mut until: Option<String> = None;
+            let mut kinds = atheneum::graph::LedgerKind::all();
+            let mut i = 3;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--until" => {
+                        let value = args
+                            .get(i + 1)
+                            .ok_or_else(|| anyhow::anyhow!("--until requires a value"))?;
+                        until = Some(value.clone());
+                        i += 2;
+                    }
+                    "--kinds" => {
+                        let value = args
+                            .get(i + 1)
+                            .ok_or_else(|| anyhow::anyhow!("--kinds requires a value"))?;
+                        kinds = atheneum::graph::LedgerKind::parse_list(value)?;
+                        i += 2;
+                    }
+                    other => anyhow::bail!("unknown export-ledger option: {}", other),
+                }
+            }
+            let graph = AtheneumGraph::open(&db_path)?;
+            let stdout = io::stdout();
+            let counts = atheneum::graph::export_ledger(
+                &graph,
+                &kinds,
+                until.as_deref(),
+                stdout.lock(),
+            )?;
+            let summary = counts
+                .iter()
+                .map(|(kind, n)| format!("{}={}", kind, n))
+                .collect::<Vec<_>>()
+                .join(" ");
+            eprintln!("export-ledger: {}", summary);
+        }
+        "import-ledger" => {
+            if args.len() < 4 {
+                eprintln!("Usage: atheneum import-ledger <db-path> <file.ndjson> [--dry-run] [--map <path>]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
+            let file = PathBuf::from(positional(&args, 3, "file.ndjson")?);
+            let mut dry_run = false;
+            let mut map_path: Option<PathBuf> = None;
+            let mut i = 4;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--dry-run" => {
+                        dry_run = true;
+                        i += 1;
+                    }
+                    "--map" => {
+                        let value = args
+                            .get(i + 1)
+                            .ok_or_else(|| anyhow::anyhow!("--map requires a value"))?;
+                        map_path = Some(PathBuf::from(value));
+                        i += 2;
+                    }
+                    other => anyhow::bail!("unknown import-ledger option: {}", other),
+                }
+            }
+            let map_path = map_path.unwrap_or_else(|| {
+                let mut name = file.clone().into_os_string();
+                name.push(".import-map.ndjson");
+                PathBuf::from(name)
+            });
+            let graph = AtheneumGraph::open(&db_path)?;
+            let map_file = std::fs::File::create(&map_path)
+                .map_err(|e| anyhow::anyhow!("create map file {}: {}", map_path.display(), e))?;
+            let counts = atheneum::graph::import_ledger(
+                &graph,
+                &file,
+                dry_run,
+                io::BufWriter::new(map_file),
+            )?;
+            print_json(json!({
+                "merged": counts.merged,
+                "skipped": counts.skipped,
+                "failed": counts.failed,
+                "dry_run": dry_run,
+                "map_file": map_path.display().to_string(),
+            }))?;
         }
         "add-edge" => {
             if args.len() < 6 {
@@ -1826,7 +1940,15 @@ fn write_usage(mut writer: impl Write) -> io::Result<()> {
     )?;
     writeln!(
         writer,
-        "  store-discovery <db> <agent> <type> <target> [meta.json] [--session ID] [--project P] [--dedup] [--force]  Store a discovery (--dedup skips a duplicate Decision on session+target+source+chosen; --force bypasses)"
+        "  store-discovery <db> <agent> <type> <target> [meta.json] [--session ID] [--project P] [--dedup] [--force]  Store a discovery (--dedup skips a duplicate on agent+type+target+content_hash, and a duplicate Decision on session+target+source+chosen; --force bypasses)"
+    )?;
+    writeln!(
+        writer,
+        "  export-ledger <db> [--until RFC3339] [--kinds discoveries,memories,tasks]  Export ledger records as NDJSON to stdout (per-kind counts on stderr)"
+    )?;
+    writeln!(
+        writer,
+        "  import-ledger <db> <file.ndjson> [--dry-run] [--map PATH]  Import ledger NDJSON through the normal store paths, skipping records whose kind+agent+target+content_hash already exists (writes <file>.import-map.ndjson audit map)"
     )?;
     writeln!(
         writer,

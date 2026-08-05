@@ -581,6 +581,64 @@ impl AtheneumGraph {
         })
     }
 
+    /// Content-hash dedup lookup for `store-discovery --dedup`.
+    ///
+    /// Returns the id of an existing Discovery entity whose
+    /// `(agent, discovery_type, target, content_hash)` quadruple matches the
+    /// would-be store, or `None` when this payload was never stored. The hash
+    /// is computed exactly as [`Self::store_discovery`] computes it — the
+    /// caller's metadata with `agent`/`discovery_type`/`target` folded in and
+    /// the volatile keys (`timestamp`, `sql_id`, `content_hash`) stripped —
+    /// so an identical payload always collides regardless of when it was
+    /// stored. Unlike [`Self::decision_exists_chosen`] (Decision-only,
+    /// keyed on the semantic choice), this guard applies to every discovery
+    /// type and keys on byte-identical content, which is what bulk import
+    /// paths (e.g. ledger reconciliation) need.
+    pub fn find_discovery_by_content_hash(
+        &self,
+        agent: &str,
+        discovery_type: &str,
+        target: &str,
+        metadata: &Value,
+    ) -> Result<Option<i64>> {
+        let mut normalized = metadata.clone();
+        if let Some(obj) = normalized.as_object_mut() {
+            obj.insert("agent".to_string(), Value::String(agent.to_string()));
+            obj.insert(
+                "discovery_type".to_string(),
+                Value::String(discovery_type.to_string()),
+            );
+            obj.insert("target".to_string(), Value::String(target.to_string()));
+        }
+        let content_hash =
+            content_hash_excluding(&normalized, &["timestamp", "sql_id", "content_hash"])?;
+
+        super::with_graph_conn(&self.inner, |conn| {
+            let mut stmt = conn.prepare_cached(
+                "SELECT id FROM graph_entities
+                 WHERE kind = ?1
+                   AND json_extract(data, '$.agent') = ?2
+                   AND json_extract(data, '$.discovery_type') = ?3
+                   AND json_extract(data, '$.target') = ?4
+                   AND json_extract(data, '$.content_hash') = ?5
+                 ORDER BY id LIMIT 1",
+            )?;
+            let id = stmt
+                .query_row(
+                    params![
+                        EntityType::Discovery.as_str(),
+                        agent,
+                        discovery_type,
+                        target,
+                        content_hash
+                    ],
+                    |r| r.get(0),
+                )
+                .ok();
+            Ok(id)
+        })
+    }
+
     pub fn query_discoveries_in_project(
         &self,
         target: &str,
@@ -641,6 +699,81 @@ mod tests {
             )
             .unwrap();
         graph
+    }
+
+    #[test]
+    fn find_discovery_by_content_hash_matches_identical_payload() {
+        let graph = make_graph();
+        let meta = serde_json::json!({"detail": "connection pool leak", "project_id": "test"});
+        let first = graph
+            .store_discovery("test-agent", "bug_found", "http_handler", meta.clone())
+            .unwrap();
+
+        let found = graph
+            .find_discovery_by_content_hash("test-agent", "bug_found", "http_handler", &meta)
+            .unwrap();
+        assert_eq!(
+            found,
+            Some(first),
+            "identical payload must resolve to the first store's id"
+        );
+    }
+
+    #[test]
+    fn find_discovery_by_content_hash_ignores_volatile_keys() {
+        let graph = make_graph();
+        let meta = serde_json::json!({"detail": "connection pool leak"});
+        let first = graph
+            .store_discovery("test-agent", "bug_found", "http_handler", meta)
+            .unwrap();
+
+        // A replay carrying a stale timestamp/sql_id/content_hash (e.g. an
+        // exported ledger record) must still collide with the original.
+        let replay = serde_json::json!({
+            "detail": "connection pool leak",
+            "timestamp": "1999-01-01T00:00:00Z",
+            "sql_id": 424242,
+            "content_hash": "stale-hash"
+        });
+        let found = graph
+            .find_discovery_by_content_hash("test-agent", "bug_found", "http_handler", &replay)
+            .unwrap();
+        assert_eq!(found, Some(first));
+    }
+
+    #[test]
+    fn find_discovery_by_content_hash_rejects_different_payload() {
+        let graph = make_graph_with_discovery();
+
+        let different_body = graph
+            .find_discovery_by_content_hash(
+                "test-agent",
+                "bug_found",
+                "http_handler",
+                &serde_json::json!({"detail": "something else"}),
+            )
+            .unwrap();
+        assert_eq!(different_body, None, "changed content must not match");
+
+        let different_type = graph
+            .find_discovery_by_content_hash(
+                "test-agent",
+                "decision",
+                "http_handler",
+                &serde_json::json!({"detail": "connection pool leak"}),
+            )
+            .unwrap();
+        assert_eq!(different_type, None, "changed type must not match");
+
+        let different_agent = graph
+            .find_discovery_by_content_hash(
+                "other-agent",
+                "bug_found",
+                "http_handler",
+                &serde_json::json!({"detail": "connection pool leak"}),
+            )
+            .unwrap();
+        assert_eq!(different_agent, None, "changed agent must not match");
     }
 
     #[test]
