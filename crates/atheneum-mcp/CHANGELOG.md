@@ -6,7 +6,7 @@ Format: Keep a Changelog. Versions: `major.minor.patch`.
 
 ---
 
-## [Unreleased]
+## [0.7.0] — 2026-08-24
 
 ### Added
 
