@@ -148,7 +148,13 @@ impl AtheneumGraph {
                     .or_else(|| entity.data.get("body").and_then(|v| v.as_str()))
                     .unwrap_or("");
                 let short_summary = if summary.len() > 80 {
-                    format!("{}...", &summary[..80])
+                    let end = summary
+                        .char_indices()
+                        .map(|(i, c)| i + c.len_utf8())
+                        .take_while(|&i| i <= 80)
+                        .last()
+                        .unwrap_or(0);
+                    format!("{}...", &summary[..end])
                 } else {
                     summary.to_string()
                 };
@@ -165,7 +171,13 @@ impl AtheneumGraph {
             for m in pinned_memories {
                 let content = m.data.get("content").and_then(|v| v.as_str()).unwrap_or("");
                 let short_content = if content.len() > 80 {
-                    format!("{}...", &content[..80])
+                    let end = content
+                        .char_indices()
+                        .map(|(i, c)| i + c.len_utf8())
+                        .take_while(|&i| i <= 80)
+                        .last()
+                        .unwrap_or(0);
+                    format!("{}...", &content[..end])
                 } else {
                     content.to_string()
                 };
@@ -209,7 +221,13 @@ impl AtheneumGraph {
                     .or_else(|| entity.data.get("body").and_then(|v| v.as_str()))
                     .unwrap_or("");
                 let short_summary = if summary.len() > 80 {
-                    format!("{}...", &summary[..80])
+                    let end = summary
+                        .char_indices()
+                        .map(|(i, c)| i + c.len_utf8())
+                        .take_while(|&i| i <= 80)
+                        .last()
+                        .unwrap_or(0);
+                    format!("{}...", &summary[..end])
                 } else {
                     summary.to_string()
                 };
@@ -249,7 +267,13 @@ impl AtheneumGraph {
                     let m = &normal_memories[i];
                     let content = m.data.get("content").and_then(|v| v.as_str()).unwrap_or("");
                     let short_content = if content.len() > 80 {
-                        format!("{}...", &content[..80])
+                        let end = content
+                            .char_indices()
+                            .map(|(i, c)| i + c.len_utf8())
+                            .take_while(|&i| i <= 80)
+                            .last()
+                            .unwrap_or(0);
+                        format!("{}...", &content[..end])
                     } else {
                         content.to_string()
                     };
