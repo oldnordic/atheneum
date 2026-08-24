@@ -47,9 +47,7 @@ pub use dream::{
 };
 #[cfg(feature = "extract")]
 pub use extract_decisions::{run_extract, ExtractConfig, ExtractMode, ExtractStats};
-pub use ledger::{
-    export_ledger, import_ledger, LedgerCounts, LedgerKind, LedgerRecord,
-};
+pub use ledger::{export_ledger, import_ledger, LedgerCounts, LedgerKind, LedgerRecord};
 pub use lint::{BrokenLinkMode, LintConfig, LintReport, MaintainConfig, MaintainReport};
 pub use models::ModelInfo;
 pub use navigation::{estimate_entity_tokens, truncate_subgraph};
@@ -69,6 +67,7 @@ pub use types::{
     ONTOLOGY_PROPERTY_KIND,
 };
 pub use watch::{watch_decisions, WatchConfig, WatchStats};
+pub use wiki::paginate_body;
 pub use wiki::{
     content_hash, extract_kanban_updates, extract_wikilinks, parse_journal_sections,
     JournalSection, WikiPage,
@@ -152,6 +151,54 @@ impl AtheneumGraph {
 
     pub fn runtime_stats(&self) -> RuntimeStats {
         self.runtime.snapshot()
+    }
+
+    /// Returns all distinct recorded project names across sessions, tasks,
+    /// discoveries, wiki pages, memory entries, and entities.
+    pub fn list_distinct_projects(&self) -> Result<Vec<String>> {
+        self.with_raw_connection(|conn| {
+            let mut projects = std::collections::BTreeSet::new();
+
+            let queries = [
+                "SELECT DISTINCT project FROM sessions WHERE project IS NOT NULL",
+                "SELECT DISTINCT project_id FROM tasks WHERE project_id IS NOT NULL",
+                "SELECT DISTINCT project_id FROM discoveries WHERE project_id IS NOT NULL",
+                "SELECT DISTINCT project_id FROM wiki_pages WHERE project_id IS NOT NULL",
+                "SELECT DISTINCT project_id FROM memory_entries WHERE project_id IS NOT NULL",
+            ];
+
+            for q in queries {
+                if let Ok(mut stmt) = conn.prepare(q) {
+                    if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+                        for p in rows.flatten() {
+                            let trimmed = p.trim();
+                            if !trimmed.is_empty() {
+                                projects.insert(trimmed.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT DISTINCT json_extract(data, '$.project_id')
+                 FROM graph_entities
+                 WHERE json_extract(data, '$.project_id') IS NOT NULL",
+            ) {
+                if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+                    for p in rows.flatten() {
+                        let trimmed = p.trim();
+                        if !trimmed.is_empty() {
+                            projects.insert(trimmed.to_string());
+                        }
+                    }
+                }
+            }
+
+            let mut out: Vec<String> = projects.into_iter().collect();
+            out.sort_by_key(|a| a.to_lowercase());
+            Ok(out)
+        })
     }
 
     fn run_startup_migrations(&self) -> Result<()> {

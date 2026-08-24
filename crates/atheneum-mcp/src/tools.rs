@@ -504,7 +504,10 @@ fn navigate() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServe
                 "enum": ["knowledge", "code", "all"],
                 "default": "knowledge",
                 "description": "knowledge = atheneum graph only (default, unchanged behavior). code = magellan/llmgrep cross-project subgraph walk only. all = both, merged and provenance-tagged."
-            }
+            },
+            "include_wikilinks": { "type": "boolean", "default": false, "description": "If true, include wikilink edges (lowest priority). Excluded by default to prevent edge flooding." },
+            "edge_limit": { "type": "integer", "minimum": 0, "maximum": 500, "default": 50, "description": "Max edges per subgraph view (default 50)" },
+            "budget": { "type": "integer", "minimum": 512, "maximum": 1048576, "default": 8192, "description": "Total serialized output byte budget in bytes (default 8192 = 8KB)" }
         },
         "required": ["query"]
     });
@@ -527,6 +530,9 @@ fn navigate() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServe
                     limit: args["limit"].as_u64().unwrap_or(50) as usize,
                     trace: args["trace"].as_bool(),
                     kind: crate::backend::SearchKind::from_str_default(args["kind"].as_str()),
+                    include_wikilinks: args["include_wikilinks"].as_bool(),
+                    edge_limit: args["edge_limit"].as_u64().map(|v| v as usize),
+                    budget: args["budget"].as_u64().map(|v| v as usize),
                 };
                 let result = ctx.service.backend.navigate(params).await;
                 match result {
@@ -730,7 +736,9 @@ fn query_wiki() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpSer
     let schema = json!({
         "type": "object",
         "properties": {
-            "path": { "type": "string", "description": "Wiki page path (full or partial)" }
+            "path": { "type": "string", "description": "Wiki page path (full or partial)" },
+            "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Byte offset into page body for pagination" },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 1048576, "default": 8192, "description": "Max bytes of page body to return (default 8192 = 8KB)" }
         },
         "required": ["path"]
     });
@@ -738,14 +746,16 @@ fn query_wiki() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpSer
     rmcp::handler::server::router::tool::ToolRoute::new_dyn(
         Tool::new(
             "query_wiki",
-            "Fetch a wiki page by path (supports partial path matching).",
+            "Fetch a wiki page by path (supports partial path matching and offset/limit pagination).",
             schema,
         ),
         |ctx: rmcp::handler::server::tool::ToolCallContext<'_, AtheneumMcpServer>| {
             Box::pin(async move {
                 let args = extract_args(ctx.arguments);
                 let path = args["path"].as_str().unwrap_or("").to_string();
-                match ctx.service.backend.query_wiki(&path).await {
+                let offset = args["offset"].as_u64().map(|v| v as usize);
+                let limit = args["limit"].as_u64().map(|v| v as usize);
+                match ctx.service.backend.query_wiki(&path, offset, limit).await {
                     Ok(v) => json_result(v),
                     Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
                 }

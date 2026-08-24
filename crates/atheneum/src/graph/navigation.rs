@@ -11,7 +11,7 @@ use sqlitegraph::{GraphEdge, GraphEntity};
 use super::cache::{CacheDomain, QueryCacheKey, QueryCacheValue};
 use super::{
     AtheneumGraph, EdgeType, EntityType, GraphStats, NavigateQueryPlan, QueryIntent,
-    ResolvedEntity, SubgraphView,
+    ResolvedEntity, SearchResult, SubgraphView,
 };
 
 const CHARS_PER_TOKEN: usize = 4;
@@ -153,17 +153,28 @@ impl AtheneumGraph {
                 let disambiguation = self.resolve(term, 0.3, project_id, resolved_kind.as_deref());
                 match disambiguation {
                     Ok(result) => {
+                        let clean_candidates: Vec<SearchResult> = result
+                            .candidates
+                            .into_iter()
+                            .map(|c| SearchResult {
+                                id: c.id,
+                                name: c.name,
+                                kind: c.kind,
+                                score: c.score,
+                                data: serde_json::json!({}),
+                            })
+                            .collect();
                         let (entity_id, entity_name, confidence, alternatives) =
                             if let Some(resolved) = &result.resolved {
                                 (
                                     Some(resolved.id),
                                     Some(resolved.name.clone()),
                                     resolved.score,
-                                    result.candidates,
+                                    clean_candidates,
                                 )
-                            } else if !result.candidates.is_empty() {
-                                let top = &result.candidates[0];
-                                (None, Some(top.name.clone()), top.score, result.candidates)
+                            } else if !clean_candidates.is_empty() {
+                                let top = &clean_candidates[0];
+                                (None, Some(top.name.clone()), top.score, clean_candidates)
                             } else {
                                 (None, None, 0.0, vec![])
                             };

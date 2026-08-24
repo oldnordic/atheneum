@@ -226,7 +226,12 @@ mod tests {
         ) -> anyhow::Result<Value> {
             Ok(Value::Null)
         }
-        async fn query_wiki(&self, _path: &str) -> anyhow::Result<Value> {
+        async fn query_wiki(
+            &self,
+            _path: &str,
+            _offset: Option<usize>,
+            _limit: Option<usize>,
+        ) -> anyhow::Result<Value> {
             Ok(Value::Null)
         }
         async fn wiki_search(

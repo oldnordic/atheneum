@@ -103,7 +103,12 @@ impl backend::Backend for MockBackend {
     ) -> anyhow::Result<serde_json::Value> {
         Ok(json!({"memories": []}))
     }
-    async fn query_wiki(&self, _path: &str) -> anyhow::Result<serde_json::Value> {
+    async fn query_wiki(
+        &self,
+        _path: &str,
+        _offset: Option<usize>,
+        _limit: Option<usize>,
+    ) -> anyhow::Result<serde_json::Value> {
         Ok(json!({"found": false}))
     }
     async fn wiki_search(

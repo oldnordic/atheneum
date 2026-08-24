@@ -176,30 +176,66 @@ fn run() -> anyhow::Result<()> {
         }
         "query-wiki" => {
             if args.len() < 4 {
-                eprintln!("Usage: atheneum query-wiki <db-path> <path>");
+                eprintln!(
+                    "Usage: atheneum query-wiki <db-path> <path> [--offset N] [--limit N] [--json]"
+                );
                 std::process::exit(1);
             }
             let db_path = PathBuf::from(positional(&args, 2, "db-path")?);
             let path = positional(&args, 3, "path")?;
+            let opts = parse_options(&args[4..])?;
+            let offset = parse_usize_option(opts.offset.as_deref(), "offset")?.unwrap_or(0);
+            let limit = parse_usize_option(opts.limit.as_deref(), "limit")?.unwrap_or(8192);
 
             let graph = AtheneumGraph::open(&db_path)?;
             match graph.get_wiki_page(path)? {
                 Some(page) => {
-                    stdoutln(format_args!("WikiPage: {}", page.path))?;
-                    if let Some(title) = &page.title {
-                        stdoutln(format_args!("  Title: {}", title))?;
+                    let (body_slice, truncated, total_bytes) =
+                        atheneum::graph::paginate_body(&page.body, offset, limit);
+                    if opts.json {
+                        print_json(json!({
+                            "id": page.id,
+                            "path": page.path,
+                            "title": page.title,
+                            "content_hash": page.content_hash,
+                            "wikilinks": page.wikilinks,
+                            "project_id": page.project_id,
+                            "metadata": page.metadata,
+                            "created_at": page.created_at,
+                            "updated_at": page.updated_at,
+                            "offset": offset,
+                            "limit": limit,
+                            "total_bytes": total_bytes,
+                            "truncated": truncated,
+                            "has_more": truncated,
+                            "body": body_slice,
+                        }))?;
+                    } else {
+                        stdoutln(format_args!("WikiPage: {}", page.path))?;
+                        if let Some(title) = &page.title {
+                            stdoutln(format_args!("  Title: {}", title))?;
+                        }
+                        stdoutln(format_args!("  Content hash: {:?}", page.content_hash))?;
+                        stdoutln(format_args!("  Wikilinks: {:?}", page.wikilinks))?;
+                        stdoutln(format_args!("  Project: {:?}", page.project_id))?;
+                        stdoutln(format_args!("  Created: {}", page.created_at))?;
+                        stdoutln(format_args!("  Updated: {:?}", page.updated_at))?;
+                        stdoutln(format_args!("  Total bytes: {}", total_bytes))?;
+                        stdoutln(format_args!("  Offset: {}, Limit: {}", offset, limit))?;
+                        stdoutln(format_args!("  Body:"))?;
+                        stdoutln(format_args!("{}", body_slice))?;
+                        if truncated {
+                            let next_offset = offset.saturating_add(body_slice.len());
+                            stdoutln(format_args!("\n[truncated: showing bytes {}..{} of {}. Pass --offset {} to page through]", offset, next_offset, total_bytes, next_offset))?;
+                        }
                     }
-                    stdoutln(format_args!("  Content hash: {:?}", page.content_hash))?;
-                    stdoutln(format_args!("  Wikilinks: {:?}", page.wikilinks))?;
-                    stdoutln(format_args!("  Project: {:?}", page.project_id))?;
-                    stdoutln(format_args!("  Created: {}", page.created_at))?;
-                    stdoutln(format_args!("  Updated: {:?}", page.updated_at))?;
-                    stdoutln(format_args!("  Body (first 500 chars):"))?;
-                    let preview: String = page.body.chars().take(500).collect();
-                    stdoutln(format_args!("{}", preview))?;
                 }
                 None => {
-                    stdoutln(format_args!("No wiki page found at path: {}", path))?;
+                    if opts.json {
+                        print_json(json!({ "found": false, "path": path }))?;
+                    } else {
+                        stdoutln(format_args!("No wiki page found at path: {}", path))?;
+                    }
                 }
             }
         }
@@ -374,7 +410,7 @@ fn run() -> anyhow::Result<()> {
         "navigate" => {
             if args.len() < 4 {
                 eprintln!(
-                    "Usage: atheneum navigate <db-path> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N] [--concise]"
+                    "Usage: atheneum navigate <db-path> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N] [--budget N] [--edge-limit N] [--include-wikilinks] [--concise]"
                 );
                 std::process::exit(1);
             }
@@ -384,6 +420,10 @@ fn run() -> anyhow::Result<()> {
             let k = parse_usize_option(opts.k.as_deref(), "k")?.unwrap_or(5);
             let depth = parse_u32_option(opts.depth.as_deref(), "depth")?.unwrap_or(2);
             let max_tokens = parse_usize_option(opts.max_tokens.as_deref(), "max-tokens")?;
+            let budget = parse_usize_option(opts.budget.as_deref(), "budget")?.unwrap_or(8192);
+            let edge_limit =
+                parse_usize_option(opts.edge_limit.as_deref(), "edge-limit")?.unwrap_or(50);
+            let include_wikilinks = opts.include_wikilinks;
             let graph = AtheneumGraph::open(&db_path)?;
             let plan = graph.preview_navigate_query(
                 query,
@@ -410,6 +450,77 @@ fn run() -> anyhow::Result<()> {
                     println!("Trace ID: {}", tid);
                 }
             } else {
+                let serialized_subgraphs: Vec<serde_json::Value> = views
+                    .iter()
+                    .map(|sg| subgraph_to_json_bounded(sg, include_wikilinks, edge_limit, 50))
+                    .collect();
+
+                let mut out_subgraphs = Vec::new();
+                let mut truncated = false;
+
+                for sg in serialized_subgraphs {
+                    let mut candidate_list = out_subgraphs.clone();
+                    candidate_list.push(sg.clone());
+                    let candidate = json!({
+                        "query": query,
+                        "k": k,
+                        "depth": depth,
+                        "kind": opts.kind,
+                        "project": opts.project,
+                        "max_tokens": max_tokens,
+                        "plan": plan,
+                        "trace_id": trace_id,
+                        "subgraphs": candidate_list,
+                        "truncated": truncated || (out_subgraphs.len() + 1 < views.len()),
+                    });
+                    let size = serde_json::to_string(&candidate)
+                        .map(|s| s.len())
+                        .unwrap_or(usize::MAX);
+                    if size <= budget {
+                        out_subgraphs.push(sg);
+                    } else {
+                        truncated = true;
+                        if out_subgraphs.is_empty() {
+                            let mut trimmed_sg = sg.clone();
+                            if let Some(edges) = trimmed_sg
+                                .get_mut("edges")
+                                .and_then(serde_json::Value::as_array_mut)
+                            {
+                                edges.clear();
+                            }
+                            if let Some(entities) = trimmed_sg
+                                .get_mut("entities")
+                                .and_then(serde_json::Value::as_array_mut)
+                            {
+                                entities.truncate(5);
+                            }
+                            let fallback = json!({
+                                "query": query,
+                                "k": k,
+                                "depth": depth,
+                                "kind": opts.kind,
+                                "project": opts.project,
+                                "max_tokens": max_tokens,
+                                "plan": plan,
+                                "trace_id": trace_id,
+                                "subgraphs": [trimmed_sg.clone()],
+                                "truncated": true,
+                            });
+                            let fallback_size = serde_json::to_string(&fallback)
+                                .map(|s| s.len())
+                                .unwrap_or(usize::MAX);
+                            if fallback_size <= budget {
+                                out_subgraphs.push(trimmed_sg);
+                            }
+                        }
+                        break;
+                    }
+                }
+
+                if out_subgraphs.len() < views.len() {
+                    truncated = true;
+                }
+
                 print_json(json!({
                     "query": query,
                     "k": k,
@@ -419,7 +530,8 @@ fn run() -> anyhow::Result<()> {
                     "max_tokens": max_tokens,
                     "plan": plan,
                     "trace_id": trace_id,
-                    "subgraphs": views.iter().map(subgraph_to_json).collect::<Vec<_>>(),
+                    "subgraphs": out_subgraphs,
+                    "truncated": truncated,
                 }))?;
             }
         }
@@ -748,12 +860,8 @@ fn run() -> anyhow::Result<()> {
             }
             let graph = AtheneumGraph::open(&db_path)?;
             let stdout = io::stdout();
-            let counts = atheneum::graph::export_ledger(
-                &graph,
-                &kinds,
-                until.as_deref(),
-                stdout.lock(),
-            )?;
+            let counts =
+                atheneum::graph::export_ledger(&graph, &kinds, until.as_deref(), stdout.lock())?;
             let summary = counts
                 .iter()
                 .map(|(kind, n)| format!("{}={}", kind, n))
@@ -892,7 +1000,26 @@ fn run() -> anyhow::Result<()> {
             .iter()
             .map(entity_to_json)
             .collect();
-            print_json(json!({"tasks": tasks, "count": tasks.len()}))?;
+            let mut response = json!({"tasks": tasks, "count": tasks.len()});
+            if tasks.is_empty() {
+                if let Some(ref p) = opts.project {
+                    let known_projects = graph.list_distinct_projects()?;
+                    if !known_projects.iter().any(|k| k == p) {
+                        response["unknown_project"] = json!(true);
+                        response["known_projects"] = json!(known_projects);
+                        response["hint"] = json!(if known_projects.is_empty() {
+                            format!("project '{}' matches no recorded project (no projects recorded in database)", p)
+                        } else {
+                            format!(
+                                "project '{}' matches no recorded project. Known projects: {}",
+                                p,
+                                known_projects.join(", ")
+                            )
+                        });
+                    }
+                }
+            }
+            print_json(response)?;
         }
         "task-update" => {
             if args.len() < 5 {
@@ -1197,14 +1324,33 @@ fn run() -> anyhow::Result<()> {
                 opts.event_type.as_deref(),
                 limit,
             )?;
-            print_json(json!({
+            let mut response = json!({
                 "count": discoveries.len(),
                 "project": opts.project,
                 "agent": opts.agent,
                 "session": opts.session,
                 "type": opts.event_type,
                 "discoveries": discoveries.iter().map(entity_to_json).collect::<Vec<_>>(),
-            }))?;
+            });
+            if discoveries.is_empty() {
+                if let Some(ref p) = opts.project {
+                    let known_projects = graph.list_distinct_projects()?;
+                    if !known_projects.iter().any(|k| k == p) {
+                        response["unknown_project"] = json!(true);
+                        response["known_projects"] = json!(known_projects);
+                        response["hint"] = json!(if known_projects.is_empty() {
+                            format!("project '{}' matches no recorded project (no projects recorded in database)", p)
+                        } else {
+                            format!(
+                                "project '{}' matches no recorded project. Known projects: {}",
+                                p,
+                                known_projects.join(", ")
+                            )
+                        });
+                    }
+                }
+            }
+            print_json(response)?;
         }
         "watch-decisions" => {
             if args.len() < 3 {
@@ -2277,10 +2423,13 @@ struct CliOptions {
     json: bool,
     once: bool,
     include_superseded: bool,
+    include_wikilinks: bool,
     apply: bool,
     trace: bool,
     stale_days: Option<String>,
     port: Option<String>,
+    budget: Option<String>,
+    edge_limit: Option<String>,
     rewire_threshold: Option<String>,
     broken_link_mode: Option<String>,
     interval: Option<String>,
@@ -2367,6 +2516,9 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
         } else if args[i] == "--include-superseded" {
             opts.include_superseded = true;
             i += 1;
+        } else if args[i] == "--include-wikilinks" {
+            opts.include_wikilinks = true;
+            i += 1;
         } else if args[i] == "--apply" {
             opts.apply = true;
             i += 1;
@@ -2394,6 +2546,8 @@ fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
                 "--project" => opts.project = Some(value),
                 "--limit" => opts.limit = Some(value),
                 "--offset" => opts.offset = Some(value),
+                "--budget" => opts.budget = Some(value),
+                "--edge-limit" => opts.edge_limit = Some(value),
                 "--session" => opts.session = Some(value),
                 "--type" => opts.event_type = Some(value),
                 "--status" => opts.status = Some(value),
@@ -2546,13 +2700,83 @@ fn edge_to_json(edge: &GraphEdge) -> serde_json::Value {
     })
 }
 
-fn subgraph_to_json(sg: &atheneum::graph::SubgraphView) -> serde_json::Value {
+fn navigate_entity_to_json(entity: &GraphEntity) -> serde_json::Value {
+    let mut data = entity.data.clone();
+    if let Some(obj) = data.as_object_mut() {
+        if let Some(body) = obj.get("body").and_then(serde_json::Value::as_str) {
+            if body.len() > 200 {
+                let preview: String = body.chars().take(200).collect();
+                obj.insert(
+                    "body".to_string(),
+                    json!(format!("{}… [truncated]", preview)),
+                );
+            }
+        }
+        if let Some(wikilinks) = obj.get("wikilinks").and_then(serde_json::Value::as_array) {
+            if wikilinks.len() > 10 {
+                let capped: Vec<serde_json::Value> = wikilinks.iter().take(10).cloned().collect();
+                obj.insert("wikilinks".to_string(), json!(capped));
+            }
+        }
+    }
     json!({
-        "entry": entity_to_json(&sg.entry),
-        "depth": sg.depth,
-        "entities": sg.entities.iter().map(entity_to_json).collect::<Vec<_>>(),
-        "edges": sg.edges.iter().map(edge_to_json).collect::<Vec<_>>(),
+        "id": entity.id,
+        "kind": entity.kind,
+        "name": entity.name,
+        "file_path": entity.file_path,
+        "data": data,
     })
+}
+
+fn subgraph_to_json_bounded(
+    sg: &atheneum::graph::SubgraphView,
+    include_wikilinks: bool,
+    edge_cap: usize,
+    entity_cap: usize,
+) -> serde_json::Value {
+    let mut non_wikilinks = Vec::new();
+    let mut wikilinks = Vec::new();
+    for edge in &sg.edges {
+        if edge.edge_type.eq_ignore_ascii_case("wikilink") {
+            if include_wikilinks {
+                wikilinks.push(edge);
+            }
+        } else {
+            non_wikilinks.push(edge);
+        }
+    }
+
+    let mut capped_edges = Vec::with_capacity(edge_cap);
+    for e in non_wikilinks {
+        if capped_edges.len() < edge_cap {
+            capped_edges.push(edge_to_json(e));
+        }
+    }
+    if include_wikilinks {
+        for e in wikilinks {
+            if capped_edges.len() < edge_cap {
+                capped_edges.push(edge_to_json(e));
+            }
+        }
+    }
+
+    let capped_entities: Vec<serde_json::Value> = sg
+        .entities
+        .iter()
+        .take(entity_cap)
+        .map(navigate_entity_to_json)
+        .collect();
+
+    json!({
+        "entry": navigate_entity_to_json(&sg.entry),
+        "depth": sg.depth,
+        "entities": capped_entities,
+        "edges": capped_edges,
+    })
+}
+
+fn subgraph_to_json(sg: &atheneum::graph::SubgraphView) -> serde_json::Value {
+    subgraph_to_json_bounded(sg, true, usize::MAX, usize::MAX)
 }
 
 fn print_navigate_concise(

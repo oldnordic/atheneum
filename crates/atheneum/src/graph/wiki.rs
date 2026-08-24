@@ -67,6 +67,42 @@ pub fn content_hash(content: &str) -> String {
     sha256_hex(content)
 }
 
+/// Paginate a string slice by character/byte offset and budget limit,
+/// respecting UTF-8 character boundaries.
+///
+/// Returns `(page_slice, has_more, total_bytes)`.
+pub fn paginate_body(body: &str, offset: usize, limit: usize) -> (&str, bool, usize) {
+    let total_bytes = body.len();
+    if offset >= total_bytes {
+        return ("", false, total_bytes);
+    }
+
+    let start_idx = body
+        .char_indices()
+        .map(|(i, _)| i)
+        .find(|&i| i >= offset)
+        .unwrap_or(total_bytes);
+
+    if start_idx >= total_bytes {
+        return ("", false, total_bytes);
+    }
+
+    let target_end = start_idx.saturating_add(limit);
+    let end_idx = if target_end >= total_bytes {
+        total_bytes
+    } else {
+        body.char_indices()
+            .map(|(i, c)| i + c.len_utf8())
+            .take_while(|&i| i <= target_end)
+            .last()
+            .unwrap_or(start_idx)
+    };
+
+    let slice = &body[start_idx..end_idx];
+    let has_more = end_idx < total_bytes;
+    (slice, has_more, total_bytes)
+}
+
 pub fn parse_journal_sections(content: &str) -> Vec<JournalSection> {
     let re = journal_header_re();
     let mut headers: Vec<(usize, Option<String>, String)> = Vec::new();

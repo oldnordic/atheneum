@@ -158,6 +158,9 @@ pub struct NavigateParams {
     pub limit: usize,
     pub trace: Option<bool>,
     pub kind: SearchKind,
+    pub include_wikilinks: Option<bool>,
+    pub edge_limit: Option<usize>,
+    pub budget: Option<usize>,
 }
 
 /// Parameters for the unified `code_query` tool.
@@ -220,7 +223,12 @@ pub trait Backend: Send + Sync + 'static {
         tokens: usize,
         last_sessions: i64,
     ) -> Result<Value>;
-    async fn query_wiki(&self, path: &str) -> Result<Value>;
+    async fn query_wiki(
+        &self,
+        path: &str,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> Result<Value>;
     async fn wiki_search(&self, query: &str, project: Option<&str>, limit: usize) -> Result<Value>;
     async fn discoveries_recent(
         &self,
@@ -310,14 +318,26 @@ fn edge_page_limit(limit: usize) -> usize {
 }
 
 #[cfg(any(feature = "direct", test))]
+#[derive(Debug, Clone, Copy, Default)]
+struct ViewOptions {
+    pub offset: usize,
+    pub limit: usize,
+    pub include_wikilinks: bool,
+    pub edge_limit_override: Option<usize>,
+}
+
+#[cfg(any(feature = "direct", test))]
 fn serialize_paginated_view(
     entry: &atheneum::GraphEntity,
     depth: u32,
     entities: Vec<atheneum::GraphEntity>,
     edges: Vec<atheneum::GraphEdge>,
-    offset: usize,
-    limit: usize,
+    opts: ViewOptions,
 ) -> Value {
+    let offset = opts.offset;
+    let limit = opts.limit;
+    let include_wikilinks = opts.include_wikilinks;
+    let edge_limit_override = opts.edge_limit_override;
     let total_input_entities = entities.len();
     let total_signal: Vec<_> = entities
         .into_iter()
@@ -332,27 +352,49 @@ fn serialize_paginated_view(
     let mut visible_entity_ids: HashSet<i64> = page_entities.iter().map(|e| e.id).collect();
     visible_entity_ids.insert(entry.id);
 
-    let edge_limit = edge_page_limit(limit);
+    let edge_limit = edge_limit_override.unwrap_or_else(|| edge_page_limit(limit).min(50));
     let mut seen_edges: HashSet<(i64, i64, String)> = HashSet::new();
     let mut total_signal_edges = 0usize;
-    let mut serialized_edges = Vec::new();
+    let mut non_wikilink_edges = Vec::new();
+    let mut wikilink_edges = Vec::new();
 
     for edge in edges.into_iter().filter(|e| {
         !METADATA_EDGE_TYPES.contains(&e.edge_type.as_str())
             && visible_entity_ids.contains(&e.from_id)
             && visible_entity_ids.contains(&e.to_id)
     }) {
+        let is_wikilink = edge.edge_type.eq_ignore_ascii_case("wikilink");
+        if is_wikilink && !include_wikilinks {
+            continue;
+        }
         let key = (edge.from_id, edge.to_id, edge.edge_type.clone());
         if !seen_edges.insert(key) {
             continue;
         }
         total_signal_edges += 1;
+        let edge_val = json!({
+            "type": edge.edge_type,
+            "from_id": edge.from_id,
+            "to_id": edge.to_id,
+        });
+        if is_wikilink {
+            wikilink_edges.push(edge_val);
+        } else {
+            non_wikilink_edges.push(edge_val);
+        }
+    }
+
+    let mut serialized_edges = Vec::new();
+    for e in non_wikilink_edges {
         if serialized_edges.len() < edge_limit {
-            serialized_edges.push(json!({
-                "type": edge.edge_type,
-                "from_id": edge.from_id,
-                "to_id": edge.to_id,
-            }));
+            serialized_edges.push(e);
+        }
+    }
+    if include_wikilinks {
+        for e in wikilink_edges {
+            if serialized_edges.len() < edge_limit {
+                serialized_edges.push(e);
+            }
         }
     }
 
@@ -392,6 +434,67 @@ pub mod http {
     pub struct HttpBackend {
         client: Client,
         base_url: String,
+    }
+
+    /// Max chars kept per result's `data` field before truncation — guards against
+    /// a small `limit`/`k` still returning a huge payload because individual
+    /// entries (e.g. raw discovery JSON) are themselves large.
+    const MAX_RESULT_DATA_CHARS: usize = 2000;
+
+    /// Enforce `limit` on a `/atheneum/search` response client-side, since the
+    /// envoy endpoint has no upper bound on `k` and returns each result's
+    /// `data` field uncapped (see NOTE on `HttpBackend::search`).
+    fn truncate_search_response(value: &mut Value, limit: usize) {
+        let Some(obj) = value.as_object_mut() else {
+            return;
+        };
+        let (original_len, new_len) = {
+            let Some(results) = obj.get_mut("results").and_then(Value::as_array_mut) else {
+                return;
+            };
+            let original_len = results.len();
+            if original_len > limit {
+                results.truncate(limit);
+            }
+            for result in results.iter_mut() {
+                if let Some(data) = result.get_mut("data") {
+                    truncate_value_strings(data, MAX_RESULT_DATA_CHARS);
+                }
+            }
+            (original_len, results.len())
+        };
+        if let Some(count) = obj.get_mut("count") {
+            *count = Value::from(new_len);
+        }
+        if original_len > limit {
+            obj.insert("truncated".to_string(), Value::from(true));
+            obj.insert("truncated_from".to_string(), Value::from(original_len));
+        }
+    }
+
+    /// Recursively cap string leaves in a JSON value to `max_chars`, appending
+    /// a marker so callers can tell truncation happened vs. content that was
+    /// naturally short.
+    fn truncate_value_strings(value: &mut Value, max_chars: usize) {
+        match value {
+            Value::String(s) => {
+                if s.chars().count() > max_chars {
+                    let truncated: String = s.chars().take(max_chars).collect();
+                    *s = format!("{truncated}... [truncated]");
+                }
+            }
+            Value::Array(items) => {
+                for item in items.iter_mut() {
+                    truncate_value_strings(item, max_chars);
+                }
+            }
+            Value::Object(map) => {
+                for (_, v) in map.iter_mut() {
+                    truncate_value_strings(v, max_chars);
+                }
+            }
+            _ => {}
+        }
     }
 
     impl HttpBackend {
@@ -455,18 +558,26 @@ pub mod http {
         }
 
         async fn search(&self, params: SearchParams) -> Result<Value> {
-            // NOTE: HTTP backend does not yet support kind/limit/cursor — forwards
-            // query/k/project only, same as before this task. Tracked as a gap,
-            // not silently dropped.
+            // NOTE: HTTP backend does not yet support kind/cursor server-side —
+            // envoy's /atheneum/search has no kind filter. `limit` is enforced
+            // client-side below since the server applies no upper bound on `k`
+            // and returns each result's full raw `data` field uncapped (verified
+            // 2026-08-13: a k=10 query returned 170K+ chars). Request the
+            // smaller of k/limit to reduce load at the source, then hard-cap
+            // the response so this tool never returns an unbounded payload
+            // regardless of server behavior.
+            let requested = params.limit.unwrap_or(params.k).min(params.k).max(1);
             let mut path = format!(
                 "/atheneum/search?q={}&k={}",
                 encode(&params.query),
-                params.k
+                requested
             );
             if let Some(p) = params.project.as_deref() {
                 path.push_str(&format!("&project={}", encode(p)));
             }
-            self.get_json(&path).await
+            let mut value = self.get_json(&path).await?;
+            truncate_search_response(&mut value, params.limit.unwrap_or(requested));
+            Ok(value)
         }
 
         async fn store_memory(&self, _params: StoreMemoryParams) -> Result<Value> {
@@ -560,7 +671,12 @@ pub mod http {
         async fn memory_bootstrap(&self, _p: Option<&str>, _t: usize, _l: i64) -> Result<Value> {
             Err(not_direct("memory_bootstrap"))
         }
-        async fn query_wiki(&self, _path: &str) -> Result<Value> {
+        async fn query_wiki(
+            &self,
+            _path: &str,
+            _offset: Option<usize>,
+            _limit: Option<usize>,
+        ) -> Result<Value> {
             Err(not_direct("query_wiki"))
         }
         async fn wiki_search(&self, _q: &str, _p: Option<&str>, _l: usize) -> Result<Value> {
@@ -634,6 +750,36 @@ pub mod direct {
     use atheneum::AtheneumGraph;
     use serde_json::json;
     use std::sync::Arc;
+
+    /// Max chars kept per string leaf in a search result before truncation —
+    /// guards against a small item COUNT still producing a huge payload
+    /// because individual entries carry large `data`/`observation` text.
+    const MAX_RESULT_STRING_CHARS: usize = 2000;
+
+    /// Recursively cap string leaves in a JSON value to `max_chars`, appending
+    /// a marker so callers can tell truncation happened vs. content that was
+    /// naturally short.
+    fn truncate_result_strings(value: &mut Value, max_chars: usize) {
+        match value {
+            Value::String(s) => {
+                if s.chars().count() > max_chars {
+                    let truncated: String = s.chars().take(max_chars).collect();
+                    *s = format!("{truncated}... [truncated]");
+                }
+            }
+            Value::Array(items) => {
+                for item in items.iter_mut() {
+                    truncate_result_strings(item, max_chars);
+                }
+            }
+            Value::Object(map) => {
+                for (_, v) in map.iter_mut() {
+                    truncate_result_strings(v, max_chars);
+                }
+            }
+            _ => {}
+        }
+    }
 
     pub struct DirectBackend {
         graph: Arc<tokio::sync::Mutex<AtheneumGraph>>,
@@ -730,6 +876,14 @@ pub mod direct {
             // for something the old shape can't express (code fan-out or
             // pagination). Errors propagate as Err here, exactly like before
             // this task, instead of being swallowed into envelope.errors.
+            //
+            // Both this path and the envelope path below cap each item's
+            // string fields (see `truncate_result_strings`) — count limiting
+            // alone (`clamp_limit`) does not bound payload size when
+            // individual knowledge/memory entries carry large `data`/
+            // `observation` text. Verified 2026-08-13: kind=knowledge,
+            // limit=10 (well under clamp_limit's ceiling) still returned
+            // 170K+ chars because 10 real entries can each be several KB.
             if params.kind == SearchKind::Knowledge
                 && params.limit.is_none()
                 && params.cursor.is_none()
@@ -743,7 +897,9 @@ pub mod direct {
                         None,
                         None,
                     )?;
-                    Ok(serde_json::to_value(results)?)
+                    let mut value = serde_json::to_value(results)?;
+                    truncate_result_strings(&mut value, MAX_RESULT_STRING_CHARS);
+                    Ok(value)
                 });
             }
 
@@ -765,6 +921,7 @@ pub mod direct {
                     Ok(results) => {
                         for r in results {
                             let mut v = serde_json::to_value(&r)?;
+                            truncate_result_strings(&mut v, MAX_RESULT_STRING_CHARS);
                             v["provenance"] =
                                 serde_json::json!(crate::envelope::Provenance::Inferred);
                             v["source"] = serde_json::json!("knowledge");
@@ -1044,6 +1201,9 @@ pub mod direct {
             // path). Whether that clamp is *reported* to the caller differs by
             // shape below.
             let (depth, depth_clamped) = crate::envelope::clamp_depth(params.depth);
+            let include_wikilinks = params.include_wikilinks.unwrap_or(false);
+            let edge_limit = params.edge_limit.unwrap_or(50);
+            let budget = params.budget.unwrap_or(8192);
 
             if params.kind == SearchKind::Knowledge {
                 // Compatibility: today's callers pass no kind (or kind=knowledge
@@ -1063,6 +1223,7 @@ pub mod direct {
                         None,
                         params.trace.unwrap_or(false),
                     )?;
+                    let total_results = results.len();
                     let views: Vec<Value> = results
                         .into_iter()
                         .map(|v| {
@@ -1071,18 +1232,75 @@ pub mod direct {
                                 v.depth,
                                 v.entities,
                                 v.edges,
-                                params.offset,
-                                params.limit,
+                                ViewOptions {
+                                    offset: params.offset,
+                                    limit: params.limit,
+                                    include_wikilinks,
+                                    edge_limit_override: Some(edge_limit),
+                                },
                             )
                         })
                         .collect();
+
+                    let mut bounded_views = Vec::new();
+                    let mut truncated = false;
+                    for v in views {
+                        let mut test_list = bounded_views.clone();
+                        test_list.push(v.clone());
+                        let test_val = if let Some(tid) = trace_id {
+                            json!({
+                                "subgraphs": test_list,
+                                "trace_id": tid,
+                                "truncated": true,
+                            })
+                        } else {
+                            Value::Array(test_list)
+                        };
+                        let size = serde_json::to_string(&test_val)
+                            .map(|s| s.len())
+                            .unwrap_or(usize::MAX);
+                        if size <= budget {
+                            bounded_views.push(v);
+                        } else {
+                            truncated = true;
+                            if bounded_views.is_empty() {
+                                let mut trimmed = v.clone();
+                                if let Some(edges) =
+                                    trimmed.get_mut("edges").and_then(Value::as_array_mut)
+                                {
+                                    edges.clear();
+                                }
+                                let fallback = if let Some(tid) = trace_id {
+                                    json!({
+                                        "subgraphs": [trimmed.clone()],
+                                        "trace_id": tid,
+                                        "truncated": true,
+                                    })
+                                } else {
+                                    Value::Array(vec![trimmed.clone()])
+                                };
+                                let fallback_size = serde_json::to_string(&fallback)
+                                    .map(|s| s.len())
+                                    .unwrap_or(usize::MAX);
+                                if fallback_size <= budget {
+                                    bounded_views.push(trimmed);
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    if bounded_views.len() < total_results {
+                        truncated = true;
+                    }
+
                     if let Some(tid) = trace_id {
                         Ok(json!({
-                            "subgraphs": views,
-                            "trace_id": tid
+                            "subgraphs": bounded_views,
+                            "trace_id": tid,
+                            "truncated": truncated,
                         }))
                     } else {
-                        Ok(Value::Array(views))
+                        Ok(Value::Array(bounded_views))
                     }
                 });
             }
@@ -1112,8 +1330,12 @@ pub mod direct {
                                 v.depth,
                                 v.entities,
                                 v.edges,
-                                params.offset,
-                                params.limit,
+                                ViewOptions {
+                                    offset: params.offset,
+                                    limit: params.limit,
+                                    include_wikilinks,
+                                    edge_limit_override: Some(edge_limit),
+                                },
                             );
                             view["provenance"] = serde_json::json!(if v.depth <= 1 {
                                 crate::envelope::Provenance::Inferred
@@ -1186,6 +1408,20 @@ pub mod direct {
                 // can belong to a different project), so there is no single
                 // index whose staleness a bool could represent. Adding a
                 // `project` scope to navigate is out of this task's scope.
+            }
+
+            let total_items = envelope.items.len();
+            while !envelope.items.is_empty() {
+                let size = serde_json::to_string(&envelope.to_value())
+                    .map(|s| s.len())
+                    .unwrap_or(usize::MAX);
+                if size <= budget {
+                    break;
+                }
+                envelope.items.pop();
+            }
+            if envelope.items.len() < total_items {
+                envelope.has_more = true;
             }
 
             Ok(envelope.to_value())
@@ -1380,10 +1616,35 @@ pub mod direct {
             })
         }
 
-        async fn query_wiki(&self, path: &str) -> Result<Value> {
+        async fn query_wiki(
+            &self,
+            path: &str,
+            offset: Option<usize>,
+            limit: Option<usize>,
+        ) -> Result<Value> {
+            let offset_val = offset.unwrap_or(0);
+            let limit_val = limit.unwrap_or(8192);
             let graph = self.graph.lock().await;
             tokio::task::block_in_place(|| match graph.get_wiki_page(path)? {
-                Some(page) => Ok(serde_json::to_value(page)?),
+                Some(page) => {
+                    let (slice, truncated, total_bytes) =
+                        atheneum::graph::paginate_body(&page.body, offset_val, limit_val);
+                    let mut val = serde_json::to_value(&page)?;
+                    val["body"] = json!(slice);
+                    val["offset"] = json!(offset_val);
+                    val["limit"] = json!(limit_val);
+                    val["total_bytes"] = json!(total_bytes);
+                    val["truncated"] = json!(truncated);
+                    val["has_more"] = json!(truncated);
+                    if truncated {
+                        let next_offset = offset_val.saturating_add(slice.len());
+                        val["truncation_marker"] = json!(format!(
+                            "[truncated: showing bytes {}..{} of {}. Use offset={} to page through]",
+                            offset_val, next_offset, total_bytes, next_offset
+                        ));
+                    }
+                    Ok(val)
+                }
                 None => Ok(json!({ "found": false, "path": path })),
             })
         }
@@ -1412,7 +1673,22 @@ pub mod direct {
             let graph = self.graph.lock().await;
             tokio::task::block_in_place(|| {
                 let results = graph.recent_discoveries(project, agent, session, dtype, limit)?;
-                Ok(serde_json::to_value(results)?)
+                let val = serde_json::to_value(&results)?;
+                if results.is_empty() {
+                    if let Some(p) = project {
+                        let known_projects = graph.list_distinct_projects()?;
+                        if !known_projects.iter().any(|k| k == p) {
+                            return Ok(json!({
+                                "discoveries": [],
+                                "count": 0,
+                                "unknown_project": true,
+                                "known_projects": known_projects,
+                                "hint": format!("project '{}' matches no recorded project. Known projects: {}", p, known_projects.join(", "))
+                            }));
+                        }
+                    }
+                }
+                Ok(val)
             })
         }
 
@@ -1731,7 +2007,18 @@ mod tests {
             edge(14, 1, 2, "handled_by_tool"),
         ];
 
-        let view = serialize_paginated_view(&entry, 2, entities, edges, 0, 1);
+        let view = serialize_paginated_view(
+            &entry,
+            2,
+            entities,
+            edges,
+            ViewOptions {
+                offset: 0,
+                limit: 1,
+                include_wikilinks: true,
+                edge_limit_override: None,
+            },
+        );
 
         assert_eq!(view["entities"].as_array().unwrap().len(), 1);
         assert_eq!(view["total_signal_entities"], 2);
@@ -2118,6 +2405,9 @@ mod tests {
             limit: 20,
             trace: None,
             kind: SearchKind::Knowledge,
+            include_wikilinks: None,
+            edge_limit: None,
+            budget: None,
         };
         let result = backend.navigate(params).await.unwrap();
         // Compatibility requirement: no kind (or kind=knowledge explicitly), no
@@ -2180,6 +2470,9 @@ mod tests {
             limit: 50,
             trace: None,
             kind: SearchKind::Knowledge,
+            include_wikilinks: None,
+            edge_limit: None,
+            budget: None,
         };
         let result = backend.navigate(params).await.unwrap();
         let names: Vec<String> = result
@@ -2212,6 +2505,9 @@ mod tests {
             limit: 20,
             trace: None,
             kind: SearchKind::All,
+            include_wikilinks: None,
+            edge_limit: None,
+            budget: None,
         };
         let result = backend.navigate(params).await.unwrap();
         assert_eq!(result["depth_clamped"], true);
@@ -2228,6 +2524,9 @@ mod tests {
             limit: 20,
             trace: None,
             kind: SearchKind::All,
+            include_wikilinks: None,
+            edge_limit: None,
+            budget: None,
         };
         let _ = project_name; // cross_navigate in this router searches all registered projects
         let result = backend.navigate(params).await.unwrap();
@@ -2236,6 +2535,100 @@ mod tests {
             items.iter().any(|i| i["source"] == "code"),
             "expected at least one code-sourced navigate item, got {items:?}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn navigate_excludes_wikilinks_by_default_and_caps_edges() {
+        let graph = atheneum::AtheneumGraph::open_in_memory().unwrap();
+        let e1 = graph.upsert_concept("root_hub", &json!({})).unwrap();
+        let e2 = graph.upsert_concept("target_hub", &json!({})).unwrap();
+        graph
+            .insert_edge(e1, e2, atheneum::EdgeType::Wikilink, json!({}))
+            .unwrap();
+        graph
+            .insert_edge(e1, e2, atheneum::EdgeType::RelatedTo, json!({}))
+            .unwrap();
+
+        let backend = direct::DirectBackend::new(Arc::new(tokio::sync::Mutex::new(graph)));
+        let params_default = NavigateParams {
+            query: "root_hub".to_string(),
+            k: 5,
+            depth: Some(1),
+            offset: 0,
+            limit: 50,
+            trace: None,
+            kind: SearchKind::Knowledge,
+            include_wikilinks: Some(false),
+            edge_limit: Some(50),
+            budget: Some(8192),
+        };
+        let res_default = backend.navigate(params_default).await.unwrap();
+        let subgraphs = res_default.as_array().unwrap();
+        let edges = subgraphs[0]["edges"].as_array().unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0]["type"], "related_to");
+
+        let params_include = NavigateParams {
+            query: "root_hub".to_string(),
+            k: 5,
+            depth: Some(1),
+            offset: 0,
+            limit: 50,
+            trace: None,
+            kind: SearchKind::Knowledge,
+            include_wikilinks: Some(true),
+            edge_limit: Some(50),
+            budget: Some(8192),
+        };
+        let res_include = backend.navigate(params_include).await.unwrap();
+        let subgraphs_inc = res_include.as_array().unwrap();
+        let edges_inc = subgraphs_inc[0]["edges"].as_array().unwrap();
+        assert_eq!(edges_inc.len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn direct_backend_query_wiki_paginates_and_marks_truncation() {
+        let graph = atheneum::AtheneumGraph::open_in_memory().unwrap();
+        let big_body = "A".repeat(10000);
+        graph
+            .ingest_wiki_page("kanban.md", &big_body, Some("test-proj"))
+            .unwrap();
+
+        let backend = direct::DirectBackend::new(Arc::new(tokio::sync::Mutex::new(graph)));
+        let val = backend
+            .query_wiki("kanban.md", Some(0), Some(1000))
+            .await
+            .unwrap();
+        assert_eq!(val["truncated"], true);
+        assert_eq!(val["has_more"], true);
+        assert_eq!(val["total_bytes"], 10000);
+        assert_eq!(val["body"].as_str().unwrap().len(), 1000);
+        assert!(val["truncation_marker"]
+            .as_str()
+            .unwrap()
+            .contains("[truncated: showing bytes 0..1000 of 10000"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn direct_backend_discoveries_hints_on_unknown_project() {
+        let graph = atheneum::AtheneumGraph::open_in_memory().unwrap();
+        graph
+            .store_discovery(
+                "agent1",
+                "Decision",
+                "target1",
+                json!({"title": "d1", "project_id": "existing-proj"}),
+            )
+            .unwrap();
+
+        let backend = direct::DirectBackend::new(Arc::new(tokio::sync::Mutex::new(graph)));
+        let val = backend
+            .discoveries_recent(Some("nonexistent-proj"), None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(val["unknown_project"], true);
+        assert_eq!(val["known_projects"], json!(["existing-proj"]));
+        assert!(val["hint"].as_str().unwrap().contains("nonexistent-proj"));
     }
 
     // -----------------------------------------------------------------

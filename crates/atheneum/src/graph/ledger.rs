@@ -544,10 +544,7 @@ fn store_record(graph: &AtheneumGraph, record: &LedgerRecord) -> Result<i64> {
             )
         }
         Some(LedgerKind::Task) => {
-            let description = record
-                .metadata
-                .get("description")
-                .and_then(|v| v.as_str());
+            let description = record.metadata.get("description").and_then(|v| v.as_str());
             let task_id =
                 graph.create_task(&record.target, description, record.project_id.as_deref())?;
             // Restore the source status through the normal update path
@@ -600,7 +597,11 @@ mod tests {
             .store_memory("user-lang", "prefers Rust", "user", 0.9, None, None)
             .unwrap();
         source
-            .create_task("reconcile ledgers", Some("merge legacy store"), Some("atheneum"))
+            .create_task(
+                "reconcile ledgers",
+                Some("merge legacy store"),
+                Some("atheneum"),
+            )
             .unwrap();
 
         let mut ndjson: Vec<u8> = Vec::new();

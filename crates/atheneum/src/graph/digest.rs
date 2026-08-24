@@ -103,6 +103,12 @@ struct DigestTask {
 pub struct DigestReport {
     project: Option<String>,
     fell_back_to_all_projects: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unknown_project: Option<bool>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    known_projects: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hint: Option<String>,
     sessions: Vec<DigestSession>,
     project_memory: Vec<DigestMemory>,
     open_tasks: Vec<DigestTask>,
@@ -144,9 +150,31 @@ impl AtheneumGraph {
         // the digest is still useful when project tagging is sparse (many
         // sessions are tagged "tmp").
         let mut sessions = self.query_sessions(project, last_n, None)?;
-        let fell_back = if sessions.is_empty() && project.is_some() {
-            sessions = self.query_sessions(None, last_n, None)?;
-            !sessions.is_empty()
+        let mut unknown_project = None;
+        let mut known_projects = Vec::new();
+        let mut hint = None;
+
+        let fell_back = if let Some(req_p) = project {
+            if sessions.is_empty() {
+                let all_projects = self.list_distinct_projects()?;
+                if !all_projects.iter().any(|k| k == req_p) {
+                    unknown_project = Some(true);
+                    known_projects = all_projects;
+                    hint = Some(if known_projects.is_empty() {
+                        format!("project '{}' matches no recorded project (no projects recorded in database)", req_p)
+                    } else {
+                        format!(
+                            "project '{}' matches no recorded project. Known projects: {}",
+                            req_p,
+                            known_projects.join(", ")
+                        )
+                    });
+                }
+                sessions = self.query_sessions(None, last_n, None)?;
+                !sessions.is_empty()
+            } else {
+                false
+            }
         } else {
             false
         };
@@ -163,6 +191,9 @@ impl AtheneumGraph {
         Ok(DigestReport {
             project: project_owned,
             fell_back_to_all_projects: fell_back,
+            unknown_project,
+            known_projects,
+            hint,
             sessions: digest_sessions,
             project_memory,
             open_tasks,
@@ -513,7 +544,9 @@ fn render_digest_text(report: &DigestReport, tokens: usize) -> String {
     };
     out.push_str(&header);
 
-    if report.fell_back_to_all_projects {
+    if let Some(ref h) = report.hint {
+        out.push_str(&format!("note: {}\n", h));
+    } else if report.fell_back_to_all_projects {
         out.push_str("note: no sessions tagged with the requested project; showing most recent across all projects.\n");
     }
 
@@ -719,6 +752,9 @@ mod tests {
         let report = DigestReport {
             project: Some("rocmforge".into()),
             fell_back_to_all_projects: false,
+            unknown_project: None,
+            known_projects: vec![],
+            hint: None,
             sessions: vec![],
             project_memory: vec![],
             open_tasks: vec![],
@@ -758,6 +794,9 @@ mod tests {
         let report = DigestReport {
             project: Some("p".into()),
             fell_back_to_all_projects: false,
+            unknown_project: None,
+            known_projects: vec![],
+            hint: None,
             sessions: vec![session],
             project_memory: vec![DigestMemory {
                 key: "k".into(),
@@ -781,6 +820,9 @@ mod tests {
         let report = DigestReport {
             project: None,
             fell_back_to_all_projects: false,
+            unknown_project: None,
+            known_projects: vec![],
+            hint: None,
             sessions: vec![],
             project_memory: vec![],
             open_tasks: vec![],
