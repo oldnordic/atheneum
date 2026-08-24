@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Retrieval Bounding & Output Budgeting** (`crates/atheneum/src/main.rs:410-536, 2423-2550`, `crates/atheneum-mcp/src/tools.rs:492-540`, `crates/atheneum-mcp/src/backend.rs:325-400`, commit `088e02b`):
+  - `atheneum navigate` CLI and MCP `navigate` tool now bound retrieval outputs:
+    - Default edge limit of 50 per subgraph view (configurable via `--edge-limit <N>` CLI / `edge_limit` MCP param).
+    - Wikilink edges are excluded by default to prevent graph traversal flooding, and can be included via `--include-wikilinks` (CLI) / `include_wikilinks: true` (MCP).
+    - Hard output byte budget ceiling defaulting to 8192 bytes (8KB), configurable via `--budget <N>` (CLI) / `budget` (MCP). When the budget is exceeded, serialized subgraphs are truncated with `"truncated": true` marker.
+- **UTF-8 Safe Wiki Pagination** (`crates/atheneum/src/graph/wiki.rs:70-105`, `crates/atheneum/src/main.rs:177-240`, `crates/atheneum-mcp/src/tools.rs:735-765`, `crates/atheneum-mcp/src/backend.rs:1619-1650`, commit `088e02b`):
+  - `atheneum query-wiki` and MCP `query_wiki` tool support UTF-8-safe body pagination with `--offset <N>` / `--limit <N>` (CLI) and `offset` / `limit` (MCP, default 8192 bytes).
+  - Responses include `offset`, `limit`, `total_bytes`, `truncated`, and `has_more` fields with a helpful paging prompt on CLI truncation.
+- **Unknown-Project Guidance Hints** (`crates/atheneum/src/graph/mod.rs:156-202`, `crates/atheneum/src/graph/digest.rs:38-48`, `crates/atheneum/src/main.rs:900-925, 1000-1025, 1324-1355`, `crates/atheneum-mcp/src/backend.rs:880-920`, commit `088e02b`):
+  - Added `AtheneumGraph::list_distinct_projects()` querying distinct project identifiers across sessions, tasks, discoveries, wiki pages, memory entries, and entities.
+  - When `session-digest`, `task-list`, `discoveries-recent`, or their MCP tool equivalents (`session_digest`, `task_list`, `discoveries_recent`) query an unrecognized project string resulting in an empty response, they return `unknown_project: true`, a list of `known_projects`, and a descriptive `hint`.
+
+### Fixed
+
+- **UTF-8 Safe Seed Summary Truncation** (`crates/atheneum/src/graph/seed.rs:148-158, 165-175, 209-219, 249-259`, commit `df50c41`):
+  - Fixed byte-slice panics on multibyte UTF-8 characters during seed summary and memory content truncation by taking slices along valid `char_indices` boundaries (`take_while(|&i| i <= 80)`).
+
 ## [0.12.2] - 2026-07-31
 
 ### Fixed

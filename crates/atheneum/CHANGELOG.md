@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Retrieval Bounding & Output Budgeting** (`src/main.rs:410-536, 2423-2550`, commit `088e02b`):
+  - `atheneum navigate` CLI now bounds retrieval outputs:
+    - Default edge limit of 50 per subgraph view (configurable via `--edge-limit <N>`).
+    - Wikilink edges are excluded by default to prevent graph traversal flooding, and can be included via `--include-wikilinks`.
+    - Hard output byte budget ceiling defaulting to 8192 bytes (8KB), configurable via `--budget <N>`. When the budget is exceeded, serialized subgraphs are truncated with `"truncated": true` marker.
+- **UTF-8 Safe Wiki Pagination** (`src/graph/wiki.rs:70-105`, `src/main.rs:177-240`, commit `088e02b`):
+  - `atheneum query-wiki` supports UTF-8-safe body pagination with `--offset <N>` and `--limit <N>` (default 8192 bytes).
+  - Responses include `offset`, `limit`, `total_bytes`, `truncated`, and `has_more` fields with a helpful paging prompt on CLI truncation.
+- **Unknown-Project Guidance Hints** (`src/graph/mod.rs:156-202`, `src/graph/digest.rs:38-48`, `src/main.rs:900-925, 1000-1025, 1324-1355`, commit `088e02b`):
+  - Added `AtheneumGraph::list_distinct_projects()` querying distinct project identifiers across sessions, tasks, discoveries, wiki pages, memory entries, and entities.
+  - When `session-digest`, `task-list`, or `discoveries-recent` query an unrecognized project string resulting in an empty response, they return `unknown_project: true`, a list of `known_projects`, and a descriptive `hint`.
+
+### Fixed
+
+- **UTF-8 Safe Seed Summary Truncation** (`src/graph/seed.rs:148-158, 165-175, 209-219, 249-259`, commit `df50c41`):
+  - Fixed byte-slice panics on multibyte UTF-8 characters during seed summary and memory content truncation by taking slices along valid `char_indices` boundaries (`take_while(|&i| i <= 80)`).
+
 ## [0.12.1] - 2026-07-21
 
 ### Fixed

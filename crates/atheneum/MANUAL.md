@@ -1140,14 +1140,14 @@ Output is a JSON `DreamReport` with findings organized by phase (DEDUPLICATE, ST
 # Lexical search over all entities (optional HNSW candidate index with --features semantic-search)
 atheneum search <db-path> <query> [--k N] [--project P] [--max-tokens N]
 
-# Search then BFS-walk graph subgraphs
-atheneum navigate <db-path> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N] [--concise]
+# Search then BFS-walk graph subgraphs (commit 088e02b: --budget default 8192, --edge-limit default 50, --include-wikilinks opt-in)
+atheneum navigate <db-path> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N] [--budget N] [--edge-limit N] [--include-wikilinks] [--concise]
 
 # Walk a decision chain — discoveries linked by caused_by/led_to per session
 atheneum thread <db-path> <query> [--k N=3] [--depth D=3] [--tokens T=1500] [--project P] [--json]
 
-# Query a wiki page by path
-atheneum query-wiki <db-path> <path>
+# Query a wiki page by path with UTF-8 safe pagination (commit 088e02b: --offset N, --limit N)
+atheneum query-wiki <db-path> <path> [--offset N] [--limit N] [--json]
 
 # Full-text search over wiki pages (excerpts only; no full body)
 atheneum search-wiki <db-path> <query> [--limit N] [--offset N] [--project P]

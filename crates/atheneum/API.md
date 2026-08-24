@@ -713,7 +713,7 @@ let views = graph.hopgraph_query(
 
 Search + subgraph walk. Like `hopgraph_query` but without token budgeting.
 
-**CLI:** `atheneum navigate <db> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N] [--concise]`
+**CLI:** `atheneum navigate <db> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N] [--budget N] [--edge-limit N] [--include-wikilinks] [--concise]` (commit `088e02b`)
 
 `--concise` emits compact Markdown instead of JSON, optimized for language-model context windows.
 

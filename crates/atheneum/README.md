@@ -349,7 +349,7 @@ DREAM:
 
 QUERY & NAVIGATION:
   search <db> <query> [--k N] [--project P] [--max-tokens N]         Lexical search (optional HNSW candidate index with --features semantic-search)
-  navigate <db> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N]  Search then walk subgraphs
+  navigate <db> <query> [--k N] [--depth N] [--project P] [--kind K] [--max-tokens N] [--budget N] [--edge-limit N] [--include-wikilinks] [--concise]  Search then walk subgraphs (bounded output, edge cap 50)
   thread <db> <query> [--k N] [--depth D=3] [--tokens T=1500] [--project P] [--json]  Walk a decision chain (caused_by/led_to edges)
   chat <db> --session <id> [--tokens T] [--direction recent|chrono] [--kinds K] [--role R] [--search Q] [--only-decisions] [--walk] [--offset N --limit L] [--json]  Token-budgeted walk of a session's chat records (or just its decisions)
   watch-decisions <db> [--once] [--interval S=2] [--config-dir D]... [--project P] [--agent A] [--dry-run]  Live-tail transcripts, capture structured decisions
@@ -358,7 +358,7 @@ QUERY & NAVIGATION:
   decision-search <db> <query> [--project P] [--limit N]  Content search over Decision discoveries (target/chosen/why)
   seed-memory <db> [--project P] [--tokens N]       Token-bounded, concept-grouped knowledge-base summary
   trace-get <db> --id N                             Replay a past navigate --trace query
-  query-wiki <db> <path>                            Query a wiki page by path
+  query-wiki <db> <path> [--offset N] [--limit N] [--json]        Query a wiki page by path with UTF-8 safe pagination
   query-journal <db> <path>                         Query journal sections by path
   query-knowledge <db> <target> [--project P] [--max-tokens N]       Aggregated knowledge
   query-sessions <db> [--project P] [--offset N] [--limit N]  Session history

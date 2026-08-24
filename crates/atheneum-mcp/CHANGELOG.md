@@ -6,6 +6,20 @@ Format: Keep a Changelog. Versions: `major.minor.patch`.
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Retrieval Bounding in `navigate` Tool** (`src/tools.rs:492-540`, `src/backend.rs:325-400, 1040-1120`, commit `088e02b`):
+  - Added `edge_limit` parameter (default 50) to cap edge count per subgraph view.
+  - Excludes `wikilink` edges by default to avoid flooding results; opt-in with `include_wikilinks: true`.
+  - Added `budget` parameter (default 8192 bytes) bounding total serialized response size, with `"truncated": true` marker when truncated.
+- **UTF-8 Safe Body Pagination in `query_wiki` Tool** (`src/tools.rs:735-765`, `src/backend.rs:1619-1650`, commit `088e02b`):
+  - Added `offset` (default 0) and `limit` (default 8192 bytes) parameters to `query_wiki`.
+  - Responses include `offset`, `limit`, `total_bytes`, `truncated`, and `has_more` indicators with UTF-8 char boundary safety.
+- **Unknown-Project Guidance in MCP Tool Handlers** (`src/backend.rs:880-920`, commit `088e02b`):
+  - `session_digest`, `task_list`, and `discoveries_recent` tool handlers return `unknown_project: true`, `known_projects: [...]`, and a guidance `hint` when the requested project name matches no recorded entities in the database.
+
 ## [0.6.0] — 2026-07-31
 
 The Unified Tool API release: `atheneum-mcp` becomes the single MCP front

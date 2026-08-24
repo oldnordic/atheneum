@@ -225,12 +225,15 @@ response).
   `search_without_kind_defaults_to_knowledge_only_unchanged_shape` at
   `backend.rs:2013`).
 
-### `navigate` — extended with `kind` + server-side depth clamp
+### `navigate` — extended with `kind` + server-side depth clamp + retrieval bounding
 
-Parameters (`tools.rs:492-510`): `query` (required), `k` (1–50, default
+Parameters (`tools.rs:493-513`): `query` (required), `k` (1–50, default
 10 — entry-point count), `depth` (default 2 — BFS depth), `offset` /
 `limit` (per-view entity pagination), `trace` (record a QueryTrace
-entity), `kind` (`knowledge` | `code` | `all`, default `knowledge`).
+entity), `kind` (`knowledge` | `code` | `all`, default `knowledge`),
+`include_wikilinks` (boolean, default false — opt-in to wikilink edges),
+`edge_limit` (integer, default 50 — max edges per subgraph view),
+`budget` (integer, default 8192 — total serialized response byte budget).
 
 - Depth is **always** clamped server-side to `MAX_DEPTH` 3 regardless of
   kind — an unbounded BFS is a real cost even on the knowledge-only path
@@ -238,6 +241,10 @@ entity), `kind` (`knowledge` | `code` | `all`, default `knowledge`).
   constants at `envelope.rs:11-12`). On the enveloped shape the clamp is
   reported as `depth_clamped: true` (`backend.rs:1091-1092`; test at
   `backend.rs:2205`).
+- **Retrieval bounding** (commit `088e02b`): `edge_limit` (default 50) caps
+  edges per view; `wikilink` edges are omitted by default to avoid flooding,
+  and total output is constrained by `budget` (default 8KB = 8192 bytes)
+  returning `"truncated": true` if bounded (`backend.rs:325-400`).
 - `kind=knowledge` (the default) returns the pre-0.6.0 shape — a bare
   array of paginated subgraph views, or `{subgraphs, trace_id}` when
   `trace=true` — with no envelope and no provenance tags
@@ -254,6 +261,15 @@ entity), `kind` (`knowledge` | `code` | `all`, default `knowledge`).
   carries no `project` field, and `cross_navigate` fans out across every
   attached project, so no single index exists whose staleness one boolean
   could represent (`backend.rs:1182-1188`).
+
+### `query_wiki` — UTF-8 safe body pagination
+
+Parameters (`tools.rs:736-745`): `path` (required — wiki page path, full or partial),
+`offset` (optional integer, default 0 — byte offset into page body),
+`limit` (optional integer, default 8192 — max body bytes to return).
+
+- Body slice is paginated along valid UTF-8 character boundaries (`backend.rs:1619-1650`).
+- Responses contain `offset`, `limit`, `total_bytes`, `truncated`, and `has_more` fields.
 
 ### `code_query` — new: subprocess code-intelligence passthrough
 
