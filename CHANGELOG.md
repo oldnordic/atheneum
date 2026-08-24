@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.1] - 2026-08-24
+
+### Fixed
+
+- **`thread --json` capacity-overflow panic** (`crates/atheneum/src/main.rs:2749`):
+  `subgraph_to_json_bounded` pre-allocated its edge vector with
+  `Vec::with_capacity(edge_cap)` where `edge_cap` is an upper *bound*, and the
+  `thread`/`navigate --json` paths pass `usize::MAX` for "unbounded" — an
+  unconditional capacity-overflow panic (exit 101) on any `thread --json`
+  query that produced a subgraph. Capacity is now clamped to the edges that
+  actually exist (`sg.edges.len().min(edge_cap)`). Regression test:
+  `crates/atheneum/tests/thread_json_tests.rs`.
+
 ## [0.13.0] - 2026-08-24
 
 ### Added

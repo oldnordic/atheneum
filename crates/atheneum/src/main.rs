@@ -2746,7 +2746,9 @@ fn subgraph_to_json_bounded(
         }
     }
 
-    let mut capped_edges = Vec::with_capacity(edge_cap);
+    // edge_cap is an upper bound, not a size: callers pass usize::MAX for
+    // "unbounded", so capacity must be clamped to the edges that exist.
+    let mut capped_edges = Vec::with_capacity(sg.edges.len().min(edge_cap));
     for e in non_wikilinks {
         if capped_edges.len() < edge_cap {
             capped_edges.push(edge_to_json(e));
