@@ -6,6 +6,16 @@ Format: Keep a Changelog. Versions: `major.minor.patch`.
 
 ---
 
+## [0.8.0] — 2026-08-29
+
+### Added
+
+- **Grounded Claims MCP Tools** (`src/tools.rs`, `src/backend.rs`):
+  - Added `pin_grounded_claim` tool to pin falsifiable claims (linking memories to file paths, symbol names, and SHA256 AST/content hashes).
+  - Added `audit_claims` tool to audit all grounded claims for a project, reporting total, verified, stale, and invalid claims along with stale entity IDs.
+  - Implemented across `DirectBackend`, `HttpBackend`, and `MockBackend`.
+  - Expanded total MCP tool count to 34 tools.
+
 ## [0.7.0] — 2026-08-24
 
 ### Added

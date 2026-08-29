@@ -14,6 +14,11 @@ INGEST:
   store-discovery <db> <agent> <type> <target> [meta.json]  Store a discovery
   add-edge <db> <from> <to> <edge-type> [data.json]        Create a relation
 
+GROUNDED CLAIMS:
+  claim-pin <db> <entity-id> <project> <file-path> [--symbol <name>] [--id <receipt>]  Pin a falsifiable claim to live source code
+  claim-verify <db> <repo-root> [--project P] [--apply]  Audit and verify claims against live filesystem
+  audit <db> [--project P]                Compute staleness and claim verification report
+
 TASKS:
   task-create <db> <title> [desc] [--project P]    Create a new task
   task-list <db> [--project P] [--status S]        List tasks (default: non-archived)

@@ -3,7 +3,7 @@
 Embedded graph database for agent coordination — episodic memory, knowledge persistence, and session accountability across coding sessions.
 
 Part of the **grounded-coding ecosystem**.
-Current core crate release: `atheneum` `0.12.0`.
+Current core crate release: `atheneum` `0.14.0`.
 
 ## Technical Architecture
 
@@ -11,6 +11,7 @@ Current core crate release: `atheneum` `0.12.0`.
 
 **Data model**
 - Episodic memory — sessions, events (tool calls), discoveries, tasks, handoffs
+- Grounded claims — falsifiable AST/file content hashes linking memory to live source code
 - Evidence + decision chains via `caused_by` / `led_to` links
 - FTS5 wiki page index (search, sync, backfill, auto-repair)
 

@@ -2,17 +2,17 @@
 
 MCP server exposing the Atheneum agent memory / knowledge graph **and** the
 magellan / llmgrep / mirage code-intelligence stack behind one unified tool
-API — 32 tools over stdio, with a shared response envelope across every
-dispatch path. Version 0.6.0 (`crates/atheneum-mcp/Cargo.toml:3`); the crate
+API — 34 tools over stdio, with a shared response envelope across every
+dispatch path. Version 0.8.0 (`crates/atheneum-mcp/Cargo.toml:3`); the crate
 carries its own version field rather than inheriting the workspace root's
 (`Cargo.toml:6`), so its release line is independent of the `atheneum`
-library's 0.12.x line (`crates/atheneum/Cargo.toml:3`).
+library's 0.14.x line (`crates/atheneum/Cargo.toml:3`).
 
 The binary speaks the Model Context Protocol over stdio
-(`crates/atheneum-mcp/src/main.rs:55`) and registers all 32 tool routes at
-startup (`crates/atheneum-mcp/src/tools.rs:18-52`,
-`crates/atheneum-mcp/src/lib.rs:25-29`). A unit test asserts the registered
-count is exactly 32 (`crates/atheneum-mcp/src/lib.rs:356`).
+(`crates/atheneum-mcp/src/main.rs:55`) and registers all 34 tool routes at
+startup (`crates/atheneum-mcp/src/tools.rs`,
+`crates/atheneum-mcp/src/lib.rs`). A unit test asserts the registered
+count is exactly 34 (`crates/atheneum-mcp/src/lib.rs`).
 
 ## Inter-component data flow
 
@@ -187,6 +187,13 @@ registered description string (cited per row).
 | `list_models` | List all loaded local models from the Ollama or llama.cpp endpoint | `tools.rs:1119-1120` |
 | `pin_entity` | Pin a concept or memory against eviction and prioritize it in seeding | `tools.rs:1187-1188` |
 | `unpin_entity` | Unpin a previously pinned concept or memory | `tools.rs:1215-1216` |
+
+### Grounded Claims (2)
+
+| Tool | Purpose | Definition |
+|------|---------|------------|
+| `pin_grounded_claim` | Pin a falsifiable claim linking a memory to a source file, symbol, and SHA256 hash | `tools.rs:1320-1322` |
+| `audit_claims` | Audit all grounded claims for a project to detect verified vs. stale/diverged memories | `tools.rs:1354-1356` |
 
 ## The five new/changed tools in detail
 

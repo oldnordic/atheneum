@@ -1439,6 +1439,67 @@ atheneum help
 
 ---
 
+## Grounded Claims & Staleness Invalidation
+
+Documentation and memory rot because code evolves while notes remain write-once. Grounded Claims provide a self-correcting invalidation engine by linking stored memory and discovery entities to live code artifacts, symbol slices, and SHA256 hashes.
+
+### CLI Usage
+
+#### 1. Pinning a Grounded Claim
+
+Attach a claim to a memory entity referencing a target source file and symbol:
+
+```bash
+atheneum claim-pin ./atheneum.db <entity-id> <project> <file-path> \
+    [--symbol <name>] [--id <receipt-hash>]
+```
+
+This hashes the specified file on disk and stores a verified claim in the `grounded_claims` table.
+
+#### 2. Auditing and Verifying Claims
+
+Audit all claims for a project against current disk state:
+
+```bash
+# Read-only audit (returns audit JSON with verified, stale, and invalid counts)
+atheneum claim-verify ./atheneum.db /path/to/repo --project my-project
+
+# Apply status updates (flips changed files to 'stale' or missing files to 'invalid')
+atheneum claim-verify ./atheneum.db /path/to/repo --project my-project --apply
+```
+
+#### 3. Inspecting Claims & Staleness
+
+```bash
+atheneum audit ./atheneum.db --project my-project
+```
+
+Output:
+```json
+{
+  "project": "my-project",
+  "total_claims": 14,
+  "verified_claims": 12,
+  "stale_claims": 2,
+  "invalid_claims": 0,
+  "stale_entity_ids": [42, 108]
+}
+```
+
+### Stale-Aware Memory Recall
+
+When `atheneum session-digest` composes the bootstrap packet for a project, it automatically consults `list_stale_entity_ids()`. Any memory entities attached to stale claims are explicitly flagged:
+
+```text
+== PROJECT MEMORY (project: my-project) ==
+- [STALE: CODE DIVERGED] EventBus dispatch passes raw pointers (arch_event_bus)
+- SafeChannel uses tokio unbounded mpsc (arch_channel)
+```
+
+Agents reading the digest are warned immediately when underlying code has diverged.
+
+---
+
 ## Features
 
 | Feature | Default | Description |

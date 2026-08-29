@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-08-29
+
+### Added
+
+- **Grounded Claims & Invalidation Engine** (`src/db/claims.rs`, `src/graph/claims.rs`, `src/graph/hashing.rs`, `src/cli/dispatch.rs`):
+  - Database schema migration v14 introducing `grounded_claims` table with indices on `(project, status)` and `entity_id`.
+  - `GroundedClaim` and `ClaimAuditReport` data models linking graph entities/memories to concrete source code paths, symbol identifiers, and SHA256 content hashes.
+  - Public `AtheneumGraph` methods: `pin_grounded_claim`, `get_claims_for_entity`, `list_claims`, `update_claim_status`, `list_stale_entity_ids`, `audit_claims`, and `verify_project_claims`.
+  - CLI subcommands:
+    - `atheneum claim-pin <db> <entity-id> <project> <file-path> [--symbol <name>] [--id <receipt>]` — Pin a falsifiable claim to live source code.
+    - `atheneum claim-verify <db> <repo-root> [--project P] [--apply]` — Audit and verify claims against disk, updating stale/invalid status when `--apply` is passed.
+    - `atheneum audit <db> [--project P]` — Print detailed claim verification report.
+  - Stale-aware recall integration in `session-digest` (`src/graph/digest.rs`): automatically cross-references active claims and prefixes diverged memory entities with `[STALE: CODE DIVERGED]` so agents never rely on obsolete assumptions.
+
+- **Codebase & CLI Modularization**:
+  - Refactored monolithic 3,395-line `src/main.rs` into a slim 14-line binary entrypoint and modular submodules under `src/cli/` (`dispatch.rs`, `util.rs`, `mod.rs`).
+  - Removed dead, unused empty directories (`src/ingest/`, `src/web/`).
+
+### Fixed
+
+- **Path Traversal Containment in `verify_project_claims`**: Sanitized claim file paths to strip leading slashes and ensure joined paths remain strictly bounded within `repo_root`.
+- **Dry-Run Default Safety in `claim-verify`**: Fixed mutation flag evaluation so database updates only execute when `--apply` is explicitly passed.
+
 ## [0.13.0] - 2026-08-24
 
 ### Added

@@ -1014,6 +1014,74 @@ pub struct CrossEdge {
 
 ---
 
+## Grounded Claims
+
+Grounded claims link graph memories, decisions, and discoveries to live source code paths, symbol identifiers, and SHA256 content hashes.
+
+### Data Structures
+
+```rust
+pub struct GroundedClaim {
+    pub id: String,
+    pub entity_id: i64,
+    pub project: String,
+    pub file_path: String,
+    pub symbol_name: Option<String>,
+    pub ast_hash: String,
+    pub receipt_hash: Option<String>,
+    pub status: String,
+    pub created_at: String,
+    pub last_verified_at: String,
+}
+
+pub struct ClaimAuditReport {
+    pub project: String,
+    pub total_claims: usize,
+    pub verified_claims: usize,
+    pub stale_claims: usize,
+    pub invalid_claims: usize,
+    pub stale_entity_ids: Vec<i64>,
+}
+```
+
+### `pin_grounded_claim(&self, claim: &GroundedClaim) -> Result<()>`
+
+Insert or update a grounded claim linking a graph entity to source code.
+
+### `get_claims_for_entity(&self, entity_id: i64) -> Result<Vec<GroundedClaim>>`
+
+Retrieve all claims attached to a specific entity.
+
+### `list_claims(&self, project: Option<&str>) -> Result<Vec<GroundedClaim>>`
+
+List claims optionally filtered by project name.
+
+### `update_claim_status(&self, claim_id: &str, status: &str) -> Result<()>`
+
+Update a claim's status (`"verified"`, `"stale"`, or `"invalid"`).
+
+### `list_stale_entity_ids(&self, project: &str) -> Result<Vec<i64>>`
+
+Return unique entity IDs with one or more non-verified claims.
+
+### `audit_claims(&self, project: &str) -> Result<ClaimAuditReport>`
+
+Generate a staleness and verification audit report for a project.
+
+### `verify_project_claims(&self, repo_root: &Path, project: &str, fix: bool) -> Result<ClaimAuditReport>`
+
+Audit all claims against live disk contents under `repo_root`. When `fix` is true, updates the database status.
+
+### `compute_file_sha256(path: &Path) -> Result<String>`
+
+Compute SHA256 hex digest of a file on disk.
+
+### `compute_bytes_sha256(bytes: &[u8]) -> String`
+
+Compute SHA256 hex digest of raw bytes.
+
+---
+
 ## Error Types
 
 ```rust
@@ -1026,3 +1094,4 @@ pub enum AtheneumError {
 ```
 
 All public functions return `anyhow::Result<T>` for ergonomic `?` propagation.
+

@@ -31,6 +31,16 @@ cargo add atheneum
 
 Atheneum is a library. Production use is via [agent-envoy](https://crates.io/crates/agent-envoy) which exposes all endpoints over HTTP (`envoy` binary). Direct embedding is for custom runtimes.
 
+## What's New In 0.14.0
+
+- **Grounded Claims & Invalidation Engine**: Links graph memories, decisions, and discoveries to live code artifacts, symbol slices, and SHA256 hashes (`grounded_claims` table, migration v14).
+- **CLI Commands**:
+  - `atheneum claim-pin <db> <entity-id> <project> <file-path> [--symbol <name>] [--id <receipt>]`
+  - `atheneum claim-verify <db> <repo-root> [--project P] [--apply]`
+  - `atheneum audit <db> [--project P]`
+- **Stale-Aware Recall**: `session-digest` automatically detects when source code has changed beneath stored memories and prefixes them with `[STALE: CODE DIVERGED]` so agents avoid acting on obsolete facts.
+- **Codebase Modularization**: Reorganized monolithic `main.rs` into modular `src/cli/` submodules (`dispatch.rs`, `util.rs`, `mod.rs`).
+
 ## What's New In 0.12.0
 
 - **`memory-prefetch-hints` binary**: standalone ranking CLI that scores

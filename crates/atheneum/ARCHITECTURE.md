@@ -61,9 +61,9 @@ Every write goes to **both** layers:
 
 In current releases, the SQL layer carries more than wiki/journal payloads. Hot
 coordination reads and migrations also depend on typed tables such as
-`sessions`, `event_log`, `discoveries`, `memory_entries`, `tasks`, and
-`handoffs`, plus the chat-navigation generated columns and FTS support added by
-migrations v11-v13.
+`sessions`, `event_log`, `discoveries`, `memory_entries`, `tasks`, `handoffs`,
+and `grounded_claims` (migration v14), plus the chat-navigation generated
+columns and FTS support added by migrations v11-v13.
 
 **wiki_pages** — Markdown wiki pages with YAML frontmatter
 | Column       | Type    | Description                          |
