@@ -148,3 +148,39 @@ fn test_stale_aware_session_digest_flags_outdated_memory() {
         "digest did not flag stale memory: {digest}"
     );
 }
+
+#[test]
+fn test_verify_project_claims_prevents_absolute_path_escape() {
+    use std::fs;
+    use tempfile::tempdir;
+
+    let dir = tempdir().expect("tempdir");
+    let src_dir = dir.path().join("src");
+    fs::create_dir_all(&src_dir).expect("create src dir");
+    let file_path = src_dir.join("bus.rs");
+    fs::write(&file_path, "fn dispatch() { /* v1 */ }\n").expect("write file");
+
+    let graph = AtheneumGraph::open_in_memory().expect("open graph");
+
+    let initial_hash = atheneum::compute_file_sha256(&file_path).expect("compute hash");
+    // Even if pinned with an absolute file path like "/src/bus.rs", it must safely join to repo_root
+    let claim = GroundedClaim {
+        id: "claim_abs_01".to_string(),
+        entity_id: 200,
+        project: "abs_project".to_string(),
+        file_path: "/src/bus.rs".to_string(),
+        symbol_name: Some("dispatch".to_string()),
+        ast_hash: initial_hash,
+        receipt_hash: None,
+        status: "verified".to_string(),
+        created_at: "2026-08-29T22:00:00Z".to_string(),
+        last_verified_at: "2026-08-29T22:00:00Z".to_string(),
+    };
+    graph.pin_grounded_claim(&claim).expect("pin claim");
+
+    let report = graph
+        .verify_project_claims(dir.path(), "abs_project", true)
+        .expect("verify claims");
+    assert_eq!(report.verified_claims, 1);
+    assert_eq!(report.invalid_claims, 0);
+}

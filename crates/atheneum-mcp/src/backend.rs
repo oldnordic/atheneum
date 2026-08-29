@@ -758,13 +758,13 @@ pub mod http {
         }
 
         async fn pin_grounded_claim(&self, params: PinGroundedClaimParams) -> Result<Value> {
-            self.post("/atheneum/claims/pin", &params).await
+            self.post_json("/atheneum/claims/pin", &params).await
         }
 
         async fn audit_claims(&self, params: AuditClaimsParams) -> Result<Value> {
-            self.get(&format!(
+            self.get_json(&format!(
                 "/atheneum/claims/audit?project={}",
-                params.project
+                encode(&params.project)
             ))
             .await
         }

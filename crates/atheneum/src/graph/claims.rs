@@ -55,7 +55,13 @@ impl AtheneumGraph {
         let now = Utc::now().to_rfc3339();
 
         for claim in &claims {
-            let file_target = repo_root.join(&claim.file_path);
+            let claim_path = std::path::Path::new(&claim.file_path);
+            let rel_path = if claim_path.is_absolute() {
+                claim_path.strip_prefix("/").unwrap_or(claim_path)
+            } else {
+                claim_path
+            };
+            let file_target = repo_root.join(rel_path);
             let new_status = if !file_target.exists() {
                 "invalid"
             } else {

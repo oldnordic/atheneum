@@ -89,7 +89,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             let db_path = PathBuf::from(positional(args, 2, "db-path")?);
             let repo_root = PathBuf::from(positional(args, 3, "repo-root")?);
             let opts = parse_options(&args[4..])?;
-            let fix = opts.apply || !opts.dry_run;
+            let fix = opts.apply && !opts.dry_run;
 
             let graph = AtheneumGraph::open(&db_path)?;
             let project = opts.project.as_deref().unwrap_or("");

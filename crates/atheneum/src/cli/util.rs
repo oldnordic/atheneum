@@ -25,7 +25,7 @@ pub(crate) fn write_usage(mut writer: impl Write) -> io::Result<()> {
     writeln!(writer, "GROUNDED CLAIMS:")?;
     writeln!(
         writer,
-        "  claim-pin <db> <entity-id> <project> <file-path> [--search <symbol>] [--id <receipt>]  Pin a falsifiable claim to source code"
+        "  claim-pin <db> <entity-id> <project> <file-path> [--symbol <name>] [--id <receipt>]  Pin a falsifiable claim to source code"
     )?;
     writeln!(
         writer,
@@ -539,7 +539,7 @@ pub(crate) fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
                 "--direction" => opts.direction = Some(value),
                 "--kinds" => opts.kinds = Some(value),
                 "--role" => opts.role = Some(value),
-                "--search" => opts.search = Some(value),
+                "--symbol" | "--search" => opts.search = Some(value),
                 "--importance" => opts.importance = Some(value),
                 "--tags" => opts.tags = Some(value),
                 "--id" => opts.id = Some(value),
