@@ -20,6 +20,7 @@ pub(crate) fn json_to_string(v: &Value) -> Result<String> {
 }
 
 pub mod chat;
+pub mod claims;
 pub mod evidence;
 pub mod execution;
 pub mod hook_compat;
@@ -59,6 +60,7 @@ const MIGRATIONS: &[(u32, &str, Migration)] = &[
         "discovery-context-snapshot",
         knowledge::migrate_v13_discovery_context_snapshot,
     ),
+    (14, "grounded-claims", claims::migrate_v14_grounded_claims),
 ];
 
 /// Apply any pending migrations to the connection. Idempotent — already-

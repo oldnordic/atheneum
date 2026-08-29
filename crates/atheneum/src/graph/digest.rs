@@ -395,6 +395,12 @@ impl AtheneumGraph {
         project: Option<&str>,
         limit: usize,
     ) -> Result<Vec<DigestMemory>> {
+        let stale_entity_ids: std::collections::HashSet<i64> = if let Some(p) = project {
+            self.list_stale_entity_ids(p)?.into_iter().collect()
+        } else {
+            std::collections::HashSet::new()
+        };
+
         let entities = self.list_memory_page(None, project, 0, limit)?;
         let mut out = Vec::new();
         for e in entities {
@@ -404,12 +410,15 @@ impl AtheneumGraph {
                 .and_then(|v| v.as_str())
                 .unwrap_or(&e.name)
                 .to_string();
-            let content = e
+            let mut content = e
                 .data
                 .get("content")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            if stale_entity_ids.contains(&e.id) {
+                content = format!("[STALE: CODE DIVERGED] {}", content);
+            }
             let confidence = e
                 .data
                 .get("confidence")

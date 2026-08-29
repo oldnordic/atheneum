@@ -308,6 +308,15 @@ mod tests {
         async fn refresh(&self, _p: backend::RefreshParams) -> anyhow::Result<Value> {
             Ok(Value::Null)
         }
+        async fn pin_grounded_claim(
+            &self,
+            _p: backend::PinGroundedClaimParams,
+        ) -> anyhow::Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn audit_claims(&self, _p: backend::AuditClaimsParams) -> anyhow::Result<Value> {
+            Ok(Value::Null)
+        }
     }
 
     fn mock_server() -> AtheneumMcpServer {
@@ -358,7 +367,9 @@ mod tests {
         assert!(names.contains(&"seed_memory"));
         assert!(names.contains(&"event"));
         assert!(names.contains(&"refresh"));
-        assert_eq!(tools.len(), 32);
+        assert!(names.contains(&"pin_grounded_claim"));
+        assert!(names.contains(&"audit_claims"));
+        assert_eq!(tools.len(), 34);
     }
 
     #[test]

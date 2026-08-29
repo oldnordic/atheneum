@@ -185,6 +185,20 @@ impl backend::Backend for MockBackend {
     async fn refresh(&self, _p: backend::RefreshParams) -> anyhow::Result<serde_json::Value> {
         Ok(json!({"refreshed": true}))
     }
+    async fn pin_grounded_claim(
+        &self,
+        _p: backend::PinGroundedClaimParams,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(json!({"id": "claim_01", "status": "verified"}))
+    }
+    async fn audit_claims(
+        &self,
+        _p: backend::AuditClaimsParams,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(
+            json!({"total_claims": 0, "verified_claims": 0, "stale_claims": 0, "invalid_claims": 0, "stale_entity_ids": []}),
+        )
+    }
 }
 
 async fn send_json(w: &mut tokio::io::WriteHalf<tokio::io::DuplexStream>, msg: serde_json::Value) {
@@ -271,7 +285,9 @@ async fn mcp_server_initializes_and_lists_tools() {
     assert!(names.contains(&"code_query"));
     assert!(names.contains(&"event"));
     assert!(names.contains(&"refresh"));
-    assert_eq!(tools.len(), 32);
+    assert!(names.contains(&"pin_grounded_claim"));
+    assert!(names.contains(&"audit_claims"));
+    assert_eq!(tools.len(), 34);
 
     // Call graph_stats tool
     send_json(

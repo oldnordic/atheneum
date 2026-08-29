@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "atheneum-mcp": {
+      "command": "atheneum-mcp",
+      "args": []
+    }
+  }
+}

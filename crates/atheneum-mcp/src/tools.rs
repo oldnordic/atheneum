@@ -49,6 +49,8 @@ pub fn register_all(router: &mut ToolRouter<AtheneumMcpServer>) {
     router.add_route(unpin_entity());
     router.add_route(event());
     router.add_route(refresh());
+    router.add_route(pin_grounded_claim());
+    router.add_route(audit_claims());
 }
 
 // ---------------------------------------------------------------------------
@@ -1306,6 +1308,86 @@ fn refresh() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServer
                     refresh_code: args["refresh_code"].as_bool().unwrap_or(true),
                 };
                 match ctx.service.backend.refresh(params).await {
+                    Ok(v) => json_result(v),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            })
+        },
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Tool: pin_grounded_claim
+// ---------------------------------------------------------------------------
+
+fn pin_grounded_claim() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServer> {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "entity_id": { "type": "integer", "description": "Graph entity ID to pin the claim to" },
+            "project": { "type": "string", "description": "Project identifier" },
+            "file_path": { "type": "string", "description": "Relative path to target source file" },
+            "symbol_name": { "type": "string", "description": "Optional symbol or function name" },
+            "ast_hash": { "type": "string", "description": "SHA256 content or AST hash of target code" },
+            "receipt_hash": { "type": "string", "description": "Optional execution receipt hash" }
+        },
+        "required": ["entity_id", "project", "file_path", "ast_hash"]
+    });
+    let schema: Map<String, Value> = schema.as_object().unwrap().clone();
+
+    rmcp::handler::server::router::tool::ToolRoute::new_dyn(
+        Tool::new(
+            "pin_grounded_claim",
+            "Pin a falsifiable grounded claim linking a graph memory/discovery to concrete source code and content hashes.",
+            schema,
+        ),
+        |ctx: rmcp::handler::server::tool::ToolCallContext<'_, AtheneumMcpServer>| {
+            Box::pin(async move {
+                let args = extract_args(ctx.arguments);
+                let params = crate::backend::PinGroundedClaimParams {
+                    entity_id: args["entity_id"].as_i64().unwrap_or(0),
+                    project: args["project"].as_str().unwrap_or("").to_string(),
+                    file_path: args["file_path"].as_str().unwrap_or("").to_string(),
+                    symbol_name: args["symbol_name"].as_str().map(|s| s.to_string()),
+                    ast_hash: args["ast_hash"].as_str().unwrap_or("").to_string(),
+                    receipt_hash: args["receipt_hash"].as_str().map(|s| s.to_string()),
+                };
+                match ctx.service.backend.pin_grounded_claim(params).await {
+                    Ok(v) => json_result(v),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            })
+        },
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Tool: audit_claims
+// ---------------------------------------------------------------------------
+
+fn audit_claims() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServer> {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "project": { "type": "string", "description": "Project identifier to audit claims for" }
+        },
+        "required": ["project"]
+    });
+    let schema: Map<String, Value> = schema.as_object().unwrap().clone();
+
+    rmcp::handler::server::router::tool::ToolRoute::new_dyn(
+        Tool::new(
+            "audit_claims",
+            "Audit all grounded claims in a project to find verified vs stale memories where underlying code has diverged.",
+            schema,
+        ),
+        |ctx: rmcp::handler::server::tool::ToolCallContext<'_, AtheneumMcpServer>| {
+            Box::pin(async move {
+                let args = extract_args(ctx.arguments);
+                let params = crate::backend::AuditClaimsParams {
+                    project: args["project"].as_str().unwrap_or("").to_string(),
+                };
+                match ctx.service.backend.audit_claims(params).await {
                     Ok(v) => json_result(v),
                     Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
                 }

@@ -188,6 +188,23 @@ pub struct RefreshParams {
     pub refresh_code: bool,
 }
 
+/// Parameters for pinning a grounded claim to an entity.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PinGroundedClaimParams {
+    pub entity_id: i64,
+    pub project: String,
+    pub file_path: String,
+    pub symbol_name: Option<String>,
+    pub ast_hash: String,
+    pub receipt_hash: Option<String>,
+}
+
+/// Parameters for auditing claims in a project.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AuditClaimsParams {
+    pub project: String,
+}
+
 // ---------------------------------------------------------------------------
 // Backend trait
 // ---------------------------------------------------------------------------
@@ -267,6 +284,8 @@ pub trait Backend: Send + Sync + 'static {
     async fn unpin_entity(&self, id: i64) -> Result<Value>;
     async fn event(&self, params: EventParams) -> Result<Value>;
     async fn refresh(&self, params: RefreshParams) -> Result<Value>;
+    async fn pin_grounded_claim(&self, params: PinGroundedClaimParams) -> Result<Value>;
+    async fn audit_claims(&self, params: AuditClaimsParams) -> Result<Value>;
 }
 
 /// Shared implementation for the `event` tool — identical for
@@ -736,6 +755,18 @@ pub mod http {
 
         async fn refresh(&self, _params: RefreshParams) -> Result<Value> {
             Err(anyhow::anyhow!("refresh not supported over HTTP backend"))
+        }
+
+        async fn pin_grounded_claim(&self, params: PinGroundedClaimParams) -> Result<Value> {
+            self.post("/atheneum/claims/pin", &params).await
+        }
+
+        async fn audit_claims(&self, params: AuditClaimsParams) -> Result<Value> {
+            self.get(&format!(
+                "/atheneum/claims/audit?project={}",
+                params.project
+            ))
+            .await
         }
     }
 }
@@ -1933,6 +1964,41 @@ pub mod direct {
             }
 
             Ok(envelope.to_value())
+        }
+
+        async fn pin_grounded_claim(&self, params: PinGroundedClaimParams) -> Result<Value> {
+            let graph = self.graph.lock().await;
+            let now = chrono::Utc::now().to_rfc3339();
+            let claim_id = format!(
+                "{}_{}_{}",
+                params.project,
+                params.entity_id,
+                &atheneum::compute_bytes_sha256(params.file_path.as_bytes())[..8]
+            );
+            let claim = atheneum::GroundedClaim {
+                id: claim_id,
+                entity_id: params.entity_id,
+                project: params.project,
+                file_path: params.file_path,
+                symbol_name: params.symbol_name,
+                ast_hash: params.ast_hash,
+                receipt_hash: params.receipt_hash,
+                status: "verified".to_string(),
+                created_at: now.clone(),
+                last_verified_at: now,
+            };
+            tokio::task::block_in_place(|| {
+                graph.pin_grounded_claim(&claim)?;
+                serde_json::to_value(&claim).map_err(Into::into)
+            })
+        }
+
+        async fn audit_claims(&self, params: AuditClaimsParams) -> Result<Value> {
+            let graph = self.graph.lock().await;
+            tokio::task::block_in_place(|| {
+                let report = graph.audit_claims(&params.project)?;
+                serde_json::to_value(&report).map_err(Into::into)
+            })
         }
     }
 }

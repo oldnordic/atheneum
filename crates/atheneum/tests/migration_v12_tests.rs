@@ -26,7 +26,7 @@ use atheneum::graph::{AtheneumGraph, PromptParams, SessionParams, ToolCallParams
 use rusqlite::params;
 use serde_json::json;
 
-const CURRENT_SCHEMA_VERSION: i64 = 13;
+const CURRENT_SCHEMA_VERSION: i64 = 14;
 
 /// Minimal `SessionParams` for the synthetic session `sess_v12`.
 fn session_params() -> SessionParams {

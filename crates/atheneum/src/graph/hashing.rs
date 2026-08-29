@@ -4,10 +4,20 @@ use anyhow::Result;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-pub(crate) fn sha256_hex(input: &str) -> String {
+pub fn compute_bytes_sha256(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(input.as_bytes());
+    hasher.update(bytes);
     format!("{:x}", hasher.finalize())
+}
+
+pub fn compute_file_sha256(path: &std::path::Path) -> Result<String> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| anyhow::anyhow!("read file '{}' for hashing failed: {}", path.display(), e))?;
+    Ok(compute_bytes_sha256(&bytes))
+}
+
+pub(crate) fn sha256_hex(input: &str) -> String {
+    compute_bytes_sha256(input.as_bytes())
 }
 
 pub(crate) fn json_sha256_hex(value: &Value) -> Result<String> {

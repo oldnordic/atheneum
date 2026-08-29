@@ -1,0 +1,25 @@
+{
+  "session-bootstrap-and-prefetch": {
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "python3 \"../hooks/antigravity/session-bootstrap.py\"",
+        "timeout": 10
+      },
+      {
+        "type": "command",
+        "command": "python3 \"../hooks/antigravity/prefetch-hints.py\"",
+        "timeout": 10
+      }
+    ]
+  },
+  "decision-gate": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python3 \"../hooks/antigravity/decision-gate.py\"",
+        "timeout": 10
+      }
+    ]
+  }
+}

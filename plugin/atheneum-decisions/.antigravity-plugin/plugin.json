@@ -1,0 +1,5 @@
+{
+  "name": "atheneum-decisions",
+  "version": "1.0.0",
+  "description": "Atheneum companion for Antigravity — session-start context bootstrap, per-turn memory prefetch, decision capture, and a full atheneum CLI reference."
+}
