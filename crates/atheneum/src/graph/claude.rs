@@ -358,7 +358,10 @@ impl AtheneumGraph {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Transcript cursor identity is stored from explicit source, path, offset, and sequence fields"
+    )]
     fn store_transcript_cursor(
         &self,
         source_key: &str,

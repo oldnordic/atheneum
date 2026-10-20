@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Tool-agnostic completion-claim gate. Blocks commits that mark conductor
+# tracks COMPLETED unless the real workspace check and test gates pass now.
+set -euo pipefail
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+staged_conductor_files=$(
+    git diff --cached --name-only --diff-filter=ACM \
+        | grep -E '^conductor/(tracks\.md|tracks/.*/(plan|spec)\.md)$' || true
+)
+
+if [[ -z "$staged_conductor_files" ]]; then
+    exit 0
+fi
+
+completed_hit=0
+while IFS= read -r file; do
+    [[ -z "$file" ]] && continue
+    if git show ":$file" 2>/dev/null | grep -qE 'COMPLETED'; then
+        completed_hit=1
+        break
+    fi
+done <<< "$staged_conductor_files"
+
+if [[ "$completed_hit" -eq 0 ]]; then
+    exit 0
+fi
+
+cat <<'MSG'
+======================================================================
+pre-commit: staged change marks a conductor track COMPLETED.
+Running the real gate now. This cannot be satisfied by narration.
+======================================================================
+MSG
+
+echo "--- cargo check --workspace ---"
+if ! cargo check --workspace; then
+    cat <<'MSG'
+
+======================================================================
+BLOCKED: cargo check --workspace failed.
+A COMPLETED status cannot be committed while the build is broken.
+Set status to PENDING_VERIFICATION, fix the real problem, and verify
+before marking the track COMPLETED.
+======================================================================
+MSG
+    exit 1
+fi
+
+echo "--- cargo test --workspace ---"
+if ! cargo test --workspace; then
+    cat <<'MSG'
+
+======================================================================
+BLOCKED: cargo test --workspace failed.
+Fix the failing tests before committing a COMPLETED status.
+======================================================================
+MSG
+    exit 1
+fi
+
+cat <<'MSG'
+======================================================================
+Gate passed: cargo check + cargo test both passed in this hook run.
+Commit allowed to proceed.
+======================================================================
+MSG

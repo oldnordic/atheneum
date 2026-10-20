@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Git pre-push hook: run structural banned-pattern linter before pushing.
+set -euo pipefail
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+echo "[GIT-HOOK] Running structural banned-pattern linter..."
+python3 scripts/banned_patterns_lint.py
+echo "[GIT-HOOK] Banned-pattern check passed."

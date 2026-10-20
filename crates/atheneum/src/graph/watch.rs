@@ -339,7 +339,10 @@ fn scan_file(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Transcript tool-use ingestion keeps parsed event fields explicit at the boundary"
+)]
 fn handle_tool_use(
     graph: &AtheneumGraph,
     config: &WatchConfig,
@@ -579,7 +582,10 @@ fn extract_tool_result_text(block: &Value) -> String {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Decision ingestion keeps transcript event fields explicit at the storage boundary"
+)]
 fn store_decision(
     graph: &AtheneumGraph,
     config: &WatchConfig,

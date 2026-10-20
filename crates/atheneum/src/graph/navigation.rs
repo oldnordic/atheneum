@@ -688,10 +688,10 @@ impl AtheneumGraph {
         Ok(trace_id)
     }
 
-    // reason: mirrors `navigate`'s existing 6-argument signature plus `trace`;
-    // splitting into a params struct would ripple through CLI and MCP call
-    // sites for one extra bool.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Mirrors navigate inputs plus trace; params refactor would ripple through CLI and MCP callers"
+    )]
     pub fn navigate_with_trace(
         &self,
         query: &str,
