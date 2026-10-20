@@ -15,30 +15,24 @@ use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::ErrorData as McpError;
 
-pub use tools::{ToolProfile, ToolProfileError, CORE_TOOLS};
-
 /// The MCP server instance.
 pub struct AtheneumMcpServer {
     pub backend: std::sync::Arc<dyn backend::Backend>,
     pub router: ToolRouter<Self>,
-    pub profile: ToolProfile,
+    pub profile: tools::ToolProfile,
 }
 
 impl AtheneumMcpServer {
-    pub fn new(backend: std::sync::Arc<dyn backend::Backend>) -> Self {
-        Self::try_new(backend).expect("failed to initialize AtheneumMcpServer")
-    }
-
     pub fn try_new(
         backend: std::sync::Arc<dyn backend::Backend>,
-    ) -> Result<Self, ToolProfileError> {
-        let profile = ToolProfile::from_env()?;
+    ) -> Result<Self, tools::ToolProfileError> {
+        let profile = tools::ToolProfile::from_env()?;
         Ok(Self::new_with_profile(backend, profile))
     }
 
     pub fn new_with_profile(
         backend: std::sync::Arc<dyn backend::Backend>,
-        profile: ToolProfile,
+        profile: tools::ToolProfile,
     ) -> Self {
         let mut router = ToolRouter::new();
         tools::register_profile(&mut router, profile);
@@ -120,10 +114,9 @@ impl ServerHandler for AtheneumMcpServer {
                 if let Some(instructions) = seed["instructions"].as_str() {
                     for tool in &mut tools {
                         let name_str = tool.name.as_ref();
-                        if (name_str == "navigate"
+                        if name_str == "navigate"
                             || name_str == "query_memory"
-                            || name_str == "search")
-                            && tools::is_core_tool(name_str)
+                            || name_str == "search"
                         {
                             let original =
                                 tool.description.as_ref().map(|c| c.as_ref()).unwrap_or("");
@@ -152,7 +145,7 @@ impl ServerHandler for AtheneumMcpServer {
            + rmcp::service::MaybeSendFuture
            + '_ {
         let tool_name = request.name.to_string();
-        let is_core = self.profile == ToolProfile::Core;
+        let is_core = self.profile == tools::ToolProfile::Core;
         let not_in_core = !tools::is_core_tool(&tool_name);
         let ctx = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         async move {
@@ -170,9 +163,6 @@ impl ServerHandler for AtheneumMcpServer {
     }
 
     fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
-        if self.profile == ToolProfile::Core && !tools::is_core_tool(name) {
-            return None;
-        }
         self.router.get(name).cloned()
     }
 }
@@ -180,9 +170,43 @@ impl ServerHandler for AtheneumMcpServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::{self, ToolProfile};
     use rmcp::model::ProtocolVersion;
     use serde_json::Value;
     use std::sync::Arc;
+
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct EnvVarGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        orig: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(val: &str) -> Self {
+            let lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            let orig = std::env::var_os(ToolProfile::ENV_VAR);
+            std::env::set_var(ToolProfile::ENV_VAR, val);
+            Self { _lock: lock, orig }
+        }
+
+        fn remove() -> Self {
+            let lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            let orig = std::env::var_os(ToolProfile::ENV_VAR);
+            std::env::remove_var(ToolProfile::ENV_VAR);
+            Self { _lock: lock, orig }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(ref val) = self.orig {
+                std::env::set_var(ToolProfile::ENV_VAR, val);
+            } else {
+                std::env::remove_var(ToolProfile::ENV_VAR);
+            }
+        }
+    }
 
     struct MockBackend;
 
@@ -355,7 +379,7 @@ mod tests {
     }
 
     fn mock_server() -> AtheneumMcpServer {
-        AtheneumMcpServer::new(Arc::new(MockBackend))
+        AtheneumMcpServer::new_with_profile(Arc::new(MockBackend), ToolProfile::Full)
     }
 
     #[test]
@@ -432,7 +456,8 @@ mod tests {
             AtheneumMcpServer::new_with_profile(Arc::new(MockBackend), ToolProfile::Full);
         assert_eq!(server_full.router.list_all().len(), 34);
 
-        let server_default = AtheneumMcpServer::new(Arc::new(MockBackend));
+        let _guard = EnvVarGuard::remove();
+        let server_default = AtheneumMcpServer::try_new(Arc::new(MockBackend)).unwrap();
         assert_eq!(server_default.router.list_all().len(), 34);
     }
 
@@ -444,10 +469,15 @@ mod tests {
         assert_eq!(ToolProfile::parse("SLIM").unwrap(), ToolProfile::Core);
         assert_eq!(ToolProfile::parse("full").unwrap(), ToolProfile::Full);
         assert_eq!(ToolProfile::parse("FULL").unwrap(), ToolProfile::Full);
+        assert_eq!(ToolProfile::parse("  core  ").unwrap(), ToolProfile::Core);
 
         assert!(ToolProfile::parse("bogus").is_err());
         assert!(ToolProfile::parse("").is_err());
         assert!(ToolProfile::parse("all").is_err());
+        assert_eq!(
+            ToolProfile::parse("  bogus  ").unwrap_err().to_string(),
+            "unknown ATHENEUM_TOOL_PROFILE value 'bogus': expected 'core' (alias: 'slim') or 'full'"
+        );
     }
 
     #[tokio::test]
@@ -531,9 +561,9 @@ mod tests {
 
     #[test]
     fn unknown_env_var_causes_startup_error_and_refuses_to_serve() {
-        std::env::set_var(ToolProfile::ENV_VAR, "invalid_profile_xyz");
+        let _guard = EnvVarGuard::set("invalid_profile_xyz");
         let result = AtheneumMcpServer::try_new(Arc::new(MockBackend));
-        std::env::remove_var(ToolProfile::ENV_VAR);
+        drop(_guard);
 
         let err = match result {
             Err(e) => e,
@@ -546,25 +576,33 @@ mod tests {
 
     #[test]
     fn env_var_core_and_slim_activates_core_profile() {
-        std::env::set_var(ToolProfile::ENV_VAR, "core");
-        let server_core = AtheneumMcpServer::try_new(Arc::new(MockBackend)).unwrap();
-        assert_eq!(server_core.profile, ToolProfile::Core);
-        assert_eq!(server_core.router.list_all().len(), 12);
+        {
+            let _guard = EnvVarGuard::set("core");
+            let server_core = AtheneumMcpServer::try_new(Arc::new(MockBackend)).unwrap();
+            assert_eq!(server_core.profile, ToolProfile::Core);
+            assert_eq!(server_core.router.list_all().len(), 12);
+        }
 
-        std::env::set_var(ToolProfile::ENV_VAR, "slim");
-        let server_slim = AtheneumMcpServer::try_new(Arc::new(MockBackend)).unwrap();
-        assert_eq!(server_slim.profile, ToolProfile::Core);
-        assert_eq!(server_slim.router.list_all().len(), 12);
+        {
+            let _guard = EnvVarGuard::set("slim");
+            let server_slim = AtheneumMcpServer::try_new(Arc::new(MockBackend)).unwrap();
+            assert_eq!(server_slim.profile, ToolProfile::Core);
+            assert_eq!(server_slim.router.list_all().len(), 12);
+        }
 
-        std::env::set_var(ToolProfile::ENV_VAR, "full");
-        let server_full = AtheneumMcpServer::try_new(Arc::new(MockBackend)).unwrap();
-        assert_eq!(server_full.profile, ToolProfile::Full);
-        assert_eq!(server_full.router.list_all().len(), 34);
+        {
+            let _guard = EnvVarGuard::set("full");
+            let server_full = AtheneumMcpServer::try_new(Arc::new(MockBackend)).unwrap();
+            assert_eq!(server_full.profile, ToolProfile::Full);
+            assert_eq!(server_full.router.list_all().len(), 34);
+        }
 
-        std::env::remove_var(ToolProfile::ENV_VAR);
-        let server_default = AtheneumMcpServer::try_new(Arc::new(MockBackend)).unwrap();
-        assert_eq!(server_default.profile, ToolProfile::Full);
-        assert_eq!(server_default.router.list_all().len(), 34);
+        {
+            let _guard = EnvVarGuard::remove();
+            let server_default = AtheneumMcpServer::try_new(Arc::new(MockBackend)).unwrap();
+            assert_eq!(server_default.profile, ToolProfile::Full);
+            assert_eq!(server_default.router.list_all().len(), 34);
+        }
     }
 
     #[tokio::test]

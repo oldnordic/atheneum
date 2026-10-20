@@ -222,7 +222,7 @@ async fn mcp_server_initializes_and_lists_tools() {
     let mut client_reader = BufReader::new(client_read);
     let mut client_writer = client_write;
 
-    let server = AtheneumMcpServer::new(Arc::new(MockBackend));
+    let server = AtheneumMcpServer::try_new(Arc::new(MockBackend)).unwrap();
     let server_handle = tokio::spawn(async move {
         let running = server.serve(server_stream).await.unwrap();
         running.waiting().await.unwrap();
@@ -323,7 +323,7 @@ async fn mcp_tool_call_with_args() {
     let mut client_reader = BufReader::new(client_read);
     let mut client_writer = client_write;
 
-    let server = AtheneumMcpServer::new(Arc::new(MockBackend));
+    let server = AtheneumMcpServer::try_new(Arc::new(MockBackend)).unwrap();
     let server_handle = tokio::spawn(async move {
         let running = server.serve(server_stream).await.unwrap();
         running.waiting().await.unwrap();
@@ -400,7 +400,7 @@ async fn mcp_direct_backend_round_trip() {
     let graph = Arc::new(tokio::sync::Mutex::new(
         AtheneumGraph::open_in_memory().unwrap(),
     ));
-    let server = AtheneumMcpServer::new(Arc::new(DirectBackend::new(graph)));
+    let server = AtheneumMcpServer::try_new(Arc::new(DirectBackend::new(graph))).unwrap();
     let server_handle = tokio::spawn(async move {
         let running = server.serve(server_stream).await.unwrap();
         running.waiting().await.unwrap();

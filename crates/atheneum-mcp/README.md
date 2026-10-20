@@ -123,7 +123,7 @@ atheneum-mcp ── Backend trait (backend.rs:192)
   `magellan refresh --db <resolved>` (`backend.rs:1618-1626`). It is the
   one sanctioned mutation path for the code index: `llmgrep` and `mirage`
   read magellan's own db, so they pick up changes automatically with no
-  separate refresh (`tools.rs:1288`, `backend.rs:179-181`).
+  separate refresh (`tools.rs:1402`, `backend.rs:179-181`).
 
 ## Tool Profiles (`ATHENEUM_TOOL_PROFILE`)
 
@@ -150,81 +150,81 @@ The 12 tools included in `ATHENEUM_TOOL_PROFILE=core` (or `slim`):
 11. `pin_grounded_claim`
 12. `event`
 
-## The 32-tool surface
+## The 34-tool surface
 
-Grouped by function; registration order at `tools.rs:18-52`, count pinned
-by the test at `lib.rs:356`. Descriptions paraphrase each tool's
+Grouped by function; registration order at `tools.rs:119-155`, count pinned
+by the test at `lib.rs:395`. Descriptions paraphrase each tool's
 registered description string (cited per row).
 
 ### Knowledge & discovery (8)
 
 | Tool | Purpose | Definition |
 |------|---------|------------|
-| `store_discovery` | Store a discovery into the knowledge graph | `tools.rs:88` |
-| `query_knowledge` | Query knowledge about a target entity | `tools.rs:136-137` |
-| `search` | Search the knowledge graph and/or cross-project code index | `tools.rs:184` |
-| `navigate` | Navigate the knowledge graph using natural language | `tools.rs:514-516` |
-| `query_wiki` | Fetch a wiki page by path (partial matching supported) | `tools.rs:739-740` |
-| `wiki_search` | Full-text search over wiki pages via FTS5 | `tools.rs:769-770` |
-| `discoveries_recent` | List recent discoveries, optionally filtered | `tools.rs:807-808` |
-| `decision_search` | Search decisions by target/chosen/why substring | `tools.rs:852-853` |
+| `store_discovery` | Store a discovery into the knowledge graph | `tools.rs:190` |
+| `query_knowledge` | Query knowledge about a target entity | `tools.rs:238-239` |
+| `search` | Search the knowledge graph and/or cross-project code index | `tools.rs:287` |
+| `navigate` | Navigate the knowledge graph using natural language | `tools.rs:624-626` |
+| `query_wiki` | Fetch a wiki page by path (partial matching supported) | `tools.rs:854-855` |
+| `wiki_search` | Full-text search over wiki pages via FTS5 | `tools.rs:886-887` |
+| `discoveries_recent` | List recent discoveries, optionally filtered | `tools.rs:924-925` |
+| `decision_search` | Search decisions by target/chosen/why substring | `tools.rs:969-970` |
 
 ### Memory (9)
 
 | Tool | Purpose | Definition |
 |------|---------|------------|
-| `store_memory` | Store an episodic memory entry | `tools.rs:226` |
-| `update_memory` | Patch an existing memory entry in place | `tools.rs:274-275` |
-| `add_memory` | Add a fact to a concept (append-or-create) | `tools.rs:332-333` |
-| `query_memory` | Query episodic memory by exact key lookup | `tools.rs:393-394` |
-| `search_memory` | Lexical search over Memory-kind entities only | `tools.rs:634-635` |
-| `list_memory` | List stored memories (paginated) | `tools.rs:671` |
-| `memory_bootstrap` | Compose a bounded bootstrap packet: memories + session digest | `tools.rs:704-705` |
-| `dream` | Reflective memory consolidation pass (dedup/stale/verbose detection) | `tools.rs:1015-1016` |
-| `dream_semantic` | Consolidate similar redundant concepts via a local model or lexical trigram fallback | `tools.rs:1148-1149` |
+| `store_memory` | Store an episodic memory entry | `tools.rs:333` |
+| `update_memory` | Patch an existing memory entry in place | `tools.rs:381-382` |
+| `add_memory` | Add a fact to a concept (append-or-create) | `tools.rs:439-440` |
+| `query_memory` | Query episodic memory by exact key lookup | `tools.rs:500-501` |
+| `search_memory` | Lexical search over Memory-kind entities only | `tools.rs:747-748` |
+| `list_memory` | List stored memories (paginated) | `tools.rs:784` |
+| `memory_bootstrap` | Compose a bounded bootstrap packet: memories + session digest | `tools.rs:817-818` |
+| `dream` | Reflective memory consolidation pass (dedup/stale/verbose detection) | `tools.rs:1132-1133` |
+| `dream_semantic` | Consolidate similar redundant concepts via a local model or lexical trigram fallback | `tools.rs:1262-1263` |
 
 ### Graph & sessions (7)
 
 | Tool | Purpose | Definition |
 |------|---------|------------|
-| `graph_stats` | High-level knowledge graph statistics | `tools.rs:601-603` |
-| `get_entity` | Fetch a single graph entity by ID | `tools.rs:962` |
-| `get_neighbors` | Get outgoing + incoming edges for an entity | `tools.rs:986-987` |
-| `thread` | Walk a decision chain (caused_by/led_to edges) | `tools.rs:891-892` |
-| `session_digest` | Compose a bounded session digest from recent sessions | `tools.rs:928-929` |
-| `list_sessions` | List recorded agent sessions | `tools.rs:444` |
-| `list_events` | List recorded events | `tools.rs:473` |
+| `graph_stats` | High-level knowledge graph statistics | `tools.rs:714-716` |
+| `get_entity` | Fetch a single graph entity by ID | `tools.rs:1079` |
+| `get_neighbors` | Get outgoing + incoming edges for an entity | `tools.rs:1103-1104` |
+| `thread` | Walk a decision chain (caused_by/led_to edges) | `tools.rs:1008-1009` |
+| `session_digest` | Compose a bounded session digest from recent sessions | `tools.rs:1045-1046` |
+| `list_sessions` | List recorded agent sessions | `tools.rs:551` |
+| `list_events` | List recorded events | `tools.rs:580` |
 
 ### Code intelligence (2)
 
 | Tool | Purpose | Definition |
 |------|---------|------------|
-| `code_query` | Deep structural code query via magellan/llmgrep/mirage, resolved by project name | `tools.rs:559-561` |
-| `refresh` | Refresh a project's code index (`magellan refresh`) | `tools.rs:1286-1288` |
+| `code_query` | Deep structural code query via magellan/llmgrep/mirage, resolved by project name | `tools.rs:672-674` |
+| `refresh` | Refresh a project's code index (`magellan refresh`) | `tools.rs:1400-1402` |
 
 ### Ops & coordination (6)
 
 | Tool | Purpose | Definition |
 |------|---------|------------|
-| `event` | Envoy multi-agent coordination passthrough (send/claim/heartbeat/create_dependency) | `tools.rs:1249-1251` |
-| `maintain` | Database health checks and automatic repairs | `tools.rs:1052-1053` |
-| `seed_memory` | Compact seed summary of instructions, active concepts, recent memories | `tools.rs:1089-1090` |
-| `list_models` | List all loaded local models from the Ollama or llama.cpp endpoint | `tools.rs:1119-1120` |
-| `pin_entity` | Pin a concept or memory against eviction and prioritize it in seeding | `tools.rs:1187-1188` |
-| `unpin_entity` | Unpin a previously pinned concept or memory | `tools.rs:1215-1216` |
+| `event` | Envoy multi-agent coordination passthrough (send/claim/heartbeat/create_dependency) | `tools.rs:1363-1365` |
+| `maintain` | Database health checks and automatic repairs | `tools.rs:1169-1170` |
+| `seed_memory` | Compact seed summary of instructions, active concepts, recent memories | `tools.rs:1206-1207` |
+| `list_models` | List all loaded local models from the Ollama or llama.cpp endpoint | `tools.rs:1233-1234` |
+| `pin_entity` | Pin a concept or memory against eviction and prioritize it in seeding | `tools.rs:1301-1302` |
+| `unpin_entity` | Unpin a previously pinned concept or memory | `tools.rs:1329-1330` |
 
 ### Grounded Claims (2)
 
 | Tool | Purpose | Definition |
 |------|---------|------------|
-| `pin_grounded_claim` | Pin a falsifiable claim linking a memory to a source file, symbol, and SHA256 hash | `tools.rs:1320-1322` |
-| `audit_claims` | Audit all grounded claims for a project to detect verified vs. stale/diverged memories | `tools.rs:1354-1356` |
+| `pin_grounded_claim` | Pin a falsifiable claim linking a memory to a source file, symbol, and SHA256 hash | `tools.rs:1441-1443` |
+| `audit_claims` | Audit all grounded claims for a project to detect verified vs. stale/diverged memories | `tools.rs:1481-1483` |
 
 ## The five new/changed tools in detail
 
 ### `search` — extended with `kind`, `limit`, `cursor`
 
-Parameters (`tools.rs:163-181`): `query` (required), `k` (1–100, default
+Parameters (`tools.rs:267-283`): `query` (required), `k` (1–100, default
 10 — candidate count before pagination), `project` (optional scope),
 `kind` (`knowledge` | `code` | `all`, default `knowledge`), `limit`
 (1–100, default 20 — page size), `cursor` (opaque, from a previous call's
@@ -476,8 +476,8 @@ back — a partial answer beats a total failure (fan-out partial failure at
   `backend.rs:2134`) — and the legacy shape does not report the clamp, by
   design (`backend.rs:1052-1054`).
 - The 27 pre-existing tools are untouched: their schemas and dispatch are
-  unchanged, and all 32 routes are registered by the same
-  `register_all` (`tools.rs:18-52`).
+  unchanged, and all 34 routes are registered by the same
+  `register_full` (`tools.rs:119-155`).
 
 ## Configuration
 

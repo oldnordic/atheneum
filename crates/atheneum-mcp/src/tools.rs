@@ -34,10 +34,9 @@ pub fn is_core_tool(name: &str) -> bool {
     CORE_TOOLS.contains(&name)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolProfile {
     Core,
-    #[default]
     Full,
 }
 
@@ -79,7 +78,7 @@ impl ToolProfile {
         } else if trimmed.eq_ignore_ascii_case("full") {
             Ok(Self::Full)
         } else {
-            Err(ToolProfileError::UnknownProfile(s.to_string()))
+            Err(ToolProfileError::UnknownProfile(trimmed.to_string()))
         }
     }
 }
@@ -91,23 +90,30 @@ pub fn register_profile(router: &mut ToolRouter<AtheneumMcpServer>, profile: Too
     }
 }
 
-pub fn register_all(router: &mut ToolRouter<AtheneumMcpServer>) {
-    register_full(router);
+fn core_tool_route(
+    name: &str,
+) -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServer> {
+    match name {
+        "store_memory" => store_memory(),
+        "query_memory" => query_memory(),
+        "update_memory" => update_memory(),
+        "search" => search(),
+        "navigate" => navigate(),
+        "get_entity" => get_entity(),
+        "session_digest" => session_digest(),
+        "store_discovery" => store_discovery(),
+        "dream" => dream(),
+        "pin_entity" => pin_entity(),
+        "pin_grounded_claim" => pin_grounded_claim(),
+        "event" => event(),
+        other => panic!("unrecognized core tool in CORE_TOOLS roster: {other}"),
+    }
 }
 
 fn register_core(router: &mut ToolRouter<AtheneumMcpServer>) {
-    router.add_route(store_memory());
-    router.add_route(query_memory());
-    router.add_route(update_memory());
-    router.add_route(search());
-    router.add_route(navigate());
-    router.add_route(get_entity());
-    router.add_route(session_digest());
-    router.add_route(store_discovery());
-    router.add_route(dream());
-    router.add_route(pin_entity());
-    router.add_route(pin_grounded_claim());
-    router.add_route(event());
+    for &name in CORE_TOOLS {
+        router.add_route(core_tool_route(name));
+    }
 }
 
 fn register_full(router: &mut ToolRouter<AtheneumMcpServer>) {
