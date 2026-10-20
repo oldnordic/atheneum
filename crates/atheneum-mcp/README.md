@@ -125,6 +125,31 @@ atheneum-mcp ── Backend trait (backend.rs:192)
   read magellan's own db, so they pick up changes automatically with no
   separate refresh (`tools.rs:1288`, `backend.rs:179-181`).
 
+## Tool Profiles (`ATHENEUM_TOOL_PROFILE`)
+
+`atheneum-mcp` supports selectable tool profiles via the `ATHENEUM_TOOL_PROFILE` environment variable:
+
+- **`core`** (alias: **`slim`**): Registers exactly 12 unified core tools (Section E of the MCP Surface Audit). Reduces schema size by ~58% and startup context tax by ~61%. Dynamic instruction injection is preserved for `navigate`, `query_memory`, and `search`. Non-core tool calls under this profile fail loudly with `"tool not available in core profile: <tool>"`.
+- **`full`** (default when unset): Registers all 34 tools for full backwards compatibility.
+- **Invalid / unknown values**: Fail loudly at process startup with a clear error refusing to serve (e.g. `unknown ATHENEUM_TOOL_PROFILE value '...': expected 'core' (alias: 'slim') or 'full'`).
+
+### Core Profile Tools (12)
+
+The 12 tools included in `ATHENEUM_TOOL_PROFILE=core` (or `slim`):
+
+1. `store_memory`
+2. `query_memory`
+3. `update_memory`
+4. `search`
+5. `navigate`
+6. `get_entity`
+7. `session_digest`
+8. `store_discovery`
+9. `dream`
+10. `pin_entity`
+11. `pin_grounded_claim`
+12. `event`
+
 ## The 32-tool surface
 
 Grouped by function; registration order at `tools.rs:18-52`, count pinned

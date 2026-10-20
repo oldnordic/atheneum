@@ -12,10 +12,105 @@ use serde_json::{json, Map, Value};
 use crate::AtheneumMcpServer;
 
 // ---------------------------------------------------------------------------
-// Registration
+// Tool Profiles & Registration
 // ---------------------------------------------------------------------------
 
+pub const CORE_TOOLS: &[&str] = &[
+    "store_memory",
+    "query_memory",
+    "update_memory",
+    "search",
+    "navigate",
+    "get_entity",
+    "session_digest",
+    "store_discovery",
+    "dream",
+    "pin_entity",
+    "pin_grounded_claim",
+    "event",
+];
+
+pub fn is_core_tool(name: &str) -> bool {
+    CORE_TOOLS.contains(&name)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToolProfile {
+    Core,
+    #[default]
+    Full,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolProfileError {
+    UnknownProfile(String),
+}
+
+impl std::fmt::Display for ToolProfileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownProfile(val) => write!(
+                f,
+                "unknown ATHENEUM_TOOL_PROFILE value '{val}': expected 'core' (alias: 'slim') or 'full'"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ToolProfileError {}
+
+impl ToolProfile {
+    pub const ENV_VAR: &'static str = "ATHENEUM_TOOL_PROFILE";
+
+    pub fn from_env() -> Result<Self, ToolProfileError> {
+        match std::env::var(Self::ENV_VAR) {
+            Ok(val) => Self::parse(&val),
+            Err(std::env::VarError::NotPresent) => Ok(Self::Full),
+            Err(std::env::VarError::NotUnicode(_)) => Err(ToolProfileError::UnknownProfile(
+                "<non-unicode>".to_string(),
+            )),
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<Self, ToolProfileError> {
+        let trimmed = s.trim();
+        if trimmed.eq_ignore_ascii_case("core") || trimmed.eq_ignore_ascii_case("slim") {
+            Ok(Self::Core)
+        } else if trimmed.eq_ignore_ascii_case("full") {
+            Ok(Self::Full)
+        } else {
+            Err(ToolProfileError::UnknownProfile(s.to_string()))
+        }
+    }
+}
+
+pub fn register_profile(router: &mut ToolRouter<AtheneumMcpServer>, profile: ToolProfile) {
+    match profile {
+        ToolProfile::Core => register_core(router),
+        ToolProfile::Full => register_full(router),
+    }
+}
+
 pub fn register_all(router: &mut ToolRouter<AtheneumMcpServer>) {
+    register_full(router);
+}
+
+fn register_core(router: &mut ToolRouter<AtheneumMcpServer>) {
+    router.add_route(store_memory());
+    router.add_route(query_memory());
+    router.add_route(update_memory());
+    router.add_route(search());
+    router.add_route(navigate());
+    router.add_route(get_entity());
+    router.add_route(session_digest());
+    router.add_route(store_discovery());
+    router.add_route(dream());
+    router.add_route(pin_entity());
+    router.add_route(pin_grounded_claim());
+    router.add_route(event());
+}
+
+fn register_full(router: &mut ToolRouter<AtheneumMcpServer>) {
     router.add_route(store_discovery());
     router.add_route(query_knowledge());
     router.add_route(search());
@@ -183,7 +278,11 @@ fn search() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpServer>
     let schema: Map<String, Value> = schema.as_object().unwrap().clone();
 
     rmcp::handler::server::router::tool::ToolRoute::new_dyn(
-        Tool::new("search", "Search the knowledge graph and/or cross-project code index. Impact/affected-style code results are a first-pass heuristic, not certainty.", schema),
+        Tool::new(
+            "search",
+            "Search the knowledge graph and/or cross-project code index. Impact/affected-style code results are a first-pass heuristic, not certainty.",
+            schema,
+        ),
         |ctx: rmcp::handler::server::tool::ToolCallContext<'_, AtheneumMcpServer>| {
             Box::pin(async move {
                 let args = extract_args(ctx.arguments);
@@ -289,7 +388,7 @@ fn update_memory() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcp
                     None => {
                         return Ok(CallToolResult::error(vec![Content::text(
                             "update_memory requires `id` (integer)",
-                        )]))
+                        )]));
                     }
                 };
                 let params = crate::backend::UpdateMemoryParams {
@@ -346,7 +445,7 @@ fn add_memory() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpSer
                     None => {
                         return Ok(CallToolResult::error(vec![Content::text(
                             "add_memory requires `concept` (string)",
-                        )]))
+                        )]));
                     }
                 };
                 let body_patch = match args["body_patch"].as_str() {
@@ -354,7 +453,7 @@ fn add_memory() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpSer
                     None => {
                         return Ok(CallToolResult::error(vec![Content::text(
                             "add_memory requires `body_patch` (string)",
-                        )]))
+                        )]));
                     }
                 };
                 let params = crate::backend::AddMemoryParams {
@@ -1108,10 +1207,7 @@ fn seed_memory() -> rmcp::handler::server::router::tool::ToolRoute<AtheneumMcpSe
                 let args = extract_args(ctx.arguments);
                 let project = args["project"].as_str().map(String::from);
                 let tokens = args["tokens"].as_u64().map(|v| v as usize);
-                let params = crate::backend::SeedMemoryParams {
-                    project,
-                    tokens,
-                };
+                let params = crate::backend::SeedMemoryParams { project, tokens };
                 match ctx.service.backend.seed_memory(params).await {
                     Ok(v) => json_result(v),
                     Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),

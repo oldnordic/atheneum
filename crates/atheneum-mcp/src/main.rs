@@ -73,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let server = AtheneumMcpServer::new(backend);
+    let server = AtheneumMcpServer::try_new(backend)?;
     let service = server.serve(stdio()).await?;
     service.waiting().await?;
 
