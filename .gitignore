@@ -41,3 +41,4 @@ graphify-out/
 
 # Raw session transcript exports — not user-facing
 docs/transcript-*
+.agents/
