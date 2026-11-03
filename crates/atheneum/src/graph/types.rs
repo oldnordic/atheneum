@@ -2,7 +2,7 @@ use serde_json::Value;
 use sqlitegraph::{GraphEdge, GraphEntity};
 use thiserror::Error;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum EntityType {
     Agent,
     Task,
@@ -19,6 +19,13 @@ pub enum EntityType {
     WikiPage,
     Concept,
     QueryTrace,
+    ProjectState,
+    AgentState,
+    Artifact,
+    Receipt,
+    Source,
+    ExternalMemoryRef,
+    RouterQuery,
 }
 
 impl EntityType {
@@ -39,6 +46,13 @@ impl EntityType {
             EntityType::WikiPage => "WikiPage",
             EntityType::Concept => "Concept",
             EntityType::QueryTrace => "QueryTrace",
+            EntityType::ProjectState => "ProjectState",
+            EntityType::AgentState => "AgentState",
+            EntityType::Artifact => "Artifact",
+            EntityType::Receipt => "Receipt",
+            EntityType::Source => "Source",
+            EntityType::ExternalMemoryRef => "ExternalMemoryRef",
+            EntityType::RouterQuery => "RouterQuery",
         }
     }
 
@@ -65,6 +79,15 @@ impl EntityType {
             "wikipage" | "wikipages" | "wiki" | "page" | "pages" => EntityType::WikiPage,
             "concept" | "concepts" => EntityType::Concept,
             "querytrace" | "querytraces" | "trace" | "traces" => EntityType::QueryTrace,
+            "projectstate" | "projectstates" => EntityType::ProjectState,
+            "agentstate" | "agentstates" => EntityType::AgentState,
+            "artifact" | "artifacts" => EntityType::Artifact,
+            "receipt" | "receipts" => EntityType::Receipt,
+            "source" | "sources" => EntityType::Source,
+            "externalmemoryref" | "externalmemoryrefs" | "externalref" | "externalrefs" => {
+                EntityType::ExternalMemoryRef
+            }
+            "routerquery" | "routerqueries" => EntityType::RouterQuery,
             _ => return None,
         })
     }
@@ -85,6 +108,13 @@ impl EntityType {
             "Memory",
             "WikiPage",
             "QueryTrace",
+            "ProjectState",
+            "AgentState",
+            "Artifact",
+            "Receipt",
+            "Source",
+            "ExternalMemoryRef",
+            "RouterQuery",
         ]
     }
 }

@@ -26,6 +26,7 @@ pub mod execution;
 pub mod hook_compat;
 pub mod knowledge;
 pub mod memory;
+pub mod memory_router;
 pub mod planning;
 pub mod transcripts;
 pub mod wiki_fts;
@@ -34,7 +35,7 @@ type Migration = fn(&rusqlite::Transaction<'_>) -> Result<()>;
 
 /// Registered migrations, in apply order. Each entry is
 /// `(version, short_name, body)`.
-const MIGRATIONS: &[(u32, &str, Migration)] = &[
+pub(crate) const MIGRATIONS: &[(u32, &str, Migration)] = &[
     (1, "execution-domain", execution::migrate_v1_execution),
     (2, "planning-domain", planning::migrate_v2_planning),
     (3, "knowledge-domain", knowledge::migrate_v3_knowledge),
@@ -61,6 +62,11 @@ const MIGRATIONS: &[(u32, &str, Migration)] = &[
         knowledge::migrate_v13_discovery_context_snapshot,
     ),
     (14, "grounded-claims", claims::migrate_v14_grounded_claims),
+    (
+        15,
+        "memory-router-domain",
+        memory_router::migrate_v15_memory_router,
+    ),
 ];
 
 /// Apply any pending migrations to the connection. Idempotent — already-

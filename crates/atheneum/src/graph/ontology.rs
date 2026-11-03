@@ -152,6 +152,19 @@ impl AtheneumGraph {
             ),
             ("Memory", "Stable facts, preferences, and conventions"),
             ("QueryTrace", "A trace record of a search/navigation query"),
+            (
+                "ProjectState",
+                "Snapshot of project objective, tasks, blockers, and head state",
+            ),
+            ("AgentState", "State and objective history for an agent"),
+            ("Artifact", "Tracked file, report, diff, or deliverable"),
+            ("Receipt", "Verification result and verifier evidence"),
+            ("Source", "External or reference source document"),
+            (
+                "ExternalMemoryRef",
+                "Reference to memory in an external store",
+            ),
+            ("RouterQuery", "Audit record of a memory routing query"),
         ];
         for (name, description) in STANDARD {
             self.define_class(name, Some(description))?;
