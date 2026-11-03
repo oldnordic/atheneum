@@ -65,7 +65,7 @@ pub use memory_router::{
     MemoryRouteDepth, MemoryRouteFilters, MemoryRouteItem, MemoryRouteResponse,
     ProjectStateEnvelope, ProjectStateOutcome, ProjectStateParams, RecordArtifactOutcome,
     RecordArtifactParams, RecordReceiptOutcome, RecordReceiptParams, RecordSourceOutcome,
-    RecordSourceParams, UpsertMemoryItemParams, UpsertMemoryOutcome,
+    RecordSourceParams, RouterQueryAudit, UpsertMemoryItemParams, UpsertMemoryOutcome,
 };
 pub use models::ModelInfo;
 pub use navigation::{estimate_entity_tokens, truncate_subgraph};

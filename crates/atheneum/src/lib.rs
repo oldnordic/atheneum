@@ -36,8 +36,9 @@ pub use graph::{
     MemoryRouteResponse, ModelInfo, NavigateQueryPlan, OpenOptions, ProjectStateEnvelope,
     ProjectStateOutcome, ProjectStateParams, ProvenanceData, QueryIntent, RecordArtifactOutcome,
     RecordArtifactParams, RecordReceiptOutcome, RecordReceiptParams, RecordSourceOutcome,
-    RecordSourceParams, ResolvedEntity, RuntimeStats, SearchResult, SeedMemory, UpsertAction,
-    UpsertMemoryItemParams, UpsertMemoryOutcome, UpsertResult, WikiPage, WikiSearchResult,
+    RecordSourceParams, ResolvedEntity, RouterQueryAudit, RuntimeStats, SearchResult, SeedMemory,
+    UpsertAction, UpsertMemoryItemParams, UpsertMemoryOutcome, UpsertResult, WikiPage,
+    WikiSearchResult,
 };
 
 // Re-export the sqlitegraph types so consumers can name them as

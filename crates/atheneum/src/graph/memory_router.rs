@@ -164,10 +164,37 @@ pub struct MemoryItemEnvelope {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MemoryRouteFilters {
     pub project: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
     pub kinds: Option<Vec<String>>,
     pub status: Option<String>,
     pub confidence_floor: Option<f64>,
     pub evidence_required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RouterQueryAudit {
+    pub id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graph_entity_id: Option<i64>,
+    pub project_id: Option<String>,
+    pub agent_name: Option<String>,
+    pub query_hash: String,
+    pub kinds_json: String,
+    pub budget_tokens: usize,
+    pub returned_ids_json: String,
+    pub omitted_count: usize,
+    pub created_at: String,
+}
+
+impl RouterQueryAudit {
+    pub fn kinds(&self) -> Vec<String> {
+        serde_json::from_str(&self.kinds_json).unwrap_or_default()
+    }
+
+    pub fn returned_ids(&self) -> Vec<i64> {
+        serde_json::from_str(&self.returned_ids_json).unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1486,6 +1513,51 @@ impl AtheneumGraph {
             }
         }
 
+        // 5. Record audit trail in router_queries
+        let now = Utc::now().to_rfc3339();
+        let normalized_query = query
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        let query_hash = crate::graph::hashing::sha256_hex(&normalized_query);
+        let kinds_json = filters
+            .kinds
+            .as_ref()
+            .map(|k| serde_json::to_string(k).unwrap_or_else(|_| "[]".to_string()))
+            .unwrap_or_else(|| "[]".to_string());
+        let returned_ids: Vec<i64> = items.iter().map(|item| item.graph_entity_id).collect();
+        let returned_ids_json =
+            serde_json::to_string(&returned_ids).unwrap_or_else(|_| "[]".to_string());
+        let agent_name = filters
+            .agent_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("unknown");
+
+        self.with_raw_connection(|conn| {
+            conn.execute(
+                "INSERT INTO router_queries (
+                    graph_entity_id, project_id, agent_name, query_hash,
+                    kinds_json, budget_tokens, returned_ids_json, omitted_count, created_at
+                ) VALUES (
+                    NULL, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+                )",
+                params![
+                    filters.project.as_deref(),
+                    agent_name,
+                    query_hash,
+                    kinds_json,
+                    budget as i64,
+                    returned_ids_json,
+                    omitted as i64,
+                    now,
+                ],
+            )?;
+            Ok(())
+        })?;
+
         Ok(MemoryRouteResponse {
             query: query.to_string(),
             project: filters.project.clone(),
@@ -1499,6 +1571,13 @@ impl AtheneumGraph {
     }
 
     /// Expand memory items by graph entity IDs up to token budget.
+    ///
+    /// Note on audit logging: Unlike `route_memory`, `expand_memory` does NOT record
+    /// a row in `router_queries`. `expand_memory` is a deterministic key/entity lookup
+    /// by explicit ID rather than a semantic query routing decision. It has no query text,
+    /// no filter criteria, and no agent/project routing context. The initial query decision
+    /// that returned candidate IDs was already audited by `route_memory`; logging secondary
+    /// expansions would skew query budgeting counts and query hash metrics.
     pub fn expand_memory(&self, ids: &[String], budget: usize) -> Result<MemoryExpandResponse> {
         let mut budget_used = 0usize;
         let mut items = Vec::new();
@@ -3140,6 +3219,7 @@ impl AtheneumGraph {
         let mut memory_ids = Vec::new();
         let route_filters = MemoryRouteFilters {
             project: project.map(|s| s.to_string()),
+            agent_name: None,
             kinds: None,
             status: Some("active".to_string()),
             confidence_floor: None,
@@ -3326,6 +3406,70 @@ impl AtheneumGraph {
             budget_used: current_cost,
             omitted: omitted_count,
             warnings,
+        })
+    }
+
+    /// Retrieve recent router query audit log rows.
+    pub fn recent_router_queries(
+        &self,
+        project: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<RouterQueryAudit>> {
+        self.with_raw_connection(|conn| {
+            let mut out = Vec::new();
+            if let Some(p) = project {
+                let mut stmt = conn.prepare(
+                    "SELECT id, graph_entity_id, project_id, agent_name, query_hash,
+                            kinds_json, budget_tokens, returned_ids_json, omitted_count, created_at
+                     FROM router_queries
+                     WHERE project_id = ?1
+                     ORDER BY id DESC
+                     LIMIT ?2",
+                )?;
+                let rows = stmt.query_map(params![p, limit as i64], |r| {
+                    Ok(RouterQueryAudit {
+                        id: r.get(0)?,
+                        graph_entity_id: r.get(1)?,
+                        project_id: r.get(2)?,
+                        agent_name: r.get(3)?,
+                        query_hash: r.get(4)?,
+                        kinds_json: r.get(5)?,
+                        budget_tokens: r.get::<_, i64>(6)? as usize,
+                        returned_ids_json: r.get(7)?,
+                        omitted_count: r.get::<_, i64>(8)? as usize,
+                        created_at: r.get(9)?,
+                    })
+                })?;
+                for r in rows {
+                    out.push(r?);
+                }
+            } else {
+                let mut stmt = conn.prepare(
+                    "SELECT id, graph_entity_id, project_id, agent_name, query_hash,
+                            kinds_json, budget_tokens, returned_ids_json, omitted_count, created_at
+                     FROM router_queries
+                     ORDER BY id DESC
+                     LIMIT ?1",
+                )?;
+                let rows = stmt.query_map(params![limit as i64], |r| {
+                    Ok(RouterQueryAudit {
+                        id: r.get(0)?,
+                        graph_entity_id: r.get(1)?,
+                        project_id: r.get(2)?,
+                        agent_name: r.get(3)?,
+                        query_hash: r.get(4)?,
+                        kinds_json: r.get(5)?,
+                        budget_tokens: r.get::<_, i64>(6)? as usize,
+                        returned_ids_json: r.get(7)?,
+                        omitted_count: r.get::<_, i64>(8)? as usize,
+                        created_at: r.get(9)?,
+                    })
+                })?;
+                for r in rows {
+                    out.push(r?);
+                }
+            }
+            Ok(out)
         })
     }
 }
@@ -4853,5 +4997,133 @@ mod tests {
         assert!(val["receipts"].is_array());
         assert!(val["memory_ids"].is_array());
         assert!(val["warnings"].is_array());
+    }
+
+    #[test]
+    fn test_router_queries_audit_logging() {
+        let graph = AtheneumGraph::open_in_memory().expect("open");
+
+        let p1 = UpsertMemoryItemParams {
+            key: "key_audit_1".to_string(),
+            content: "Audit test content router logging alpha".to_string(),
+            scope: "project".to_string(),
+            kind: "memory".to_string(),
+            title: Some("Audit Item 1".to_string()),
+            summary: Some("Audit summary 1".to_string()),
+            confidence: 0.95,
+            project_id: Some("audit_proj".to_string()),
+            status: "active".to_string(),
+            source_uri: None,
+            evidence: vec![json!({"ref": "test"})],
+            content_hash: None,
+            token_estimate: Some(10),
+            sensitivity: "normal".to_string(),
+            valid_from: None,
+            valid_to: None,
+            ttl_seconds: None,
+            tags: None,
+            conflict_strategy: ConflictStrategy::Revision,
+        };
+        let outcome1 = graph.upsert_memory_item(&p1).expect("upsert 1");
+        let ge_id1 = match outcome1 {
+            UpsertMemoryOutcome::Created {
+                graph_entity_id, ..
+            } => graph_entity_id,
+            other => panic!("expected Created, got {:?}", other),
+        };
+
+        let filters = MemoryRouteFilters {
+            project: Some("audit_proj".to_string()),
+            agent_name: Some("pi".to_string()),
+            kinds: Some(vec!["memory".to_string()]),
+            status: Some("active".to_string()),
+            confidence_floor: None,
+            evidence_required: false,
+        };
+
+        let resp = graph
+            .route_memory("audit test", &filters, 500, MemoryRouteDepth::Summary)
+            .expect("route");
+        assert_eq!(resp.items.len(), 1);
+
+        let rows = graph
+            .recent_router_queries(Some("audit_proj"), 10)
+            .expect("recent_router_queries");
+        assert_eq!(
+            rows.len(),
+            1,
+            "Expected exactly 1 audit row in router_queries"
+        );
+
+        let row = &rows[0];
+        assert_eq!(row.project_id.as_deref(), Some("audit_proj"));
+        assert_eq!(row.agent_name.as_deref(), Some("pi"));
+        assert_eq!(row.budget_tokens, 500);
+        assert_eq!(row.omitted_count, 0);
+
+        let normalized = "audit test"
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        let expected_hash = crate::graph::hashing::sha256_hex(&normalized);
+        assert_eq!(row.query_hash, expected_hash);
+
+        let parsed_kinds = row.kinds();
+        assert_eq!(parsed_kinds, vec!["memory"]);
+
+        let parsed_ids = row.returned_ids();
+        assert_eq!(parsed_ids, vec![ge_id1]);
+    }
+
+    #[test]
+    fn test_router_queries_unknown_agent_default() {
+        let graph = AtheneumGraph::open_in_memory().expect("open");
+
+        let filters = MemoryRouteFilters {
+            project: Some("default_agent_proj".to_string()),
+            agent_name: None,
+            kinds: None,
+            status: None,
+            confidence_floor: None,
+            evidence_required: false,
+        };
+
+        let _resp = graph
+            .route_memory("search query", &filters, 300, MemoryRouteDepth::Summary)
+            .expect("route");
+
+        let rows = graph
+            .recent_router_queries(Some("default_agent_proj"), 10)
+            .expect("recent_router_queries");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].agent_name.as_deref(), Some("unknown"));
+    }
+
+    #[test]
+    fn test_router_queries_bipolar_expand_does_not_log() {
+        let graph = AtheneumGraph::open_in_memory().expect("open");
+
+        let p1 = sample_params("expand_key", "expandable content");
+        let outcome = graph.upsert_memory_item(&p1).expect("upsert");
+        let ge_id = match outcome {
+            UpsertMemoryOutcome::Created {
+                graph_entity_id, ..
+            } => graph_entity_id,
+            other => panic!("expected Created, got {:?}", other),
+        };
+
+        let _resp = graph
+            .expand_memory(&[format!("memory:{}", ge_id)], 1000)
+            .expect("expand");
+
+        let rows = graph
+            .recent_router_queries(None, 10)
+            .expect("recent_router_queries");
+        assert_eq!(
+            rows.len(),
+            0,
+            "expand_memory must not write to router_queries (bipolar: route logs, expand does not)"
+        );
     }
 }

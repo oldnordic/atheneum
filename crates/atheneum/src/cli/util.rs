@@ -137,6 +137,10 @@ pub(crate) fn write_usage(mut writer: impl Write) -> io::Result<()> {
     )?;
     writeln!(
         writer,
+        "  router-queries <db> [--project P] [--limit N]    Recent router query audit rows"
+    )?;
+    writeln!(
+        writer,
         "  memory-bundle <db> <objective> [flags]           Produce compact subagent task bundle"
     )?;
     writeln!(
@@ -636,6 +640,9 @@ pub(crate) fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
                 anyhow::bail!("--config-dir requires a value");
             }
             i += 2;
+        } else if let Some(val) = args[i].strip_prefix("agent=") {
+            opts.agent = Some(val.to_string());
+            i += 1;
         } else if args[i].starts_with('-') && args[i] != "--data" {
             let key = args[i].as_str();
             let value = args

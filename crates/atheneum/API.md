@@ -1161,10 +1161,24 @@ pub struct MemoryItemEnvelope {
 
 pub struct MemoryRouteFilters {
     pub project: Option<String>,
+    pub agent_name: Option<String>,
     pub kinds: Option<Vec<String>>,
     pub status: Option<String>,
     pub confidence_floor: Option<f64>,
     pub evidence_required: bool,
+}
+
+pub struct RouterQueryAudit {
+    pub id: i64,
+    pub graph_entity_id: Option<i64>,
+    pub project_id: Option<String>,
+    pub agent_name: Option<String>,
+    pub query_hash: String,
+    pub kinds_json: String,
+    pub budget_tokens: usize,
+    pub returned_ids_json: String,
+    pub omitted_count: usize,
+    pub created_at: String,
 }
 
 pub struct MemoryRouteItem {
@@ -1419,7 +1433,11 @@ Perform token-budgeted memory routing matching query text and filter criteria. R
 
 #### `expand_memory(&self, ids: &[String], budget: usize) -> Result<MemoryExpandResponse>`
 
-Expand full memory item envelopes for explicit graph entity IDs (prefixed with `memory:` or plain integers) up to the token budget.
+Expand full memory item envelopes for explicit graph entity IDs (prefixed with `memory:` or plain integers) up to the token budget. Unlike `route_memory`, `expand_memory` does NOT record an audit row in `router_queries` because it is a deterministic key lookup rather than a query routing decision.
+
+#### `recent_router_queries(&self, project: Option<&str>, limit: usize) -> Result<Vec<RouterQueryAudit>>`
+
+Retrieve recent audit entries from `router_queries` ordered by descending id, optionally filtered by `project`.
 
 #### `append_project_state(&self, project: &str, params: &ProjectStateParams) -> Result<ProjectStateOutcome>`
 

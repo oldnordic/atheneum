@@ -1994,7 +1994,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         "memory-route" => {
             if args.len() < 3 {
                 eprintln!(
-                    "Usage: atheneum memory-route <db-path> [query] [--project P] [--kind K] \\\
+                    "Usage: atheneum memory-route <db-path> [query] [--project P] [--agent A] [--kind K] \\\
                      [--kinds K1,K2] [--status S] [--confidence-floor N] [--evidence-required] \\\
                      [--budget B] [--depth summary|bundle|expand]"
                 );
@@ -2021,8 +2021,10 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             };
             let confidence_floor =
                 parse_f64_option(opts.confidence_floor.as_deref(), "confidence-floor")?;
+            let agent_name = opts.agent.or_else(|| std::env::var("ATHENEUM_AGENT").ok());
             let filters = crate::MemoryRouteFilters {
                 project: opts.project,
+                agent_name,
                 kinds,
                 status: opts.status,
                 confidence_floor,
@@ -2060,6 +2062,18 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             let graph = AtheneumGraph::open(&db_path)?;
             let resp = graph.expand_memory(&ids, budget)?;
             print_json(serde_json::to_value(&resp)?)?;
+        }
+        "router-queries" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum router-queries <db-path> [--project P] [--limit N]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(args, 2, "db-path")?);
+            let opts = parse_options(&args[3..])?;
+            let limit = parse_usize_option(opts.limit.as_deref(), "limit")?.unwrap_or(20);
+            let graph = AtheneumGraph::open(&db_path)?;
+            let rows = graph.recent_router_queries(opts.project.as_deref(), limit)?;
+            print_json(serde_json::to_value(&rows)?)?;
         }
         "memory-bundle" => {
             if args.len() < 4 {
