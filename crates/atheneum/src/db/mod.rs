@@ -77,10 +77,19 @@ pub(crate) const MIGRATIONS: &[(u32, &str, Migration)] = &[
 /// `unchecked_transaction` internally — that's the rusqlite escape hatch
 /// for cases where mutable connection access isn't available but
 /// transactions are still needed.
-pub(crate) fn run_migrations(conn: &Connection) -> Result<()> {
+pub fn run_migrations(conn: &Connection) -> Result<Vec<u32>> {
+    run_migrations_up_to(conn, u32::MAX)
+}
+
+/// Apply any pending migrations up to `target_version` to the connection.
+pub fn run_migrations_up_to(conn: &Connection, target_version: u32) -> Result<Vec<u32>> {
     ensure_version_table(conn)?;
     let applied = applied_versions(conn)?;
+    let mut applied_now = Vec::new();
     for (version, name, migrate) in MIGRATIONS {
+        if *version > target_version {
+            continue;
+        }
         if applied.contains(version) {
             continue;
         }
@@ -92,9 +101,67 @@ pub(crate) fn run_migrations(conn: &Connection) -> Result<()> {
             rusqlite::params![*version as i64, Utc::now().to_rfc3339()],
         )?;
         tx.commit()?;
+        applied_now.push(*version);
     }
+    let current = applied_versions(conn)?.into_iter().max().unwrap_or(0);
+    conn.execute_batch(&format!("PRAGMA user_version = {};", current))?;
 
-    Ok(())
+    Ok(applied_now)
+}
+
+pub const LATEST_SCHEMA_VERSION: u32 = 15;
+
+/// Read the effective schema version from the database.
+/// Inspects both `atheneum_schema_version` and `PRAGMA user_version` and returns the max.
+pub fn get_schema_version(conn: &Connection) -> Result<u32> {
+    let pragma_version: u32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap_or(0);
+    let table_version = if conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='atheneum_schema_version'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|c| c > 0)
+        .unwrap_or(false)
+    {
+        conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM atheneum_schema_version",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|v| v as u32)
+        .unwrap_or(0)
+    } else {
+        0
+    };
+    Ok(std::cmp::max(pragma_version, table_version))
+}
+
+/// Retrieve pending migration versions for this database.
+pub fn get_pending_migrations(conn: &Connection) -> Result<Vec<u32>> {
+    let applied = if conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='atheneum_schema_version'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|c| c > 0)
+        .unwrap_or(false)
+    {
+        applied_versions(conn)?
+    } else {
+        std::collections::HashSet::new()
+    };
+
+    let mut pending = Vec::new();
+    for (version, _, _) in MIGRATIONS {
+        if !applied.contains(version) {
+            pending.push(*version);
+        }
+    }
+    Ok(pending)
 }
 
 fn ensure_version_table(conn: &Connection) -> Result<()> {
@@ -135,4 +202,42 @@ pub(crate) fn stamp_sql_id(
         rusqlite::params![serde_json::to_string(&data)?, entity_id],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_schema_version_and_pending_migrations() {
+        let graph = sqlitegraph::SqliteGraph::open_in_memory().unwrap();
+        let conn = graph.pool.direct_connection().unwrap();
+        // Fresh DB: no atheneum_schema_version table yet
+        assert_eq!(get_schema_version(conn).unwrap(), 0);
+
+        // Apply migrations up to 14
+        let applied = run_migrations_up_to(conn, 14).unwrap();
+        assert_eq!(applied.len(), 14);
+        assert_eq!(get_schema_version(conn).unwrap(), 14);
+
+        let pending = get_pending_migrations(conn).unwrap();
+        assert_eq!(pending, vec![15]);
+
+        // Apply remaining migrations
+        let applied_rem = run_migrations(conn).unwrap();
+        assert_eq!(applied_rem, vec![15]);
+        assert_eq!(get_schema_version(conn).unwrap(), 15);
+
+        let pending_after = get_pending_migrations(conn).unwrap();
+        assert!(pending_after.is_empty());
+    }
+
+    #[test]
+    fn test_schema_version_newer_pragma() {
+        let graph = sqlitegraph::SqliteGraph::open_in_memory().unwrap();
+        let conn = graph.pool.direct_connection().unwrap();
+        run_migrations_up_to(conn, 14).unwrap();
+        conn.execute_batch("PRAGMA user_version = 99;").unwrap();
+        assert_eq!(get_schema_version(conn).unwrap(), 99);
+    }
 }

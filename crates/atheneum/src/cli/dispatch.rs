@@ -7,7 +7,26 @@ use crate::{
     AtheneumGraph, ClaudeTranscriptImportParams, Config, CrossRouter, EdgeType, MetaRouter,
 };
 
+fn extract_migrate_flag(args: &[String]) -> (Vec<String>, bool) {
+    let mut has_migrate = false;
+    let mut clean = Vec::with_capacity(args.len());
+    for arg in args {
+        if arg == "--migrate" {
+            has_migrate = true;
+        } else {
+            clean.push(arg.clone());
+        }
+    }
+    (clean, has_migrate)
+}
+
 pub fn run(args: &[String]) -> anyhow::Result<()> {
+    let (clean_args, has_migrate) = extract_migrate_flag(args);
+    if has_migrate {
+        crate::graph::set_global_allow_migrate(true);
+    }
+    let args = &clean_args[..];
+
     if args.len() < 2 {
         print_usage()?;
         return Ok(());
@@ -19,6 +38,31 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         }
         "help" | "--help" | "-h" => {
             print_usage()?;
+        }
+        "migrate" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum migrate <db-path>");
+                std::process::exit(1);
+            }
+            let path = PathBuf::from(positional(args, 2, "db-path")?);
+            let applied = AtheneumGraph::migrate(&path)?;
+            if applied.is_empty() {
+                stdoutln(format_args!(
+                    "Database is already up to date at schema version {}.",
+                    crate::db::LATEST_SCHEMA_VERSION
+                ))?;
+            } else {
+                let applied_str = applied
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                stdoutln(format_args!(
+                    "Successfully applied migration(s) [{}]. Database is now at schema version {}.",
+                    applied_str,
+                    crate::db::LATEST_SCHEMA_VERSION
+                ))?;
+            }
         }
         "init" => {
             if args.len() < 3 {

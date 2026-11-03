@@ -95,6 +95,25 @@ pub(super) fn json_to_string(v: &Value) -> Result<String> {
     serde_json::to_string(v).map_err(|e| anyhow::anyhow!("JSON serialization failed: {}", e))
 }
 
+static GLOBAL_ALLOW_MIGRATE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_global_allow_migrate(allow: bool) {
+    GLOBAL_ALLOW_MIGRATE.store(allow, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn is_global_allow_migrate() -> bool {
+    GLOBAL_ALLOW_MIGRATE.load(std::sync::atomic::Ordering::SeqCst)
+        || std::env::var("ATHENEUM_MIGRATE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OpenOptions {
+    pub allow_migrate: bool,
+}
+
 pub struct AtheneumGraph {
     inner: SqliteGraph,
     embedder: Box<dyn embed::TextEmbedder>,
@@ -116,11 +135,74 @@ impl AtheneumGraph {
     }
 
     pub fn open(path: &std::path::Path) -> Result<Self> {
-        // Repair a corrupt wiki_pages_fts virtual table before the pool opens.
-        // External writers (system python3/sqlite3) can leave FTS5 shadow tables
-        // unreadable; once the pool loads the broken schema the connection is
-        // wedged for the whole process. See `db::wiki_fts::ensure_wiki_fts_healthy`.
-        crate::db::wiki_fts::ensure_wiki_fts_healthy(path)?;
+        Self::open_with_options(path, OpenOptions::default())
+    }
+
+    pub fn open_with_migrate(path: &std::path::Path) -> Result<Self> {
+        Self::open_with_options(
+            path,
+            OpenOptions {
+                allow_migrate: true,
+            },
+        )
+    }
+
+    pub fn open_with_options(path: &std::path::Path, options: OpenOptions) -> Result<Self> {
+        let allow_migrate = options.allow_migrate || is_global_allow_migrate();
+
+        // Check if an existing database is present at path.
+        let is_existing = if path.exists()
+            && std::fs::metadata(path)
+                .map(|m| m.len() > 0)
+                .unwrap_or(false)
+        {
+            let conn = rusqlite::Connection::open_with_flags(
+                path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )?;
+            let table_count: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+
+            if table_count > 0 {
+                let current_version = crate::db::get_schema_version(&conn)?;
+                if current_version > crate::db::LATEST_SCHEMA_VERSION {
+                    anyhow::bail!(
+                        "database schema version {} is newer than supported version {} (this binary only supports up to version {})",
+                        current_version,
+                        crate::db::LATEST_SCHEMA_VERSION,
+                        crate::db::LATEST_SCHEMA_VERSION
+                    );
+                }
+                let pending = crate::db::get_pending_migrations(&conn)?;
+                if !pending.is_empty() && !allow_migrate {
+                    let pending_str = pending
+                        .iter()
+                        .map(|v| v.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    anyhow::bail!(
+                        "database schema is out of date: current schema version is {}, pending migration(s): [{}]. Run `atheneum migrate {}` (or pass --migrate) to apply migrations.",
+                        current_version,
+                        pending_str,
+                        path.display()
+                    );
+                }
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if is_existing {
+            crate::db::wiki_fts::ensure_wiki_fts_healthy(path)?;
+        }
 
         let cfg = SqliteConfig::new().with_pragma("busy_timeout", "5000");
         let inner = SqliteGraph::open_with_config(path, &cfg)?;
@@ -130,9 +212,38 @@ impl AtheneumGraph {
             runtime: GraphRuntime::default(),
         };
         g.tune_sqlite()?;
-        g.run_startup_migrations()?;
+
+        if !is_existing || allow_migrate {
+            g.run_startup_migrations()?;
+        }
+
         g.build_entity_id_index()?;
         Ok(g)
+    }
+
+    /// Explicitly migrate an existing database at `path`.
+    pub fn migrate(path: &std::path::Path) -> Result<Vec<u32>> {
+        if !path.exists() {
+            anyhow::bail!("database file does not exist: {}", path.display());
+        }
+        let conn = rusqlite::Connection::open(path)?;
+        let current_version = crate::db::get_schema_version(&conn)?;
+        if current_version > crate::db::LATEST_SCHEMA_VERSION {
+            anyhow::bail!(
+                "database schema version {} is newer than supported version {} (this binary only supports up to version {})",
+                current_version,
+                crate::db::LATEST_SCHEMA_VERSION,
+                crate::db::LATEST_SCHEMA_VERSION
+            );
+        }
+        let pending = crate::db::get_pending_migrations(&conn)?;
+        if pending.is_empty() {
+            return Ok(Vec::new());
+        }
+        let applied = crate::db::run_migrations(&conn)?;
+        drop(conn);
+        crate::db::wiki_fts::ensure_wiki_fts_healthy(path)?;
+        Ok(applied)
     }
 
     fn tune_sqlite(&self) -> Result<()> {
@@ -220,7 +331,7 @@ impl AtheneumGraph {
     }
 
     fn run_startup_migrations(&self) -> Result<()> {
-        self.with_raw_connection(crate::db::run_migrations)
+        self.with_raw_connection(|c| crate::db::run_migrations(c).map(|_| ()))
     }
 
     pub fn with_raw_connection<F, R>(&self, f: F) -> Result<R>

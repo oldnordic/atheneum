@@ -6,7 +6,7 @@
 pub mod cli;
 pub mod config;
 mod cross;
-pub(crate) mod db;
+pub mod db;
 pub mod graph;
 pub mod meta;
 
@@ -24,20 +24,20 @@ pub use config::{
 };
 
 pub use graph::{
-    AgentStateEnvelope, AgentStateOutcome, AgentStateParams, AtheneumGraph, BrokenLinkMode,
-    BundleBlockerItem, BundleDecisionItem, BundleReceiptItem, BundleTaskItem, ClaimAuditReport,
-    ClaudeTranscriptImportParams, ClaudeTranscriptImportSummary, ConflictStrategy,
-    ConsolidationConfig, ConsolidationReport, DisambiguationResult, DiscoveryPreview, DreamConfig,
-    DreamFinding, DreamMode, DreamPhase, DreamReport, EdgeType, EntityType, GroundedClaim,
-    HandoffPreview, JournalSection, KanbanStatus, KanbanUpdate, LinkExternalMemoryOutcome,
-    LinkExternalMemoryParams, LintConfig, LintReport, MaintainConfig, MaintainReport, MemoryBundle,
-    MemoryExpandResponse, MemoryItemEnvelope, MemoryPatch, MemoryPreview, MemoryRouteDepth,
-    MemoryRouteFilters, MemoryRouteItem, MemoryRouteResponse, ModelInfo, NavigateQueryPlan,
-    ProjectStateEnvelope, ProjectStateOutcome, ProjectStateParams, ProvenanceData, QueryIntent,
-    RecordArtifactOutcome, RecordArtifactParams, RecordReceiptOutcome, RecordReceiptParams,
-    RecordSourceOutcome, RecordSourceParams, ResolvedEntity, RuntimeStats, SearchResult,
-    SeedMemory, UpsertAction, UpsertMemoryItemParams, UpsertMemoryOutcome, UpsertResult, WikiPage,
-    WikiSearchResult,
+    is_global_allow_migrate, set_global_allow_migrate, AgentStateEnvelope, AgentStateOutcome,
+    AgentStateParams, AtheneumGraph, BrokenLinkMode, BundleBlockerItem, BundleDecisionItem,
+    BundleReceiptItem, BundleTaskItem, ClaimAuditReport, ClaudeTranscriptImportParams,
+    ClaudeTranscriptImportSummary, ConflictStrategy, ConsolidationConfig, ConsolidationReport,
+    DisambiguationResult, DiscoveryPreview, DreamConfig, DreamFinding, DreamMode, DreamPhase,
+    DreamReport, EdgeType, EntityType, GroundedClaim, HandoffPreview, JournalSection, KanbanStatus,
+    KanbanUpdate, LinkExternalMemoryOutcome, LinkExternalMemoryParams, LintConfig, LintReport,
+    MaintainConfig, MaintainReport, MemoryBundle, MemoryExpandResponse, MemoryItemEnvelope,
+    MemoryPatch, MemoryPreview, MemoryRouteDepth, MemoryRouteFilters, MemoryRouteItem,
+    MemoryRouteResponse, ModelInfo, NavigateQueryPlan, OpenOptions, ProjectStateEnvelope,
+    ProjectStateOutcome, ProjectStateParams, ProvenanceData, QueryIntent, RecordArtifactOutcome,
+    RecordArtifactParams, RecordReceiptOutcome, RecordReceiptParams, RecordSourceOutcome,
+    RecordSourceParams, ResolvedEntity, RuntimeStats, SearchResult, SeedMemory, UpsertAction,
+    UpsertMemoryItemParams, UpsertMemoryOutcome, UpsertResult, WikiPage, WikiSearchResult,
 };
 
 // Re-export the sqlitegraph types so consumers can name them as

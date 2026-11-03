@@ -21,6 +21,10 @@ pub(crate) fn write_usage(mut writer: impl Write) -> io::Result<()> {
         writer,
         "  init <db-path>                          Initialize a new graph database"
     )?;
+    writeln!(
+        writer,
+        "  migrate <db-path>                       Apply pending schema migrations to an existing database"
+    )?;
     writeln!(writer)?;
     writeln!(writer, "GROUNDED CLAIMS:")?;
     writeln!(
@@ -521,6 +525,7 @@ pub struct CliOptions {
     pub last_synced_at: Option<String>,
     pub last_receipt: Option<String>,
     pub include_sensitive: bool,
+    pub migrate: bool,
 }
 
 /// Read a required positional argument, rejecting flag-looking values.
@@ -620,6 +625,9 @@ pub(crate) fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
             i += 1;
         } else if args[i] == "--include-sensitive" {
             opts.include_sensitive = true;
+            i += 1;
+        } else if args[i] == "--migrate" {
+            opts.migrate = true;
             i += 1;
         } else if args[i] == "--config-dir" {
             // Multi-valued flag consumed by `watch-decisions`; skipped here so
