@@ -3,7 +3,7 @@
 Embedded graph database for agent coordination — episodic memory, knowledge persistence, and session accountability across coding sessions.
 
 Part of the **grounded-coding ecosystem**.
-Current core crate release: `atheneum` `0.14.0`.
+Current core crate release: `atheneum` `0.15.0`.
 
 ## Technical Architecture
 

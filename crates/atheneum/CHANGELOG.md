@@ -5,6 +5,71 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2026-11-03
+
+### Added
+
+- **Memory Router Domain & Additive Migration v15** (`src/db/memory_router.rs`, `src/db/mod.rs`):
+  - Database schema migration v15 adding 14 guarded columns to `memory_entries`: `kind`, `title`, `summary`, `status`, `source_uri`, `evidence_json`, `content_hash`, `token_estimate`, `sensitivity`, `valid_from`, `valid_to`, `ttl_seconds`, `graph_entity_id`, and `supersedes_graph_entity_id`.
+  - Added 6 indexes on `memory_entries`: `memory_kind_idx`, `memory_status_idx`, `memory_project_kind_idx`, `memory_content_hash_idx`, `memory_graph_entity_idx`, and `memory_supersedes_graph_idx`.
+  - Created 7 new typed SQL tables with indexes:
+    - `project_states` (`project_states_project_head_idx`, `project_states_project_created_idx`)
+    - `agent_states` (`agent_states_project_idx`, `agent_states_agent_idx`, `agent_states_dispatch_idx`)
+    - `artifacts` (unique on `project_id, path, sha256`)
+    - `receipts` (`receipts_project_idx`, `receipts_task_idx`, `receipts_artifact_idx`)
+    - `sources` (unique on `project_id, uri`)
+    - `external_memory_refs` (unique on `external_store, external_id`)
+    - `router_queries` (audit tracking for router queries and omitted candidate counts)
+  - Added idempotent graph-to-SQL backfill (`backfill_memory_entries_from_graph`) linking existing `Memory` graph entities to `memory_entries.graph_entity_id` and backfilling `content_hash`.
+  - Registered 7 new `EntityType` variants in `src/graph/types.rs` and standard ontology: `ProjectState`, `AgentState`, `Artifact`, `Receipt`, `Source`, `ExternalMemoryRef`, and `RouterQuery`.
+
+- **Canonical Memory Item APIs & Conflict-Safe Routing** (`src/graph/memory_router.rs`, `src/cli/dispatch.rs`):
+  - Conflict-safe store API `upsert_memory_item` with `ConflictStrategy` (`Conflict` or `Revision`):
+    - Identical content hash: idempotent replay (`status: "unchanged"`).
+    - Different hash on identical `(key, scope, project_id)`: yields `status: "conflict"` preserving original row by default, or creates a new revision (`status: "revision_created"`) linking `supersedes_graph_entity_id` when requested.
+  - Entity lookup API `get_memory_item_by_graph_id` retrieving canonical `MemoryItemEnvelope`.
+  - Budgeted query routing API `route_memory` supporting candidate scoring, filter criteria (`project`, `kinds`, `status`, `confidence_floor`, `evidence_required`), token budgeting, and fixed depth semantics (`summary`, `bundle`, `expand`).
+  - Direct expansion API `expand_memory` returning full memory bodies for explicit graph entity IDs up to token budget.
+  - CLI subcommands:
+    - `atheneum memory-item-upsert <db-path> <key> <content> [flags] OR atheneum memory-item-upsert <db-path> --json '<json>'`
+    - `atheneum memory-item-get <db-path> <graph-entity-id>`
+    - `atheneum memory-route <db-path> [query] [--project P] [--kind K] [--kinds K1,K2] [--status S] [--confidence-floor N] [--evidence-required] [--budget B] [--depth summary|bundle|expand]`
+    - `atheneum memory-expand <db-path> <id1,id2,...> [--budget B]`
+
+- **Append-Only State, Artifact, Receipt, Source & External-Ref APIs** (`src/graph/memory_router.rs`, `src/cli/dispatch.rs`):
+  - Project state: `append_project_state` and `get_project_state_head`/`get_project_state_head_with_options` with monotonic versioning, automatic `is_head` management, token budgeting, and sensitivity filtering.
+  - Agent state: `append_agent_state` and `get_agent_state_head`/`get_agent_state_head_with_options` tracking per-agent/dispatch progress.
+  - Artifacts & Receipts: `record_artifact` (content-addressed on SHA256) and `record_receipt` (linked to artifact via `EdgeType::Verifies` with foreign key validation).
+  - Source tracking: `record_source` tracking origin URIs, authors, credibility, and content hashes.
+  - External store linking: `link_external_memory` bridging external identifiers (Hermes, Bookkeeper) to Atheneum graph entities via `EdgeType::DerivedFrom`.
+  - 8 CLI subcommands:
+    - `atheneum project-state-append <db-path> [project] [flags] OR atheneum project-state-append <db-path> --json '<json>'`
+    - `atheneum project-state-head <db-path> <project> [--budget B] [--include-sensitive]`
+    - `atheneum agent-state-append <db-path> [agent] [flags] OR atheneum agent-state-append <db-path> --json '<json>'`
+    - `atheneum agent-state-head <db-path> <agent> [--project P] [--include-sensitive]`
+    - `atheneum artifact-record <db-path> [path] [sha256] [kind] [flags] OR atheneum artifact-record <db-path> --json '<json>'`
+    - `atheneum receipt-record <db-path> [verdict] [verifier] [flags] OR atheneum receipt-record <db-path> --json '<json>'`
+    - `atheneum source-record <db-path> [uri] [source-type] [flags] OR atheneum source-record <db-path> --json '<json>'`
+    - `atheneum external-ref-link <db-path> [external-store] [external-id] [atheneum-id] [flags] OR atheneum external-ref-link <db-path> --json '<json>'`
+
+- **Ledger V2 NDJSON, Conflict-Safe Import & External Adapters** (`src/graph/ledger_v2.rs`, `src/cli/dispatch.rs`):
+  - Canonical NDJSON envelope with `record_type` discriminator (`memory`, `source`, `artifact`, `receipt`, `external_ref`).
+  - `export_ledger_v2` for streaming NDJSON exports bounded by optional kind and timestamp filters.
+  - `import_ledger_v2` with dry-run default safety (`--apply` required to mutate), line-by-line audit import map NDJSON generation, and routing through `upsert_memory_item` to eliminate legacy silent overwrite bugs.
+  - `adopt_hermes_markdown` adapter parsing Hermes Markdown sections (`§`), metadata HTML comments, base64 project IDs, kinds, and scopes into canonical NDJSON.
+  - `adopt_bookkeeper_markdown` adapter converting Bookkeeper markdown export format into canonical NDJSON with citations and source URIs preserved without copying heavy embeddings.
+  - CLI subcommands:
+    - `atheneum ledger-export-v2 <db-path> [--kinds <kinds>] [--until <rfc3339>] [--out <file>]`
+    - `atheneum ledger-import <db-path> <file.ndjson> [--apply] [--map <path>] [--revision-on-conflict]`
+    - `atheneum adopt-hermes <input-dir> --out <ndjson>`
+    - `atheneum adopt-bookkeeper <input-md> --out <ndjson>`
+
+### Security
+
+- **Strict Secret Rejection at Ingest**: Ingesting records with `sensitivity = "secret"` fails immediately with an explicit error across all memory, state, artifact, receipt, and ledger import paths.
+- **Sensitive Query & Head Filtering**: Records labeled `sensitivity = "sensitive"` are withheld by default from state head queries and memory routing unless `--include-sensitive` is explicitly passed.
+- **Export Redaction & Exclusion**: `ledger-export-v2` strictly filters out any secret-bearing entities to prevent credential leaks across machine boundaries.
+
 ## [0.14.0] - 2026-08-29
 
 ### Added

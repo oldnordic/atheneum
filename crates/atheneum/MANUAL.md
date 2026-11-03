@@ -1500,6 +1500,506 @@ Agents reading the digest are warned immediately when underlying code has diverg
 
 ---
 
+## Memory Router & Coordination Domain (v0.15.0)
+
+Migration v15 introduces the Memory Router domain: canonical typed memory, append-only project and agent states, content-addressed artifacts, verification receipts, external store links, and token-budgeted memory routing.
+
+All 16 commands emit strict machine-readable JSON to stdout, follow `<db-path>` positional conventions, and fail closed with descriptive exit codes.
+
+### 1. Canonical Memory Items
+
+#### `memory-item-upsert`
+
+Store or revise a canonical memory item with conflict safety. Dual-writes to `memory_entries` and `graph_entities` (`Memory`).
+
+```bash
+atheneum memory-item-upsert <db-path> <key> <content> [flags]
+atheneum memory-item-upsert <db-path> --json '<json>'
+```
+
+**Flags:**
+- `--kind <kind>`: Memory kind (`decision`, `lesson`, `preference`, `article`, `blocker`, etc.; default: `memory`).
+- `--title <title>`: Short human-readable title.
+- `--summary <summary>`: Bounded summary separate from full body.
+- `--project <project>`: Project identifier.
+- `--scope <scope>`: Scope (`user`, `agent`, `project`; default: `user`).
+- `--status <status>`: Status (`active`, `superseded`; default: `active`).
+- `--confidence <n>`: Confidence score float between 0.0 and 1.0 (default: `1.0`).
+- `--source-uri <uri>`: Origin file path or URI.
+- `--evidence '<json>'`: JSON array of evidence reference objects.
+- `--tags <tag1,tag2>`: Comma-separated tag list.
+- `--sensitivity <level>`: `normal` (default), `sensitive`, or `secret`. Records with `secret` are rejected at ingest.
+- `--valid-from <rfc3339>` / `--valid-to <rfc3339>`: ISO 8601 validity window.
+- `--ttl <seconds>`: Expiration time-to-live.
+- `--conflict-strategy <conflict|revision>`: Resolution behavior on content hash mismatch (default: `conflict`).
+- `--create-revision`: Convenience alias for `--conflict-strategy revision`.
+
+**Example:**
+```bash
+atheneum memory-item-upsert ./atheneum.db arch_choice "Use SQLite for all graph state" \
+    --kind decision \
+    --title "SQLite Persistence" \
+    --summary "SQLite chosen for persistence" \
+    --project atheneum \
+    --evidence '[{"file":"TECH.md"}]'
+```
+
+Output:
+```json
+{
+  "content_hash": "504f5be6dd24dd5bc22bae981a0d9e7295fe4e05509b10024d7bfe274081f416",
+  "graph_entity_id": 1,
+  "sql_id": 1,
+  "status": "created"
+}
+```
+
+If re-executed with identical content, returns `status: "unchanged"`. If executed with different content and default conflict strategy:
+```json
+{
+  "existing_content_hash": "504f5be6dd24dd5bc22bae981a0d9e7295fe4e05509b10024d7bfe274081f416",
+  "existing_graph_entity_id": 1,
+  "incoming_content_hash": "5d83661a7da2e4053daea6975c79e203efb69fb45657897b34bb3ee763362286",
+  "reason": "Memory item with key 'arch_choice' already exists with different content hash",
+  "status": "conflict"
+}
+```
+
+#### `memory-item-get`
+
+Retrieve a canonical memory item envelope by its public graph entity ID. Accepts integer ID or `memory:<id>`.
+
+```bash
+atheneum memory-item-get ./atheneum.db 1
+atheneum memory-item-get ./atheneum.db memory:1
+```
+
+Output:
+```json
+{
+  "confidence": 1.0,
+  "content": "Use SQLite for all graph state",
+  "content_hash": "504f5be6dd24dd5bc22bae981a0d9e7295fe4e05509b10024d7bfe274081f416",
+  "created_at": "2026-11-03T18:53:59.847731831+00:00",
+  "evidence": [
+    {
+      "file": "TECH.md"
+    }
+  ],
+  "graph_entity_id": 1,
+  "id": "memory:1",
+  "key": "arch_choice",
+  "kind": "decision",
+  "project_id": "atheneum",
+  "scope": "user",
+  "sensitivity": "normal",
+  "sql_id": 1,
+  "status": "active",
+  "summary": "SQLite chosen for persistence",
+  "title": "SQLite Persistence",
+  "token_estimate": 14,
+  "updated_at": "2026-11-03T18:53:59.847731831+00:00"
+}
+```
+
+#### `memory-route`
+
+Budgeted candidate routing for agents. Matches query text, filters by project and kinds, ranks results, and bounds output to a strict token budget.
+
+```bash
+atheneum memory-route <db-path> [query] [--project P] [--kind K] [--kinds K1,K2] \
+    [--status S] [--confidence-floor N] [--evidence-required] [--budget B] \
+    [--depth summary|bundle|expand]
+```
+
+**Depth levels:**
+- `summary` (default): Titles, bounded summaries, scores, token costs, and expandable IDs. Never emits full content.
+- `bundle`: Summaries plus task-relevant excerpts for subagent dispatch.
+- `expand`: Full records for matched IDs bounded by budget.
+
+**Example:**
+```bash
+atheneum memory-route ./atheneum.db "persistence" --project atheneum --depth summary --budget 800
+```
+
+Output:
+```json
+{
+  "budget_tokens": 800,
+  "budget_used": 14,
+  "depth": "summary",
+  "items": [
+    {
+      "evidence_state": "present",
+      "expandable": true,
+      "graph_entity_id": 1,
+      "id": "memory:1",
+      "kind": "decision",
+      "score": 1.0,
+      "summary": "SQLite chosen for persistence",
+      "title": "SQLite Persistence",
+      "token_cost": 14
+    }
+  ],
+  "omitted": 0,
+  "project": "atheneum",
+  "query": "persistence",
+  "warnings": []
+}
+```
+
+#### `memory-expand`
+
+Explicitly fetch full bodies for candidate IDs returned from `memory-route`.
+
+```bash
+atheneum memory-expand ./atheneum.db 1,2,3 --budget 2000
+```
+
+Output:
+```json
+{
+  "budget_tokens": 2000,
+  "budget_used": 28,
+  "items": [
+    {
+      "confidence": 1.0,
+      "content": "Use SQLite for all graph state",
+      "content_hash": "504f5be6dd24dd5bc22bae981a0d9e7295fe4e05509b10024d7bfe274081f416",
+      "created_at": "2026-11-03T18:53:59.847731831+00:00",
+      "evidence": [{"file": "TECH.md"}],
+      "graph_entity_id": 1,
+      "id": "memory:1",
+      "key": "arch_choice",
+      "kind": "decision",
+      "project_id": "atheneum",
+      "scope": "user",
+      "sensitivity": "normal",
+      "sql_id": 1,
+      "status": "active",
+      "summary": "SQLite chosen for persistence",
+      "title": "SQLite Persistence",
+      "token_estimate": 14,
+      "updated_at": "2026-11-03T18:53:59.847731831+00:00"
+    }
+  ],
+  "omitted": 0,
+  "warnings": []
+}
+```
+
+---
+
+### 2. State Tracking
+
+#### `project-state-append`
+
+Append an append-only snapshot to a project's state history. Version numbers increment monotonically; new records are marked `is_head = 1` while previous versions are cleared.
+
+```bash
+atheneum project-state-append ./atheneum.db my-project \
+    --objective "Implement Phase 2B" \
+    --state '{"task":"memory-router","phase":"2b"}' \
+    --branch "feat/memory-router" \
+    --head-sha "66f5ac3" \
+    --decisions '["dec:1","dec:2"]' \
+    --changelog "Added append-only state APIs"
+```
+
+Output:
+```json
+{
+  "graph_entity_id": 2,
+  "is_head": true,
+  "project_id": "my-project",
+  "sql_id": 1,
+  "version": 1
+}
+```
+
+#### `project-state-head`
+
+Retrieve the current head state (`is_head = 1`) for a project under a token budget. Sensitive fields and secret records are withheld unless explicitly requested.
+
+```bash
+atheneum project-state-head ./atheneum.db my-project --budget 2000
+```
+
+Output:
+```json
+{
+  "active_task_ids": [],
+  "blocker_ids": [],
+  "branch": "feat/memory-router",
+  "changelog": "Added append-only state APIs",
+  "constraints": [],
+  "created_at": "2026-11-03T19:17:13.696590997+00:00",
+  "decision_ids": ["dec:1", "dec:2"],
+  "evidence": [],
+  "graph_entity_id": 2,
+  "head_sha": "66f5ac3",
+  "id": "project_state:2",
+  "is_head": true,
+  "objective": "Implement Phase 2B",
+  "omitted_count": 0,
+  "project_id": "my-project",
+  "receipt_ids": [],
+  "sensitivity": "normal",
+  "sql_id": 1,
+  "state": {
+    "phase": "2b",
+    "task": "memory-router"
+  },
+  "token_estimate": 32,
+  "truncated": false,
+  "version": 1
+}
+```
+
+#### `agent-state-append`
+
+Record agent progress, subagent tasks, or worker execution state.
+
+```bash
+atheneum agent-state-append ./atheneum.db worker_42 \
+    --project my-project \
+    --session sess_123 \
+    --dispatch-id ctx_555 \
+    --status running \
+    --objective "Author integration tests" \
+    --budget 1200
+```
+
+Output:
+```json
+{
+  "agent_name": "worker_42",
+  "graph_entity_id": 3,
+  "sql_id": 1,
+  "status": "running",
+  "version": 1
+}
+```
+
+#### `agent-state-head`
+
+Retrieve the latest state snapshot for an agent or worker.
+
+```bash
+atheneum agent-state-head ./atheneum.db worker_42 --project my-project
+```
+
+Output:
+```json
+{
+  "agent_name": "worker_42",
+  "budget": {
+    "budget_tokens": 1200
+  },
+  "created_at": "2026-11-03T19:20:00.123456789+00:00",
+  "current_objective": "Author integration tests",
+  "dispatch_id": "ctx_555",
+  "graph_entity_id": 3,
+  "id": "agent_state:3",
+  "project_id": "my-project",
+  "sensitivity": "normal",
+  "session_id": "sess_123",
+  "sql_id": 1,
+  "state": {},
+  "status": "running",
+  "version": 1
+}
+```
+
+---
+
+### 3. Artifacts & Verification Receipts
+
+#### `artifact-record`
+
+Register a content-addressed code, binary, or test artifact. Deduplicates on `(project_id, path, sha256)`.
+
+```bash
+atheneum artifact-record ./atheneum.db \
+    crates/atheneum/src/lib.rs \
+    4a7d3b66e138a0c201a0bc19e31d4e022f18376489bb289381711812a647d6e5 \
+    source_code \
+    --project atheneum \
+    --bytes 28412 \
+    --commit-sha "66f5ac3"
+```
+
+Output:
+```json
+{
+  "graph_entity_id": 4,
+  "sha256": "4a7d3b66e138a0c201a0bc19e31d4e022f18376489bb289381711812a647d6e5",
+  "sql_id": 1,
+  "status": "created"
+}
+```
+
+#### `receipt-record`
+
+Record a verification receipt linked to an artifact graph entity ID via `EdgeType::Verifies`. Fails closed if the referenced artifact does not exist.
+
+```bash
+atheneum receipt-record ./atheneum.db passed cargo-test \
+    --project atheneum \
+    --artifact 4 \
+    --command "cargo test -p atheneum --lib" \
+    --exit-code 0 \
+    --duration-ms 1960 \
+    --output-hash "f6e5d4c3b2a1..." \
+    --output-sample "test result: ok. 143 passed"
+```
+
+Output:
+```json
+{
+  "artifact_graph_entity_id": 4,
+  "graph_entity_id": 5,
+  "sql_id": 1,
+  "status": "created",
+  "verdict": "passed"
+}
+```
+
+---
+
+### 4. Sources & External Identity References
+
+#### `source-record`
+
+Track external documentation, repositories, specs, or papers. Deduplicates on `(project_id, uri)`.
+
+```bash
+atheneum source-record ./atheneum.db "https://docs.rs/sqlitegraph" documentation \
+    --project atheneum \
+    --title "SqliteGraph Docs" \
+    --summary "Graph engine for SQLite" \
+    --credibility 1.0
+```
+
+Output:
+```json
+{
+  "graph_entity_id": 6,
+  "sql_id": 1,
+  "status": "created",
+  "uri": "https://docs.rs/sqlitegraph"
+}
+```
+
+#### `external-ref-link`
+
+Bridge external entity IDs from other systems (Hermes, Bookkeeper) to Atheneum graph entities with `EdgeType::DerivedFrom` links. Deduplicates on `(external_store, external_id)`.
+
+```bash
+atheneum external-ref-link ./atheneum.db hermes "failures.md#id=tool_quirk:d7af0c" 1 \
+    --kind "Memory" \
+    --sync-state "synced"
+```
+
+Output:
+```json
+{
+  "atheneum_graph_entity_id": 1,
+  "external_id": "failures.md#id=tool_quirk:d7af0c",
+  "external_store": "hermes",
+  "graph_entity_id": 7,
+  "sql_id": 1,
+  "status": "created"
+}
+```
+
+---
+
+### 5. Ledger V2 & Migration Adapters
+
+#### `ledger-export-v2`
+
+Stream canonical memory router entities (`memory`, `source`, `artifact`, `receipt`, `external_ref`) as NDJSON. Strictly excludes `sensitivity = "secret"`.
+
+```bash
+atheneum ledger-export-v2 ./atheneum.db --kinds memory,source,receipt --out export.ndjson
+```
+
+Output:
+```json
+{
+  "exported": {
+    "memory": 12,
+    "receipt": 5,
+    "source": 3
+  },
+  "out": "export.ndjson",
+  "status": "ok"
+}
+```
+
+#### `ledger-import`
+
+Import canonical NDJSON records into target database with conflict-safe routing. **Dry-run by default** (`--apply` required to commit mutations). Writes an audit map NDJSON tracking merged, skipped, conflict, and failed rows.
+
+```bash
+# 1. Safe dry-run (zero database mutations):
+atheneum ledger-import ./target.db export.ndjson --map import.map.ndjson
+
+# 2. Review audit map, then apply with revision creation on collisions:
+atheneum ledger-import ./target.db export.ndjson --apply --revision-on-conflict --map import.map.ndjson
+```
+
+Output:
+```json
+{
+  "conflicts": 0,
+  "dry_run": false,
+  "failed": 0,
+  "map_file": "import.map.ndjson",
+  "merged": 20,
+  "skipped": 0
+}
+```
+
+#### `adopt-hermes`
+
+Parse Hermes Markdown memory directories (`MEMORY.md`, `USER.md`, `failures.md`, and project memory subtrees) separated by section delimiter `§`. Extracts HTML comments, base64 project IDs, scopes, and content hashes into canonical NDJSON.
+
+```bash
+atheneum adopt-hermes ~/.pi/agent/pi-hermes-memory/ --out hermes-canonical.ndjson
+```
+
+Output:
+```json
+{
+  "files_scanned": 3,
+  "out": "hermes-canonical.ndjson",
+  "records_extracted": 15,
+  "status": "ok"
+}
+```
+
+#### `adopt-bookkeeper`
+
+Convert Bookkeeper Markdown exports into canonical NDJSON while preserving citation URIs and record hashes. Does not duplicate vector embeddings.
+
+```bash
+atheneum adopt-bookkeeper /path/to/bookkeeper-export.md --out bookkeeper-canonical.ndjson
+```
+
+Output:
+```json
+{
+  "out": "bookkeeper-canonical.ndjson",
+  "records_extracted": 429,
+  "source_file": "/path/to/bookkeeper-export.md",
+  "status": "ok"
+}
+```
+
+---
+
 ## Features
 
 | Feature | Default | Description |

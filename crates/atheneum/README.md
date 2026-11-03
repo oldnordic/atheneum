@@ -31,6 +31,22 @@ cargo add atheneum
 
 Atheneum is a library. Production use is via [agent-envoy](https://crates.io/crates/agent-envoy) which exposes all endpoints over HTTP (`envoy` binary). Direct embedding is for custom runtimes.
 
+## What's New In 0.15.0
+
+- **Memory Router Domain & Additive Migration v15**: Additive schema migration v15 adding 14 guarded columns and 6 indexes to `memory_entries`, creating 7 new typed SQL tables (`project_states`, `agent_states`, `artifacts`, `receipts`, `sources`, `external_memory_refs`, `router_queries`), and registering 7 new `EntityType` variants (`ProjectState`, `AgentState`, `Artifact`, `Receipt`, `Source`, `ExternalMemoryRef`, `RouterQuery`).
+- **Conflict-Safe Memory Routing & Expansion**: Introduces `upsert_memory_item` (idempotent same-hash replay, conflict rejection, and revision creation), `get_memory_item_by_graph_id`, `route_memory` (token-budgeted routing with `summary`, `bundle`, and `expand` depths), and `expand_memory`.
+- **Append-Only State History**: Project and agent state tracking with monotonic versioning, automatic `is_head` selection, and token budgeting (`append_project_state`, `get_project_state_head`, `append_agent_state`, `get_agent_state_head`).
+- **Artifacts & Verification Receipts**: Content-addressed artifact registration (`record_artifact`) linked to test/audit verification receipts (`record_receipt`) via `EdgeType::Verifies`.
+- **External Store Links & Adapters**: Identity mapping (`link_external_memory`) and conversion adapters for Hermes Markdown memory (`adopt-hermes`) and Bookkeeper exports (`adopt-bookkeeper`).
+- **Ledger V2 NDJSON Import/Export**: Conflict-safe streaming ledger format (`export_ledger_v2`, `import_ledger_v2`) with dry-run default safety and audit map generation.
+- **Strict Ingest Secret Rejection**: Ingesting records labeled `sensitivity = "secret"` fails immediately with an error, preventing credential leaks into graph or exports.
+- **16 New CLI Commands**:
+  - Memory: `memory-item-upsert`, `memory-item-get`, `memory-route`, `memory-expand`
+  - State: `project-state-append`, `project-state-head`, `agent-state-append`, `agent-state-head`
+  - Verification: `artifact-record`, `receipt-record`
+  - Sources & Links: `source-record`, `external-ref-link`
+  - Ledger & Adapters: `ledger-export-v2`, `ledger-import`, `adopt-hermes`, `adopt-bookkeeper`
+
 ## What's New In 0.14.0
 
 - **Grounded Claims & Invalidation Engine**: Links graph memories, decisions, and discoveries to live code artifacts, symbol slices, and SHA256 hashes (`grounded_claims` table, migration v14).

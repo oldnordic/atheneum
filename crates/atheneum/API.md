@@ -1082,6 +1082,616 @@ Compute SHA256 hex digest of raw bytes.
 
 ---
 
+## Memory Router & Coordination Domain
+
+Introduced in migration v15, the Memory Router domain provides canonical coordination memory, append-only project and agent states, content-addressed artifacts, verification receipts, external store links, and budgeted retrieval.
+
+### Data Structures & Types
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ConflictStrategy {
+    #[default]
+    Revision,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum MemoryRouteDepth {
+    #[default]
+    Summary,
+    Bundle,
+    Expand,
+}
+
+pub struct UpsertMemoryItemParams {
+    pub key: String,
+    pub content: String,
+    pub scope: String,
+    pub kind: String,
+    pub title: Option<String>,
+    pub summary: Option<String>,
+    pub confidence: f64,
+    pub project_id: Option<String>,
+    pub status: String,
+    pub source_uri: Option<String>,
+    pub evidence: Vec<serde_json::Value>,
+    pub content_hash: Option<String>,
+    pub token_estimate: Option<usize>,
+    pub sensitivity: String,
+    pub valid_from: Option<String>,
+    pub valid_to: Option<String>,
+    pub ttl_seconds: Option<i64>,
+    pub tags: Option<Vec<String>>,
+    pub conflict_strategy: ConflictStrategy,
+}
+
+pub enum UpsertMemoryOutcome {
+    Created { graph_entity_id: i64, sql_id: i64, content_hash: String },
+    Unchanged { graph_entity_id: i64, sql_id: i64, content_hash: String },
+    RevisionCreated { graph_entity_id: i64, sql_id: i64, supersedes_graph_entity_id: i64, content_hash: String },
+    Conflict { existing_graph_entity_id: i64, existing_content_hash: String, incoming_content_hash: String, reason: String },
+}
+
+pub struct MemoryItemEnvelope {
+    pub graph_entity_id: i64,
+    pub sql_id: Option<i64>,
+    pub id: String,
+    pub key: String,
+    pub scope: String,
+    pub kind: String,
+    pub title: Option<String>,
+    pub summary: Option<String>,
+    pub content: String,
+    pub confidence: f64,
+    pub status: String,
+    pub project_id: Option<String>,
+    pub source_uri: Option<String>,
+    pub evidence: Vec<serde_json::Value>,
+    pub content_hash: Option<String>,
+    pub token_estimate: usize,
+    pub sensitivity: String,
+    pub valid_from: Option<String>,
+    pub valid_to: Option<String>,
+    pub ttl_seconds: Option<i64>,
+    pub created_at: String,
+    pub updated_at: Option<String>,
+    pub supersedes_graph_entity_id: Option<i64>,
+}
+
+pub struct MemoryRouteFilters {
+    pub project: Option<String>,
+    pub kinds: Option<Vec<String>>,
+    pub status: Option<String>,
+    pub confidence_floor: Option<f64>,
+    pub evidence_required: bool,
+}
+
+pub struct MemoryRouteItem {
+    pub id: String,
+    pub graph_entity_id: i64,
+    pub kind: String,
+    pub title: Option<String>,
+    pub summary: Option<String>,
+    pub excerpt: Option<String>,
+    pub content: Option<String>,
+    pub score: f32,
+    pub evidence_state: String,
+    pub token_cost: usize,
+    pub expandable: bool,
+}
+
+pub struct MemoryRouteResponse {
+    pub query: String,
+    pub project: Option<String>,
+    pub budget_tokens: usize,
+    pub budget_used: usize,
+    pub depth: MemoryRouteDepth,
+    pub items: Vec<MemoryRouteItem>,
+    pub omitted: usize,
+    pub warnings: Vec<String>,
+}
+
+pub struct MemoryExpandResponse {
+    pub budget_tokens: usize,
+    pub budget_used: usize,
+    pub items: Vec<MemoryItemEnvelope>,
+    pub omitted: usize,
+}
+
+pub struct ProjectStateParams {
+    pub objective: Option<String>,
+    pub state: serde_json::Value,
+    pub branch: Option<String>,
+    pub head_sha: Option<String>,
+    pub constraints: Vec<serde_json::Value>,
+    pub active_task_ids: Vec<serde_json::Value>,
+    pub blocker_ids: Vec<serde_json::Value>,
+    pub decision_ids: Vec<serde_json::Value>,
+    pub receipt_ids: Vec<serde_json::Value>,
+    pub changelog: Option<String>,
+    pub evidence: Vec<serde_json::Value>,
+    pub token_estimate: Option<usize>,
+    pub sensitivity: String,
+}
+
+pub struct ProjectStateOutcome {
+    pub graph_entity_id: i64,
+    pub sql_id: i64,
+    pub project_id: String,
+    pub version: i64,
+    pub is_head: bool,
+}
+
+pub struct ProjectStateEnvelope {
+    pub graph_entity_id: i64,
+    pub sql_id: Option<i64>,
+    pub id: String,
+    pub project_id: String,
+    pub version: i64,
+    pub is_head: bool,
+    pub objective: Option<String>,
+    pub state: serde_json::Value,
+    pub branch: Option<String>,
+    pub head_sha: Option<String>,
+    pub constraints: Vec<serde_json::Value>,
+    pub active_task_ids: Vec<serde_json::Value>,
+    pub blocker_ids: Vec<serde_json::Value>,
+    pub decision_ids: Vec<serde_json::Value>,
+    pub receipt_ids: Vec<serde_json::Value>,
+    pub changelog: Option<String>,
+    pub evidence: Vec<serde_json::Value>,
+    pub token_estimate: usize,
+    pub sensitivity: String,
+    pub created_at: String,
+    pub truncated: bool,
+    pub omitted_count: usize,
+}
+
+pub struct AgentStateParams {
+    pub project_id: Option<String>,
+    pub session_id: Option<String>,
+    pub dispatch_id: Option<String>,
+    pub task_id: Option<i64>,
+    pub status: String,
+    pub current_objective: Option<String>,
+    pub state: serde_json::Value,
+    pub budget: serde_json::Value,
+    pub last_receipt_graph_entity_id: Option<i64>,
+    pub sensitivity: String,
+}
+
+pub struct AgentStateOutcome {
+    pub graph_entity_id: i64,
+    pub sql_id: i64,
+    pub agent_name: String,
+    pub version: i64,
+    pub status: String,
+}
+
+pub struct AgentStateEnvelope {
+    pub graph_entity_id: i64,
+    pub sql_id: Option<i64>,
+    pub id: String,
+    pub agent_name: String,
+    pub project_id: Option<String>,
+    pub session_id: Option<String>,
+    pub dispatch_id: Option<String>,
+    pub task_id: Option<i64>,
+    pub version: i64,
+    pub status: String,
+    pub current_objective: Option<String>,
+    pub state: serde_json::Value,
+    pub budget: serde_json::Value,
+    pub last_receipt_graph_entity_id: Option<i64>,
+    pub sensitivity: String,
+    pub created_at: String,
+}
+
+pub struct RecordArtifactParams {
+    pub project_id: Option<String>,
+    pub task_id: Option<i64>,
+    pub artifact_kind: String,
+    pub path: String,
+    pub sha256: String,
+    pub bytes: Option<i64>,
+    pub commit_sha: Option<String>,
+    pub created_by: Option<String>,
+    pub sensitivity: String,
+    pub metadata: serde_json::Value,
+}
+
+pub enum RecordArtifactOutcome {
+    Created { graph_entity_id: i64, sql_id: i64, sha256: String },
+    Unchanged { graph_entity_id: i64, sql_id: i64, sha256: String },
+}
+
+pub struct RecordReceiptParams {
+    pub project_id: Option<String>,
+    pub task_id: Option<i64>,
+    pub artifact_graph_entity_id: Option<i64>,
+    pub session_id: Option<String>,
+    pub verdict: String,
+    pub verifier: String,
+    pub command: Option<String>,
+    pub exit_code: Option<i32>,
+    pub duration_ms: Option<i64>,
+    pub output_hash: Option<String>,
+    pub output_sample_redacted: Option<String>,
+    pub evidence: Vec<serde_json::Value>,
+    pub sensitivity: String,
+}
+
+pub enum RecordReceiptOutcome {
+    Created {
+        graph_entity_id: i64,
+        sql_id: i64,
+        verdict: String,
+        artifact_graph_entity_id: Option<i64>,
+    },
+}
+
+pub struct RecordSourceParams {
+    pub project_id: Option<String>,
+    pub source_type: String,
+    pub uri: String,
+    pub content_hash: Option<String>,
+    pub title: Option<String>,
+    pub summary: Option<String>,
+    pub author: Option<String>,
+    pub published_at: Option<String>,
+    pub retrieved_at: Option<String>,
+    pub credibility: Option<f64>,
+    pub sensitivity: String,
+    pub metadata: serde_json::Value,
+}
+
+pub enum RecordSourceOutcome {
+    Created { graph_entity_id: i64, sql_id: i64, uri: String },
+    Unchanged { graph_entity_id: i64, sql_id: i64, uri: String },
+}
+
+pub struct LinkExternalMemoryParams {
+    pub external_store: String,
+    pub external_id: String,
+    pub atheneum_graph_entity_id: i64,
+    pub atheneum_kind: String,
+    pub content_hash: String,
+    pub sync_state: String,
+    pub last_synced_at: Option<String>,
+    pub metadata: serde_json::Value,
+}
+
+pub enum LinkExternalMemoryOutcome {
+    Created {
+        graph_entity_id: i64,
+        sql_id: i64,
+        external_store: String,
+        external_id: String,
+        atheneum_graph_entity_id: i64,
+    },
+    Unchanged {
+        graph_entity_id: i64,
+        sql_id: i64,
+        external_store: String,
+        external_id: String,
+        atheneum_graph_entity_id: i64,
+    },
+}
+
+pub struct LedgerV2Counts {
+    pub merged: u64,
+    pub skipped: u64,
+    pub conflicts: u64,
+    pub failed: u64,
+}
+
+pub struct HermesAdoptSummary {
+    pub status: String,
+    pub records_extracted: usize,
+    pub files_scanned: usize,
+    pub out: String,
+}
+
+pub struct BookkeeperAdoptSummary {
+    pub status: String,
+    pub records_extracted: usize,
+    pub source_file: String,
+    pub out: String,
+}
+```
+
+### `AtheneumGraph` Public API Methods
+
+#### `upsert_memory_item(&self, params: &UpsertMemoryItemParams) -> Result<UpsertMemoryOutcome>`
+
+Store or revise a canonical memory item with conflict safety. Dual-writes to `memory_entries` and `graph_entities` (`Memory`). Rejects `sensitivity = "secret"`.
+- If the identical `(key, scope, project_id)` exists with matching `content_hash`, returns `UpsertMemoryOutcome::Unchanged`.
+- If a hash mismatch exists, returns `UpsertMemoryOutcome::Conflict` under `ConflictStrategy::Conflict`, or marks the existing row superseded and returns `UpsertMemoryOutcome::RevisionCreated` under `ConflictStrategy::Revision`.
+
+#### `get_memory_item_by_graph_id(&self, id: i64) -> Result<Option<MemoryItemEnvelope>>`
+
+Retrieve a canonical memory item envelope by its public graph entity ID.
+
+#### `route_memory(&self, query: &str, filters: &MemoryRouteFilters, budget: usize, depth: MemoryRouteDepth) -> Result<MemoryRouteResponse>`
+
+Perform token-budgeted memory routing matching query text and filter criteria. Returns results formatted according to the requested depth (`summary`, `bundle`, or `expand`). Filters out sensitive items unless explicitly queried. Records an audit entry in `router_queries`.
+
+#### `expand_memory(&self, ids: &[String], budget: usize) -> Result<MemoryExpandResponse>`
+
+Expand full memory item envelopes for explicit graph entity IDs (prefixed with `memory:` or plain integers) up to the token budget.
+
+#### `append_project_state(&self, project: &str, params: &ProjectStateParams) -> Result<ProjectStateOutcome>`
+
+Append an append-only project state snapshot. Automatically increments version number, sets `is_head = 1`, and clears `is_head` on prior versions. Dual-writes to `project_states` and `graph_entities` (`ProjectState`). Rejects `sensitivity = "secret"`.
+
+#### `get_project_state_head(&self, project: &str, budget: usize) -> Result<Option<ProjectStateEnvelope>>`
+
+Retrieve the current head snapshot (`is_head = 1`) for a project under a token budget. Sensitive fields and secret records are withheld.
+
+#### `get_project_state_head_with_options(&self, project: &str, budget: usize, include_sensitive: bool) -> Result<Option<ProjectStateEnvelope>>`
+
+Retrieve the current project state head with explicit control over sensitive field inclusion.
+
+#### `append_agent_state(&self, agent_name: &str, params: &AgentStateParams) -> Result<AgentStateOutcome>`
+
+Append an append-only agent state version for an agent/dispatch. Monotonically increments version number. Dual-writes to `agent_states` and `graph_entities` (`AgentState`). Rejects `sensitivity = "secret"`.
+
+#### `get_agent_state_head(&self, agent_name: &str, project_id: Option<&str>) -> Result<Option<AgentStateEnvelope>>`
+
+Retrieve the latest agent state version for an agent name and optional project.
+
+#### `get_agent_state_head_with_options(&self, agent_name: &str, project_id: Option<&str>, include_sensitive: bool) -> Result<Option<AgentStateEnvelope>>`
+
+Retrieve latest agent state version with sensitivity filter control.
+
+#### `record_artifact(&self, params: &RecordArtifactParams) -> Result<RecordArtifactOutcome>`
+
+Record a content-addressed build or code artifact. Deduplicates on `(project_id, path, sha256)`. Dual-writes to `artifacts` and `graph_entities` (`Artifact`). Rejects `sensitivity = "secret"`.
+
+#### `record_receipt(&self, params: &RecordReceiptParams) -> Result<RecordReceiptOutcome>`
+
+Record an audit/gate verification receipt linked to an artifact graph entity ID via `EdgeType::Verifies`. Validates that the artifact exists in the graph. Dual-writes to `receipts` and `graph_entities` (`Receipt`). Rejects `sensitivity = "secret"`.
+
+#### `record_source(&self, params: &RecordSourceParams) -> Result<RecordSourceOutcome>`
+
+Record an external documentation, repository, or specification source reference. Deduplicates on `(project_id, uri)`. Dual-writes to `sources` and `graph_entities` (`Source`). Rejects `sensitivity = "secret"`.
+
+#### `link_external_memory(&self, params: &LinkExternalMemoryParams) -> Result<LinkExternalMemoryOutcome>`
+
+Link an external memory pointer (Hermes, Bookkeeper) to an Atheneum graph entity via `EdgeType::DerivedFrom`. Deduplicates on `(external_store, external_id)`. Dual-writes to `external_memory_refs` and `graph_entities` (`ExternalMemoryRef`).
+
+### Standalone Ledger V2 and Migration Functions
+
+#### `export_ledger_v2(graph: &AtheneumGraph, kinds: Option<&[&str]>, until: Option<&str>, mut out: impl Write) -> Result<std::collections::BTreeMap<String, u64>>`
+
+Export canonical memory router records as streaming NDJSON. Supports filtering by record kind and RFC3339 timestamp cutoff. Strictly excludes records with `sensitivity = "secret"`. Returns count per record type.
+
+#### `import_ledger_v2(graph: &AtheneumGraph, path: &Path, dry_run: bool, conflict_strategy: ConflictStrategy, mut map_out: impl Write) -> Result<LedgerV2Counts>`
+
+Import canonical NDJSON records with conflict-safe routing. Dry-run by default (`dry_run = true` performs zero SQLite mutations). Emits an audit import map NDJSON (`status: merged | skipped | conflict | would_merge | would_revision | failed`). Routes memory items through `upsert_memory_item`.
+
+#### `adopt_hermes_markdown(input_dir: &Path, mut out: impl Write) -> Result<HermesAdoptSummary>`
+
+Parse Hermes Markdown files (`MEMORY.md`, `USER.md`, `failures.md`, and project memory subdirectories) delimited by section marker `§`, extracting embedded metadata comments, base64 project IDs, scopes, and kinds into canonical NDJSON.
+
+#### `adopt_bookkeeper_markdown(input_file: &Path, mut out: impl Write) -> Result<BookkeeperAdoptSummary>`
+
+Convert Bookkeeper markdown export files into canonical NDJSON while preserving citations, source URIs, and content hashes without duplicating vector embeddings.
+
+---
+
+### CLI Subcommands Reference
+
+The memory-router domain introduces 16 first-class subcommands in the `atheneum` CLI:
+
+#### 1. `memory-item-upsert`
+```bash
+atheneum memory-item-upsert <db-path> <key> <content> [flags]
+atheneum memory-item-upsert <db-path> --json '<json>'
+```
+- **Flags:** `--kind <kind>`, `--title <title>`, `--summary <summary>`, `--project <project>`, `--scope <scope>`, `--status <status>`, `--confidence <f64>`, `--source-uri <uri>`, `--evidence '<json>'`, `--tags <tag1,tag2>`, `--sensitivity <level>`, `--valid-from <rfc3339>`, `--valid-to <rfc3339>`, `--ttl <seconds>`, `--conflict-strategy <conflict|revision>`, `--create-revision`
+- **Output:**
+```json
+{
+  "content_hash": "87b7ac45ebd26d5826e44875cff39276c40a529392135bcf6ff4364d11259dc7",
+  "graph_entity_id": 1,
+  "sql_id": 1,
+  "status": "created"
+}
+```
+
+#### 2. `memory-item-get`
+```bash
+atheneum memory-item-get <db-path> <graph-entity-id>
+```
+- **Arguments:** `<graph-entity-id>` accepts raw integer `1` or formatted ID `memory:1`.
+- **Output:** Canonical `MemoryItemEnvelope` JSON object.
+
+#### 3. `memory-route`
+```bash
+atheneum memory-route <db-path> [query] [--project P] [--kind K] [--kinds K1,K2] \
+    [--status S] [--confidence-floor N] [--evidence-required] [--budget B] \
+    [--depth summary|bundle|expand]
+```
+- **Output:** Budget-bounded `MemoryRouteResponse` JSON object with item scores, tokens, and omitted counts.
+
+#### 4. `memory-expand`
+```bash
+atheneum memory-expand <db-path> <id1,id2,...> [--budget B]
+```
+- **Arguments:** Comma-separated or whitespace-separated graph entity IDs.
+- **Output:** `MemoryExpandResponse` JSON containing full memory bodies within budget.
+
+#### 5. `project-state-append`
+```bash
+atheneum project-state-append <db-path> [project] [flags]
+atheneum project-state-append <db-path> --json '<json>'
+```
+- **Flags:** `--objective <text>`, `--state '<json>'`, `--branch <name>`, `--head-sha <sha>`, `--constraints '<json>'`, `--active-tasks '<json>'`, `--blockers '<json>'`, `--decisions '<json>'`, `--receipts '<json>'`, `--changelog <text>`, `--evidence '<json>'`, `--sensitivity <level>`
+- **Output:**
+```json
+{
+  "graph_entity_id": 2,
+  "is_head": true,
+  "project_id": "demo-proj",
+  "sql_id": 1,
+  "version": 1
+}
+```
+
+#### 6. `project-state-head`
+```bash
+atheneum project-state-head <db-path> <project> [--budget B] [--include-sensitive]
+```
+- **Output:** Full `ProjectStateEnvelope` JSON representing the active head snapshot (`is_head = 1`).
+
+#### 7. `agent-state-append`
+```bash
+atheneum agent-state-append <db-path> [agent] [flags]
+atheneum agent-state-append <db-path> --json '<json>'
+```
+- **Flags:** `--project <project>`, `--session <session>`, `--dispatch-id <id>`, `--task-id <id>`, `--status <status>`, `--objective <text>`, `--state '<json>'`, `--budget '<json>|num'`, `--last-receipt <id>`, `--sensitivity <level>`
+- **Output:**
+```json
+{
+  "agent_name": "worker-1",
+  "graph_entity_id": 3,
+  "sql_id": 1,
+  "status": "running",
+  "version": 1
+}
+```
+
+#### 8. `agent-state-head`
+```bash
+atheneum agent-state-head <db-path> <agent> [--project P] [--include-sensitive]
+```
+- **Output:** `AgentStateEnvelope` JSON representing the latest version for the agent.
+
+#### 9. `artifact-record`
+```bash
+atheneum artifact-record <db-path> [path] [sha256] [kind] [flags]
+atheneum artifact-record <db-path> --json '<json>'
+```
+- **Flags:** `--project <project>`, `--task-id <id>`, `--bytes <n>`, `--commit-sha <sha>`, `--created-by <agent>`, `--sensitivity <level>`, `--metadata '<json>'`
+- **Output:**
+```json
+{
+  "graph_entity_id": 4,
+  "sha256": "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234",
+  "sql_id": 1,
+  "status": "created"
+}
+```
+
+#### 10. `receipt-record`
+```bash
+atheneum receipt-record <db-path> [verdict] [verifier] [flags]
+atheneum receipt-record <db-path> --json '<json>'
+```
+- **Flags:** `--project <project>`, `--task-id <id>`, `--artifact <id>`, `--session <id>`, `--command <cmd>`, `--exit-code <n>`, `--duration-ms <n>`, `--output-hash <hash>`, `--output-sample <text>`, `--evidence '<json>'`, `--sensitivity <level>`
+- **Output:**
+```json
+{
+  "artifact_graph_entity_id": 4,
+  "graph_entity_id": 5,
+  "sql_id": 1,
+  "status": "created",
+  "verdict": "passed"
+}
+```
+
+#### 11. `source-record`
+```bash
+atheneum source-record <db-path> [uri] [source-type] [flags]
+atheneum source-record <db-path> --json '<json>'
+```
+- **Flags:** `--project <project>`, `--output-hash <hash>`, `--title <title>`, `--summary <summary>`, `--author <name>`, `--published-at <rfc3339>`, `--retrieved-at <rfc3339>`, `--credibility <f64>`, `--sensitivity <level>`, `--metadata '<json>'`
+- **Output:**
+```json
+{
+  "graph_entity_id": 6,
+  "sql_id": 1,
+  "status": "created",
+  "uri": "https://github.com/oldnordic/atheneum"
+}
+```
+
+#### 12. `external-ref-link`
+```bash
+atheneum external-ref-link <db-path> [external-store] [external-id] [atheneum-id] [flags]
+atheneum external-ref-link <db-path> --json '<json>'
+```
+- **Flags:** `--kind <kind>`, `--output-hash <hash>`, `--sync-state <state>`, `--last-synced-at <rfc3339>`, `--metadata '<json>'`
+- **Output:**
+```json
+{
+  "atheneum_graph_entity_id": 1,
+  "external_id": "mem_external_99",
+  "external_store": "hermes",
+  "graph_entity_id": 7,
+  "sql_id": 1,
+  "status": "created"
+}
+```
+
+#### 13. `ledger-export-v2`
+```bash
+atheneum ledger-export-v2 <db-path> [--kinds <kinds>] [--until <rfc3339>] [--out <file>]
+```
+- **Flags:** `--kinds <k1,k2>` (filters by `memory`, `source`, `artifact`, `receipt`, `external_ref`), `--until <rfc3339>` (timestamp cutoff), `--out <file>` (destination NDJSON file).
+- **Behavior:** Streams canonical NDJSON records. Excludes any entity with `sensitivity = "secret"`.
+
+#### 14. `ledger-import`
+```bash
+atheneum ledger-import <db-path> <file.ndjson> [--apply] [--map <path>] [--revision-on-conflict]
+```
+- **Flags:** `--apply` (commit mutations; default is dry-run with no SQLite writes), `--dry-run` (explicit dry-run), `--map <path>` (path for output audit NDJSON map), `--revision-on-conflict` / `--revision` (create new revision instead of recording conflict on differing hash).
+- **Output:**
+```json
+{
+  "conflicts": 0,
+  "dry_run": true,
+  "failed": 0,
+  "map_file": "target/tmp/export_demo.map.ndjson",
+  "merged": 1,
+  "skipped": 4
+}
+```
+
+#### 15. `adopt-hermes`
+```bash
+atheneum adopt-hermes <input-dir> --out <ndjson>
+```
+- **Arguments:** `<input-dir>` (directory with Hermes Markdown files), `--out <ndjson>` (destination NDJSON file).
+- **Output:**
+```json
+{
+  "files_scanned": 3,
+  "out": "target/tmp/adopt_hermes.ndjson",
+  "records_extracted": 5,
+  "status": "ok"
+}
+```
+
+#### 16. `adopt-bookkeeper`
+```bash
+atheneum adopt-bookkeeper <input-md> --out <ndjson>
+```
+- **Arguments:** `<input-md>` (Bookkeeper Markdown export file), `--out <ndjson>` (destination NDJSON file).
+- **Output:**
+```json
+{
+  "out": "target/tmp/adopt_bookkeeper.ndjson",
+  "records_extracted": 2,
+  "source_file": "tasks/atheneum-memory-router/phase3/fixtures/bookkeeper/export.md",
+  "status": "ok"
+}
+```
+
+---
+
 ## Error Types
 
 ```rust
