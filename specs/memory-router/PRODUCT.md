@@ -27,24 +27,39 @@ The system must preserve existing data. Migration and merge work must be additiv
 
 ## Current-state findings
 
-Verified read-only inspection on 2026-11-03:
+Verified read-only inspection on 2026-11-03 showed **two different Atheneum environments**. The specs must not treat them as interchangeable.
 
-- Installed CLI: `/home/feanor/.local/bin/atheneum`, version `v0.14.0`.
-- Canonical DB: `/home/feanor/.atheneum/atheneum.db`, about 3.0 GB.
-- Current graph size: 1,062,379 entities and 3,493,232 edges from `atheneum graph-stats`.
+Desktop environment:
+
+- Source checkout: `/home/feanor/Projects/atheneum`.
+- Source version: `0.14.0`.
+- Installed CLI path checked on Desktop: `/home/feanor/.local/bin/atheneum`.
+- Desktop CLI reported `v0.14.0`.
+- Desktop DB: `/home/feanor/.atheneum/atheneum.db`, about 3.0 GB.
+- Desktop graph size: 1,062,379 entities and 3,493,232 edges from `atheneum graph-stats`.
+- Desktop CLI SHA-256 differed from `/home/feanor/Projects/atheneum/target/release/atheneum`, so source/binary identity still needs Phase 0 reconciliation before any migration.
+
+Strix worker environment used by the adversarial reviewer:
+
+- Worktree: `/home/feanor/orca/workspaces/atheneum/atheneum-memory-spec-review`.
+- Base commit: `b8006051d269a6f29e40e6ff5b8f8b883f086f73`.
+- Strix `/home/feanor/.local/bin/atheneum` reported `v0.13.1`.
+- Strix installed CLI and target release binary had the same SHA-256 according to the worker, but this must be independently rechecked in Phase 0.
+- Strix DB: `/home/feanor/.atheneum/atheneum.db`, 1,499,136 bytes, 94 entities, and 16 edges according to the worker.
+
+Consequence: the large Desktop DB is the proposed canonical target, while smaller remote DBs are merge sources. Phase 0 must inventory every host-specific DB and binary before choosing the canonical target.
+
+Current source architecture:
+
 - Current source supports forward-only migrations through version 14 (`crates/atheneum/src/db/mod.rs`).
-- Current SQL domains include:
-  - execution: `agents`, `reasoning_logs`, `tool_calls`
-  - planning: `tasks`, `requirements`, `blockers`
-  - knowledge: `discoveries`, `wiki_pages`, `journal_sections`
-  - evidence: `sessions`, `commits`, `test_runs`, `bench_runs`, `releases`, `fix_chains`, `event_log`
-  - memory: `memory_entries`
-  - grounded claims: `grounded_claims`
+- Current SQL domains include execution, planning, knowledge, evidence, memory, and grounded claims.
 - `memory_entries` currently has only `key`, `scope`, `content`, `confidence`, `project_id`, `created_at`, and `updated_at` (`src/db/memory.rs`).
 - Atheneum already has ledger export/import for `Discovery`, `Memory`, and `Task`, using NDJSON and normal store paths rather than raw SQL (`src/graph/ledger.rs`).
+- Existing memory import can overwrite an existing memory with the same `(key, scope, project_id)` when the incoming content hash differs; merge behavior must be made conflict-safe before real imports.
 - `pi-atheneum` is a native Pi extension that correctly uses the Atheneum CLI rather than MCP or raw SQLite, but it only wraps search, memory get/store, discovery storage, bootstrap, and dream.
-- Memory Bookkeeper health passed with 429 active evidence-bound records and EmbeddingGemma-2 256-dimensional CPU embeddings.
-- Pi Hermes Memory is installed and searchable; its storage includes `~/.pi/agent/pi-hermes-memory/sessions.db` plus Markdown memory trees.
+- On Desktop, Memory Bookkeeper health passed with 429 active evidence-bound records and EmbeddingGemma-2 256-dimensional CPU embeddings.
+- On Desktop, Pi Hermes Memory is installed and searchable; its storage includes `~/.pi/agent/pi-hermes-memory/sessions.db` plus Markdown memory trees.
+- External stores are host-specific and may not exist on Strix workers; adapters must accept fixture inputs and explicit host paths.
 
 ## Required behavior
 
@@ -116,6 +131,12 @@ Agents must be able to ask for memory by:
 
 A query returns compact candidates first. Full bodies are fetched only through explicit expansion of selected IDs.
 
+Depth semantics are fixed:
+
+- `summary`: metadata, title, bounded summary, evidence status, score, token cost, and expandable IDs only.
+- `bundle`: a bounded collection of summaries plus short excerpts selected for a task; it still does not return full bodies.
+- `expand`: full records for explicitly selected IDs, subject to budget.
+
 ### 4. Evidence policy
 
 Memory is advisory, not proof.
@@ -123,7 +144,9 @@ Memory is advisory, not proof.
 - `decision`, `receipt`, `artifact`, and `task_state` records should carry evidence references whenever consequential.
 - The router must label records with missing evidence.
 - Fresh repository state, commands, tests, and receipts override memory.
-- Secret-bearing or sensitive records must be excluded or redacted before prompt injection.
+- Secret-bearing or sensitive records must be rejected, redacted, or classified at ingest time before storage.
+- `sensitivity=secret` records must never be prompt-injected or exported to plain NDJSON.
+- Export paths must exclude secret records and redact sensitive fields by default.
 
 ### 5. No-loss merge behavior
 
@@ -136,6 +159,7 @@ Merging Atheneum, Hermes, and Bookkeeper data must:
 - preserve source identity and source URI
 - record an import map for every imported/skipped/failed record
 - never merge by directly editing SQLite rows
+- never silently overwrite an existing memory when an imported record has the same logical key but different content; record a conflict or create a new revision
 
 Initial merge scope:
 
@@ -145,7 +169,11 @@ Initial merge scope:
 
 Raw transcript bodies and embeddings are not copied into Atheneum in the first migration. Atheneum stores references to them.
 
-### 6. Native Pi router
+### 6. Dual-layer graph invariant
+
+Every user-visible record type must remain visible to graph search, navigation, ledger export, and evidence relationships. New SQL payload tables must have corresponding graph entity kinds and dual-write paths, except for purely internal migration bookkeeping. Public IDs are graph entity IDs; SQL payload IDs are internal unless explicitly exported as `sql_id`.
+
+### 7. Native Pi router
 
 The router must be a native Pi package, not an MCP server.
 
@@ -159,7 +187,7 @@ Initial tools:
 
 The router may invoke local CLIs such as `atheneum` and `memory-bookkeeper`, but must not expose raw SQL access to the model.
 
-### 7. Subagent bundle
+### 8. Subagent bundle
 
 For Orca/agy dispatch, the router must produce a compact task bundle:
 
@@ -201,4 +229,6 @@ Workers receive this bundle; they do not receive full history.
 6. Router returns budgeted summaries with expandable IDs.
 7. Router never injects full memory bodies without explicit expansion.
 8. Native Pi load probe shows the router tools and commands without MCP.
-9. All new behavior has fail-first and bipolar tests where applicable.
+9. New user-visible records have graph entities and remain reachable through search/navigation/ledger paths.
+10. Conflicting memory imports are marked as conflicts or revisions and never silently overwrite existing content.
+11. All new behavior has fail-first and bipolar tests where applicable.
