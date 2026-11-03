@@ -132,6 +132,40 @@ pub(crate) fn write_usage(mut writer: impl Write) -> io::Result<()> {
         "  memory-bootstrap <db> [--project P] [--tokens T] [--last N]  Memories + session digest packet"
     )?;
     writeln!(writer)?;
+    writeln!(writer, "STATE, ARTIFACTS & ROUTER (PHASE 2B):")?;
+    writeln!(
+        writer,
+        "  project-state-append <db> [project] [flags]      Append append-only project state snapshot"
+    )?;
+    writeln!(
+        writer,
+        "  project-state-head <db> <project> [--budget B]   Retrieve current project state head"
+    )?;
+    writeln!(
+        writer,
+        "  agent-state-append <db> [agent] [flags]          Append append-only agent state version"
+    )?;
+    writeln!(
+        writer,
+        "  agent-state-head <db> <agent> [--project P]      Retrieve latest agent state head"
+    )?;
+    writeln!(
+        writer,
+        "  artifact-record <db> [path] [sha] [kind] [flags] Record tracked artifact (deduped)"
+    )?;
+    writeln!(
+        writer,
+        "  receipt-record <db> [verdict] [verifier] [flags] Record verification receipt linked to artifact"
+    )?;
+    writeln!(
+        writer,
+        "  source-record <db> [uri] [source-type] [flags]   Record source reference (deduped)"
+    )?;
+    writeln!(
+        writer,
+        "  external-ref-link <db> [store] [ext-id] [ge-id]  Link external memory pointer"
+    )?;
+    writeln!(writer)?;
     writeln!(writer, "DREAM:")?;
     writeln!(
         writer,
@@ -437,6 +471,36 @@ pub struct CliOptions {
     pub conflict_strategy: Option<String>,
     pub evidence_required: bool,
     pub create_revision: bool,
+    pub objective: Option<String>,
+    pub branch: Option<String>,
+    pub head_sha: Option<String>,
+    pub state: Option<String>,
+    pub constraints: Option<String>,
+    pub active_tasks: Option<String>,
+    pub blockers: Option<String>,
+    pub decisions: Option<String>,
+    pub receipts: Option<String>,
+    pub changelog: Option<String>,
+    pub dispatch_id: Option<String>,
+    pub task_id: Option<String>,
+    pub bytes: Option<String>,
+    pub commit_sha: Option<String>,
+    pub created_by: Option<String>,
+    pub metadata: Option<String>,
+    pub artifact: Option<String>,
+    pub command: Option<String>,
+    pub exit_code: Option<String>,
+    pub duration_ms: Option<String>,
+    pub output_hash: Option<String>,
+    pub output_sample: Option<String>,
+    pub author: Option<String>,
+    pub published_at: Option<String>,
+    pub retrieved_at: Option<String>,
+    pub credibility: Option<String>,
+    pub sync_state: Option<String>,
+    pub last_synced_at: Option<String>,
+    pub last_receipt: Option<String>,
+    pub include_sensitive: bool,
 }
 
 /// Read a required positional argument, rejecting flag-looking values.
@@ -534,6 +598,9 @@ pub(crate) fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
         } else if args[i] == "--create-revision" {
             opts.create_revision = true;
             i += 1;
+        } else if args[i] == "--include-sensitive" {
+            opts.include_sensitive = true;
+            i += 1;
         } else if args[i] == "--config-dir" {
             // Multi-valued flag consumed by `watch-decisions`; skipped here so
             // it isn't rejected as unknown. The arm re-scans the raw args.
@@ -595,6 +662,35 @@ pub(crate) fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
                 "--ttl" => opts.ttl = Some(value),
                 "--confidence-floor" => opts.confidence_floor = Some(value),
                 "--conflict-strategy" => opts.conflict_strategy = Some(value),
+                "--objective" => opts.objective = Some(value),
+                "--branch" => opts.branch = Some(value),
+                "--head-sha" => opts.head_sha = Some(value),
+                "--state" => opts.state = Some(value),
+                "--constraints" => opts.constraints = Some(value),
+                "--active-tasks" => opts.active_tasks = Some(value),
+                "--blockers" => opts.blockers = Some(value),
+                "--decisions" => opts.decisions = Some(value),
+                "--receipts" => opts.receipts = Some(value),
+                "--changelog" => opts.changelog = Some(value),
+                "--dispatch-id" => opts.dispatch_id = Some(value),
+                "--task-id" => opts.task_id = Some(value),
+                "--bytes" => opts.bytes = Some(value),
+                "--commit-sha" => opts.commit_sha = Some(value),
+                "--created-by" => opts.created_by = Some(value),
+                "--metadata" => opts.metadata = Some(value),
+                "--artifact" | "--artifact-id" => opts.artifact = Some(value),
+                "--command" => opts.command = Some(value),
+                "--exit-code" => opts.exit_code = Some(value),
+                "--duration-ms" => opts.duration_ms = Some(value),
+                "--output-hash" | "--content-hash" => opts.output_hash = Some(value),
+                "--output-sample" => opts.output_sample = Some(value),
+                "--author" => opts.author = Some(value),
+                "--published-at" => opts.published_at = Some(value),
+                "--retrieved-at" => opts.retrieved_at = Some(value),
+                "--credibility" => opts.credibility = Some(value),
+                "--sync-state" => opts.sync_state = Some(value),
+                "--last-synced-at" => opts.last_synced_at = Some(value),
+                "--last-receipt" => opts.last_receipt = Some(value),
                 other => anyhow::bail!("unknown option: {}", other),
             }
             i += 2;

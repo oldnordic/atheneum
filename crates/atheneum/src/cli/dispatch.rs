@@ -1810,6 +1810,428 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             let resp = graph.expand_memory(&ids, budget)?;
             print_json(serde_json::to_value(&resp)?)?;
         }
+        "project-state-append" => {
+            if args.len() < 3 {
+                eprintln!(
+                    "Usage: atheneum project-state-append <db-path> [project] [flags] OR \\\
+                     atheneum project-state-append <db-path> --json '<json>'"
+                );
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(args, 2, "db-path")?);
+            let (project, params) = if args.len() > 3 && args[3] == "--json" {
+                let raw = positional(args, 4, "json")?;
+                let content = if std::path::Path::new(raw).is_file() {
+                    std::fs::read_to_string(raw)?
+                } else {
+                    raw.to_string()
+                };
+                let val: serde_json::Value = serde_json::from_str(&content)?;
+                let project = val
+                    .get("project_id")
+                    .or_else(|| val.get("project"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("project_id is required in JSON"))?
+                    .to_string();
+                let params: crate::ProjectStateParams = serde_json::from_value(val)?;
+                (project, params)
+            } else {
+                if args.len() < 4 {
+                    eprintln!("Usage: atheneum project-state-append <db-path> <project> [flags]");
+                    std::process::exit(1);
+                }
+                let project = positional(args, 3, "project")?.to_string();
+                let opts = parse_options(&args[4..])?;
+                let state_val: serde_json::Value = if let Some(ref s) = opts.state {
+                    serde_json::from_str(s)?
+                } else {
+                    serde_json::json!({})
+                };
+                let constraints: Vec<serde_json::Value> = if let Some(ref c) = opts.constraints {
+                    serde_json::from_str(c)?
+                } else {
+                    vec![]
+                };
+                let active_task_ids: Vec<serde_json::Value> = if let Some(ref t) = opts.active_tasks
+                {
+                    serde_json::from_str(t)?
+                } else {
+                    vec![]
+                };
+                let blocker_ids: Vec<serde_json::Value> = if let Some(ref b) = opts.blockers {
+                    serde_json::from_str(b)?
+                } else {
+                    vec![]
+                };
+                let decision_ids: Vec<serde_json::Value> = if let Some(ref d) = opts.decisions {
+                    serde_json::from_str(d)?
+                } else {
+                    vec![]
+                };
+                let receipt_ids: Vec<serde_json::Value> = if let Some(ref r) = opts.receipts {
+                    serde_json::from_str(r)?
+                } else {
+                    vec![]
+                };
+                let evidence: Vec<serde_json::Value> = if let Some(ref e) = opts.evidence {
+                    serde_json::from_str(e)?
+                } else {
+                    vec![]
+                };
+                let params = crate::ProjectStateParams {
+                    objective: opts.objective,
+                    state: state_val,
+                    branch: opts.branch,
+                    head_sha: opts.head_sha,
+                    constraints,
+                    active_task_ids,
+                    blocker_ids,
+                    decision_ids,
+                    receipt_ids,
+                    changelog: opts.changelog,
+                    evidence,
+                    token_estimate: None,
+                    sensitivity: opts.sensitivity.unwrap_or_else(|| "normal".to_string()),
+                };
+                (project, params)
+            };
+            let graph = AtheneumGraph::open(&db_path)?;
+            let outcome = graph.append_project_state(&project, &params)?;
+            print_json(serde_json::to_value(&outcome)?)?;
+        }
+        "project-state-head" => {
+            if args.len() < 4 {
+                eprintln!(
+                    "Usage: atheneum project-state-head <db-path> <project> [--budget B] [--include-sensitive]"
+                );
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(args, 2, "db-path")?);
+            let project = positional(args, 3, "project")?;
+            let opts = parse_options(&args[4..])?;
+            let budget = parse_usize_option(opts.budget.as_deref(), "budget")?.unwrap_or(2000);
+            let graph = AtheneumGraph::open(&db_path)?;
+            let head = graph.get_project_state_head_with_options(
+                project,
+                budget,
+                opts.include_sensitive,
+            )?;
+            match head {
+                Some(envelope) => print_json(serde_json::to_value(&envelope)?)?,
+                None => {
+                    print_json(serde_json::json!(null))?;
+                }
+            }
+        }
+        "agent-state-append" => {
+            if args.len() < 3 {
+                eprintln!(
+                    "Usage: atheneum agent-state-append <db-path> [agent] [flags] OR \\\
+                     atheneum agent-state-append <db-path> --json '<json>'"
+                );
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(args, 2, "db-path")?);
+            let (agent, params) = if args.len() > 3 && args[3] == "--json" {
+                let raw = positional(args, 4, "json")?;
+                let content = if std::path::Path::new(raw).is_file() {
+                    std::fs::read_to_string(raw)?
+                } else {
+                    raw.to_string()
+                };
+                let val: serde_json::Value = serde_json::from_str(&content)?;
+                let agent = val
+                    .get("agent_name")
+                    .or_else(|| val.get("agent"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("agent_name is required in JSON"))?
+                    .to_string();
+                let params: crate::AgentStateParams = serde_json::from_value(val)?;
+                (agent, params)
+            } else {
+                if args.len() < 4 {
+                    eprintln!("Usage: atheneum agent-state-append <db-path> <agent> [flags]");
+                    std::process::exit(1);
+                }
+                let agent = positional(args, 3, "agent")?.to_string();
+                let opts = parse_options(&args[4..])?;
+                let state_val: serde_json::Value = if let Some(ref s) = opts.state {
+                    serde_json::from_str(s)?
+                } else {
+                    serde_json::json!({})
+                };
+                let budget_val: serde_json::Value = if let Some(ref b) = opts.budget {
+                    if b.starts_with('{') {
+                        serde_json::from_str(b)?
+                    } else {
+                        let n: u64 = b.parse().unwrap_or(0);
+                        serde_json::json!({"budget_tokens": n})
+                    }
+                } else {
+                    serde_json::json!({})
+                };
+                let task_id = parse_i64_option(opts.task_id.as_deref(), "task-id")?;
+                let last_receipt = parse_i64_option(opts.last_receipt.as_deref(), "last-receipt")?;
+                let params = crate::AgentStateParams {
+                    project_id: opts.project,
+                    session_id: opts.session,
+                    dispatch_id: opts.dispatch_id,
+                    task_id,
+                    status: opts.status.unwrap_or_else(|| "running".to_string()),
+                    current_objective: opts.objective,
+                    state: state_val,
+                    budget: budget_val,
+                    last_receipt_graph_entity_id: last_receipt,
+                    sensitivity: opts.sensitivity.unwrap_or_else(|| "normal".to_string()),
+                };
+                (agent, params)
+            };
+            let graph = AtheneumGraph::open(&db_path)?;
+            let outcome = graph.append_agent_state(&agent, &params)?;
+            print_json(serde_json::to_value(&outcome)?)?;
+        }
+        "agent-state-head" => {
+            if args.len() < 4 {
+                eprintln!(
+                    "Usage: atheneum agent-state-head <db-path> <agent> [--project P] [--include-sensitive]"
+                );
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(args, 2, "db-path")?);
+            let agent = positional(args, 3, "agent")?;
+            let opts = parse_options(&args[4..])?;
+            let graph = AtheneumGraph::open(&db_path)?;
+            let head = graph.get_agent_state_head_with_options(
+                agent,
+                opts.project.as_deref(),
+                opts.include_sensitive,
+            )?;
+            match head {
+                Some(envelope) => print_json(serde_json::to_value(&envelope)?)?,
+                None => {
+                    print_json(serde_json::json!(null))?;
+                }
+            }
+        }
+        "artifact-record" => {
+            if args.len() < 3 {
+                eprintln!(
+                    "Usage: atheneum artifact-record <db-path> [path] [sha256] [kind] [flags] OR \\\
+                     atheneum artifact-record <db-path> --json '<json>'"
+                );
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(args, 2, "db-path")?);
+            let params: crate::RecordArtifactParams = if args.len() > 3 && args[3] == "--json" {
+                let raw = positional(args, 4, "json")?;
+                let content = if std::path::Path::new(raw).is_file() {
+                    std::fs::read_to_string(raw)?
+                } else {
+                    raw.to_string()
+                };
+                serde_json::from_str(&content)?
+            } else {
+                if args.len() < 6 {
+                    eprintln!(
+                        "Usage: atheneum artifact-record <db-path> <path> <sha256> <kind> [flags]"
+                    );
+                    std::process::exit(1);
+                }
+                let path = positional(args, 3, "path")?.to_string();
+                let sha256 = positional(args, 4, "sha256")?.to_string();
+                let artifact_kind = positional(args, 5, "kind")?.to_string();
+                let opts = parse_options(&args[6..])?;
+                let bytes = parse_i64_option(opts.bytes.as_deref(), "bytes")?;
+                let task_id = parse_i64_option(opts.task_id.as_deref(), "task-id")?;
+                let metadata: serde_json::Value = if let Some(ref m) = opts.metadata {
+                    serde_json::from_str(m)?
+                } else {
+                    serde_json::json!({})
+                };
+                crate::RecordArtifactParams {
+                    project_id: opts.project,
+                    task_id,
+                    artifact_kind,
+                    path,
+                    sha256,
+                    bytes,
+                    commit_sha: opts.commit_sha,
+                    created_by: opts.created_by,
+                    sensitivity: opts.sensitivity.unwrap_or_else(|| "normal".to_string()),
+                    metadata,
+                }
+            };
+            let graph = AtheneumGraph::open(&db_path)?;
+            let outcome = graph.record_artifact(&params)?;
+            print_json(serde_json::to_value(&outcome)?)?;
+        }
+        "receipt-record" => {
+            if args.len() < 3 {
+                eprintln!(
+                    "Usage: atheneum receipt-record <db-path> [verdict] [verifier] [flags] OR \\\
+                     atheneum receipt-record <db-path> --json '<json>'"
+                );
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(args, 2, "db-path")?);
+            let params: crate::RecordReceiptParams = if args.len() > 3 && args[3] == "--json" {
+                let raw = positional(args, 4, "json")?;
+                let content = if std::path::Path::new(raw).is_file() {
+                    std::fs::read_to_string(raw)?
+                } else {
+                    raw.to_string()
+                };
+                serde_json::from_str(&content)?
+            } else {
+                if args.len() < 5 {
+                    eprintln!(
+                        "Usage: atheneum receipt-record <db-path> <verdict> <verifier> [flags]"
+                    );
+                    std::process::exit(1);
+                }
+                let verdict = positional(args, 3, "verdict")?.to_string();
+                let verifier = positional(args, 4, "verifier")?.to_string();
+                let opts = parse_options(&args[5..])?;
+                let task_id = parse_i64_option(opts.task_id.as_deref(), "task-id")?;
+                let artifact_id = parse_i64_option(opts.artifact.as_deref(), "artifact")?;
+                let exit_code = if let Some(ref ec) = opts.exit_code {
+                    Some(
+                        ec.parse::<i32>()
+                            .map_err(|e| anyhow::anyhow!("invalid exit-code: {}", e))?,
+                    )
+                } else {
+                    None
+                };
+                let duration_ms = parse_i64_option(opts.duration_ms.as_deref(), "duration-ms")?;
+                let evidence: Vec<serde_json::Value> = if let Some(ref e) = opts.evidence {
+                    serde_json::from_str(e)?
+                } else {
+                    vec![]
+                };
+                crate::RecordReceiptParams {
+                    project_id: opts.project,
+                    task_id,
+                    artifact_graph_entity_id: artifact_id,
+                    session_id: opts.session,
+                    verdict,
+                    verifier,
+                    command: opts.command,
+                    exit_code,
+                    duration_ms,
+                    output_hash: opts.output_hash,
+                    output_sample_redacted: opts.output_sample,
+                    evidence,
+                    sensitivity: opts.sensitivity.unwrap_or_else(|| "normal".to_string()),
+                }
+            };
+            let graph = AtheneumGraph::open(&db_path)?;
+            let outcome = graph.record_receipt(&params)?;
+            print_json(serde_json::to_value(&outcome)?)?;
+        }
+        "source-record" => {
+            if args.len() < 3 {
+                eprintln!(
+                    "Usage: atheneum source-record <db-path> [uri] [source-type] [flags] OR \\\
+                     atheneum source-record <db-path> --json '<json>'"
+                );
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(args, 2, "db-path")?);
+            let params: crate::RecordSourceParams = if args.len() > 3 && args[3] == "--json" {
+                let raw = positional(args, 4, "json")?;
+                let content = if std::path::Path::new(raw).is_file() {
+                    std::fs::read_to_string(raw)?
+                } else {
+                    raw.to_string()
+                };
+                serde_json::from_str(&content)?
+            } else {
+                if args.len() < 5 {
+                    eprintln!(
+                        "Usage: atheneum source-record <db-path> <uri> <source-type> [flags]"
+                    );
+                    std::process::exit(1);
+                }
+                let uri = positional(args, 3, "uri")?.to_string();
+                let source_type = positional(args, 4, "source-type")?.to_string();
+                let opts = parse_options(&args[5..])?;
+                let credibility = parse_f64_option(opts.credibility.as_deref(), "credibility")?;
+                let metadata: serde_json::Value = if let Some(ref m) = opts.metadata {
+                    serde_json::from_str(m)?
+                } else {
+                    serde_json::json!({})
+                };
+                crate::RecordSourceParams {
+                    project_id: opts.project,
+                    source_type,
+                    uri,
+                    content_hash: opts.output_hash,
+                    title: opts.title,
+                    summary: opts.summary,
+                    author: opts.author,
+                    published_at: opts.published_at,
+                    retrieved_at: opts.retrieved_at,
+                    credibility,
+                    sensitivity: opts.sensitivity.unwrap_or_else(|| "normal".to_string()),
+                    metadata,
+                }
+            };
+            let graph = AtheneumGraph::open(&db_path)?;
+            let outcome = graph.record_source(&params)?;
+            print_json(serde_json::to_value(&outcome)?)?;
+        }
+        "external-ref-link" => {
+            if args.len() < 3 {
+                eprintln!(
+                    "Usage: atheneum external-ref-link <db-path> [external-store] [external-id] [atheneum-id] [flags] OR \\\
+                     atheneum external-ref-link <db-path> --json '<json>'"
+                );
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(args, 2, "db-path")?);
+            let params: crate::LinkExternalMemoryParams = if args.len() > 3 && args[3] == "--json" {
+                let raw = positional(args, 4, "json")?;
+                let content = if std::path::Path::new(raw).is_file() {
+                    std::fs::read_to_string(raw)?
+                } else {
+                    raw.to_string()
+                };
+                serde_json::from_str(&content)?
+            } else {
+                if args.len() < 6 {
+                    eprintln!(
+                        "Usage: atheneum external-ref-link <db-path> <external-store> <external-id> <atheneum-graph-id> [flags]"
+                    );
+                    std::process::exit(1);
+                }
+                let external_store = positional(args, 3, "external-store")?.to_string();
+                let external_id = positional(args, 4, "external-id")?.to_string();
+                let atheneum_ge_id_str = positional(args, 5, "atheneum-graph-id")?;
+                let atheneum_graph_entity_id =
+                    parse_i64_arg(atheneum_ge_id_str, "atheneum-graph-id")?;
+                let opts = parse_options(&args[6..])?;
+                let atheneum_kind = opts.kind.unwrap_or_else(|| "Memory".to_string());
+                let content_hash = opts.output_hash.unwrap_or_default();
+                let metadata: serde_json::Value = if let Some(ref m) = opts.metadata {
+                    serde_json::from_str(m)?
+                } else {
+                    serde_json::json!({})
+                };
+                crate::LinkExternalMemoryParams {
+                    external_store,
+                    external_id,
+                    atheneum_graph_entity_id,
+                    atheneum_kind,
+                    content_hash,
+                    sync_state: opts.sync_state.unwrap_or_else(|| "synced".to_string()),
+                    last_synced_at: opts.last_synced_at,
+                    metadata,
+                }
+            };
+            let graph = AtheneumGraph::open(&db_path)?;
+            let outcome = graph.link_external_memory(&params)?;
+            print_json(serde_json::to_value(&outcome)?)?;
+        }
         "memory-store" => {
             if args.len() < 5 {
                 eprintln!("Usage: atheneum memory-store <db-path> <key> <content> [--scope S] [--confidence N] [--project P]");

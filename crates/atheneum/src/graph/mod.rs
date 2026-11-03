@@ -53,9 +53,12 @@ pub use extract_decisions::{run_extract, ExtractConfig, ExtractMode, ExtractStat
 pub use ledger::{export_ledger, import_ledger, LedgerCounts, LedgerKind, LedgerRecord};
 pub use lint::{BrokenLinkMode, LintConfig, LintReport, MaintainConfig, MaintainReport};
 pub use memory_router::{
-    ConflictStrategy, MemoryExpandResponse, MemoryItemEnvelope, MemoryRouteDepth,
-    MemoryRouteFilters, MemoryRouteItem, MemoryRouteResponse, UpsertMemoryItemParams,
-    UpsertMemoryOutcome,
+    AgentStateEnvelope, AgentStateOutcome, AgentStateParams, ConflictStrategy,
+    LinkExternalMemoryOutcome, LinkExternalMemoryParams, MemoryExpandResponse, MemoryItemEnvelope,
+    MemoryRouteDepth, MemoryRouteFilters, MemoryRouteItem, MemoryRouteResponse,
+    ProjectStateEnvelope, ProjectStateOutcome, ProjectStateParams, RecordArtifactOutcome,
+    RecordArtifactParams, RecordReceiptOutcome, RecordReceiptParams, RecordSourceOutcome,
+    RecordSourceParams, UpsertMemoryItemParams, UpsertMemoryOutcome,
 };
 pub use models::ModelInfo;
 pub use navigation::{estimate_entity_tokens, truncate_subgraph};
