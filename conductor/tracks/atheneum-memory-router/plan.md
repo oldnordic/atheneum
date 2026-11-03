@@ -19,6 +19,12 @@ Use:
 
 Do not mutate any candidate canonical `/home/feanor/.atheneum/atheneum.db` until the production migration phase is explicitly approved.
 
+Host storage rule from Phase 0 verification:
+
+- Desktop `/home/feanor/scratch` is local NVMe storage and is valid for durable artifacts.
+- Strix `/home/feanor/scratch` is an SSHFS symlink to the full `/mnt/Taciboss`; do not use it for builds, snapshots, or dispatch artifacts.
+- On Strix, use worktree-local `target/tmp` for `TMPDIR`, and transfer durable reports/snapshots to Desktop scratch after generation.
+
 ## Revision note
 
 The first adversarial spec review (`ctx_3bf3d2c3d506`) returned `REVISE`. The spec was updated to cover host-specific Desktop/Strix baselines, silent memory-overwrite hazards, dual-layer graph requirements, CLI collisions, public ID semantics, project-state history, ingest-time redaction, fixed depth semantics, and smaller implementation phases.
