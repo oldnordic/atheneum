@@ -25,18 +25,19 @@ pub use config::{
 
 pub use graph::{
     AgentStateEnvelope, AgentStateOutcome, AgentStateParams, AtheneumGraph, BrokenLinkMode,
-    ClaimAuditReport, ClaudeTranscriptImportParams, ClaudeTranscriptImportSummary,
-    ConflictStrategy, ConsolidationConfig, ConsolidationReport, DisambiguationResult,
-    DiscoveryPreview, DreamConfig, DreamFinding, DreamMode, DreamPhase, DreamReport, EdgeType,
-    EntityType, GroundedClaim, HandoffPreview, JournalSection, KanbanStatus, KanbanUpdate,
-    LinkExternalMemoryOutcome, LinkExternalMemoryParams, LintConfig, LintReport, MaintainConfig,
-    MaintainReport, MemoryExpandResponse, MemoryItemEnvelope, MemoryPatch, MemoryPreview,
-    MemoryRouteDepth, MemoryRouteFilters, MemoryRouteItem, MemoryRouteResponse, ModelInfo,
-    NavigateQueryPlan, ProjectStateEnvelope, ProjectStateOutcome, ProjectStateParams,
-    ProvenanceData, QueryIntent, RecordArtifactOutcome, RecordArtifactParams, RecordReceiptOutcome,
-    RecordReceiptParams, RecordSourceOutcome, RecordSourceParams, ResolvedEntity, RuntimeStats,
-    SearchResult, SeedMemory, UpsertAction, UpsertMemoryItemParams, UpsertMemoryOutcome,
-    UpsertResult, WikiPage, WikiSearchResult,
+    BundleBlockerItem, BundleDecisionItem, BundleReceiptItem, BundleTaskItem, ClaimAuditReport,
+    ClaudeTranscriptImportParams, ClaudeTranscriptImportSummary, ConflictStrategy,
+    ConsolidationConfig, ConsolidationReport, DisambiguationResult, DiscoveryPreview, DreamConfig,
+    DreamFinding, DreamMode, DreamPhase, DreamReport, EdgeType, EntityType, GroundedClaim,
+    HandoffPreview, JournalSection, KanbanStatus, KanbanUpdate, LinkExternalMemoryOutcome,
+    LinkExternalMemoryParams, LintConfig, LintReport, MaintainConfig, MaintainReport, MemoryBundle,
+    MemoryExpandResponse, MemoryItemEnvelope, MemoryPatch, MemoryPreview, MemoryRouteDepth,
+    MemoryRouteFilters, MemoryRouteItem, MemoryRouteResponse, ModelInfo, NavigateQueryPlan,
+    ProjectStateEnvelope, ProjectStateOutcome, ProjectStateParams, ProvenanceData, QueryIntent,
+    RecordArtifactOutcome, RecordArtifactParams, RecordReceiptOutcome, RecordReceiptParams,
+    RecordSourceOutcome, RecordSourceParams, ResolvedEntity, RuntimeStats, SearchResult,
+    SeedMemory, UpsertAction, UpsertMemoryItemParams, UpsertMemoryOutcome, UpsertResult, WikiPage,
+    WikiSearchResult,
 };
 
 // Re-export the sqlitegraph types so consumers can name them as

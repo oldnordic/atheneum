@@ -133,6 +133,10 @@ pub(crate) fn write_usage(mut writer: impl Write) -> io::Result<()> {
     )?;
     writeln!(
         writer,
+        "  memory-bundle <db> <objective> [flags]           Produce compact subagent task bundle"
+    )?;
+    writeln!(
+        writer,
         "  memory-store <db> <key> <content> [--scope S] [--confidence N] [--project P]  Store a memory"
     )?;
     writeln!(
