@@ -970,6 +970,213 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
                 "map_file": map_path.display().to_string(),
             }))?;
         }
+        "ledger-export-v2" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum ledger-export-v2 <db-path> [--kinds <kinds>] [--until <rfc3339>] [--out <file>]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(args, 2, "db-path")?);
+            let mut until: Option<String> = None;
+            let mut kinds: Option<Vec<String>> = None;
+            let mut out_path: Option<PathBuf> = None;
+            let mut i = 3;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--until" => {
+                        let value = args
+                            .get(i + 1)
+                            .ok_or_else(|| anyhow::anyhow!("--until requires a value"))?;
+                        until = Some(value.clone());
+                        i += 2;
+                    }
+                    "--kinds" => {
+                        let value = args
+                            .get(i + 1)
+                            .ok_or_else(|| anyhow::anyhow!("--kinds requires a value"))?;
+                        kinds = Some(
+                            value
+                                .split(',')
+                                .map(|s| s.trim().to_string())
+                                .filter(|s| !s.is_empty())
+                                .collect(),
+                        );
+                        i += 2;
+                    }
+                    "--out" => {
+                        let value = args
+                            .get(i + 1)
+                            .ok_or_else(|| anyhow::anyhow!("--out requires a value"))?;
+                        out_path = Some(PathBuf::from(value));
+                        i += 2;
+                    }
+                    other => anyhow::bail!("unknown ledger-export-v2 option: {}", other),
+                }
+            }
+            let graph = AtheneumGraph::open(&db_path)?;
+            let kinds_refs: Option<Vec<&str>> = kinds
+                .as_ref()
+                .map(|ks| ks.iter().map(|s| s.as_str()).collect());
+            if let Some(ref path) = out_path {
+                let file = std::fs::File::create(path)
+                    .map_err(|e| anyhow::anyhow!("create out file {}: {}", path.display(), e))?;
+                let counts = crate::graph::export_ledger_v2(
+                    &graph,
+                    kinds_refs.as_deref(),
+                    until.as_deref(),
+                    io::BufWriter::new(file),
+                )?;
+                print_json(json!({
+                    "status": "ok",
+                    "exported": counts,
+                    "out": path.display().to_string(),
+                }))?;
+            } else {
+                let stdout = io::stdout();
+                let counts = crate::graph::export_ledger_v2(
+                    &graph,
+                    kinds_refs.as_deref(),
+                    until.as_deref(),
+                    stdout.lock(),
+                )?;
+                let summary = counts
+                    .iter()
+                    .map(|(kind, n)| format!("{}={}", kind, n))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                eprintln!("ledger-export-v2: {}", summary);
+            }
+        }
+        "ledger-import" => {
+            if args.len() < 4 {
+                eprintln!("Usage: atheneum ledger-import <db-path> <file.ndjson> [--apply] [--map <path>] [--revision-on-conflict]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(args, 2, "db-path")?);
+            let file = PathBuf::from(positional(args, 3, "file.ndjson")?);
+            let mut dry_run = true;
+            let mut map_path: Option<PathBuf> = None;
+            let mut conflict_strategy = crate::graph::ConflictStrategy::Conflict;
+            let mut i = 4;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--apply" => {
+                        dry_run = false;
+                        i += 1;
+                    }
+                    "--dry-run" => {
+                        dry_run = true;
+                        i += 1;
+                    }
+                    "--revision-on-conflict" | "--revision" => {
+                        conflict_strategy = crate::graph::ConflictStrategy::Revision;
+                        i += 1;
+                    }
+                    "--map" => {
+                        let value = args
+                            .get(i + 1)
+                            .ok_or_else(|| anyhow::anyhow!("--map requires a value"))?;
+                        map_path = Some(PathBuf::from(value));
+                        i += 2;
+                    }
+                    other => anyhow::bail!("unknown ledger-import option: {}", other),
+                }
+            }
+            let map_path = map_path.unwrap_or_else(|| {
+                let mut name = file.clone().into_os_string();
+                name.push(".import-map.ndjson");
+                PathBuf::from(name)
+            });
+            let graph = AtheneumGraph::open(&db_path)?;
+            let map_file = std::fs::File::create(&map_path)
+                .map_err(|e| anyhow::anyhow!("create map file {}: {}", map_path.display(), e))?;
+            let counts = crate::graph::import_ledger_v2(
+                &graph,
+                &file,
+                dry_run,
+                conflict_strategy,
+                io::BufWriter::new(map_file),
+            )?;
+            print_json(json!({
+                "dry_run": dry_run,
+                "merged": counts.merged,
+                "skipped": counts.skipped,
+                "conflicts": counts.conflicts,
+                "failed": counts.failed,
+                "map_file": map_path.display().to_string(),
+            }))?;
+        }
+        "adopt-hermes" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum adopt-hermes <input-dir> --out <ndjson>");
+                std::process::exit(1);
+            }
+            let mut input_idx = 2;
+            if args[2].ends_with(".db") && args.len() >= 4 && !args[3].starts_with("--") {
+                input_idx = 3;
+            }
+            let input_dir = PathBuf::from(positional(args, input_idx, "input-dir")?);
+            let mut out_path: Option<PathBuf> = None;
+            let mut i = input_idx + 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--out" => {
+                        let value = args
+                            .get(i + 1)
+                            .ok_or_else(|| anyhow::anyhow!("--out requires a value"))?;
+                        out_path = Some(PathBuf::from(value));
+                        i += 2;
+                    }
+                    other => anyhow::bail!("unknown adopt-hermes option: {}", other),
+                }
+            }
+            let out_path = out_path.ok_or_else(|| anyhow::anyhow!("--out <ndjson> is required"))?;
+            let file = std::fs::File::create(&out_path)
+                .map_err(|e| anyhow::anyhow!("create out file {}: {}", out_path.display(), e))?;
+            let summary =
+                crate::graph::adopt_hermes_markdown(&input_dir, io::BufWriter::new(file))?;
+            print_json(json!({
+                "status": "ok",
+                "records_extracted": summary.records_extracted,
+                "files_scanned": summary.files_scanned,
+                "out": out_path.display().to_string(),
+            }))?;
+        }
+        "adopt-bookkeeper" => {
+            if args.len() < 3 {
+                eprintln!("Usage: atheneum adopt-bookkeeper <input-md> --out <ndjson>");
+                std::process::exit(1);
+            }
+            let mut input_idx = 2;
+            if args[2].ends_with(".db") && args.len() >= 4 && !args[3].starts_with("--") {
+                input_idx = 3;
+            }
+            let input_file = PathBuf::from(positional(args, input_idx, "input-md")?);
+            let mut out_path: Option<PathBuf> = None;
+            let mut i = input_idx + 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--out" => {
+                        let value = args
+                            .get(i + 1)
+                            .ok_or_else(|| anyhow::anyhow!("--out requires a value"))?;
+                        out_path = Some(PathBuf::from(value));
+                        i += 2;
+                    }
+                    other => anyhow::bail!("unknown adopt-bookkeeper option: {}", other),
+                }
+            }
+            let out_path = out_path.ok_or_else(|| anyhow::anyhow!("--out <ndjson> is required"))?;
+            let file = std::fs::File::create(&out_path)
+                .map_err(|e| anyhow::anyhow!("create out file {}: {}", out_path.display(), e))?;
+            let summary =
+                crate::graph::adopt_bookkeeper_markdown(&input_file, io::BufWriter::new(file))?;
+            print_json(json!({
+                "status": "ok",
+                "records_extracted": summary.records_extracted,
+                "source_file": summary.source_file,
+                "out": out_path.display().to_string(),
+            }))?;
+        }
         "add-edge" => {
             if args.len() < 6 {
                 eprintln!("Usage: atheneum add-edge <db-path> <from-id> <to-id> <edge-type> [metadata.json|--data 'json']");

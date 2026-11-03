@@ -69,6 +69,22 @@ pub(crate) fn write_usage(mut writer: impl Write) -> io::Result<()> {
     )?;
     writeln!(
         writer,
+        "  ledger-export-v2 <db> [--kinds K] [--until RFC3339] [--out FILE]  Export canonical NDJSON memory router records (excludes secret records)"
+    )?;
+    writeln!(
+        writer,
+        "  ledger-import <db> <file.ndjson> [--apply] [--map PATH] [--revision-on-conflict]  Import ledger NDJSON (dry-run by default, routes memory via conflict-safe upsert)"
+    )?;
+    writeln!(
+        writer,
+        "  adopt-hermes <input-dir> --out <ndjson>  Parse Hermes Markdown memory files into canonical NDJSON"
+    )?;
+    writeln!(
+        writer,
+        "  adopt-bookkeeper <input-md> --out <ndjson>  Convert Bookkeeper markdown export format into canonical NDJSON"
+    )?;
+    writeln!(
+        writer,
         "    [--session <id>] [--project <id>]  Attribute discovery to a session/project"
     )?;
     writeln!(

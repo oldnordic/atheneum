@@ -534,14 +534,80 @@ fn store_record(graph: &AtheneumGraph, record: &LedgerRecord) -> Result<i64> {
                         .collect()
                 })
             });
-            graph.store_memory(
-                key,
-                content,
-                scope,
-                confidence,
-                record.project_id.as_deref(),
-                tags.as_deref(),
-            )
+            let kind = meta
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("memory")
+                .to_string();
+            let title = meta.get("title").and_then(|v| v.as_str()).map(String::from);
+            let summary = meta
+                .get("summary")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let status = meta
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("active")
+                .to_string();
+            let source_uri = meta
+                .get("source_uri")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let evidence = meta
+                .get("evidence")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let sensitivity = meta
+                .get("sensitivity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("normal")
+                .to_string();
+
+            let outcome =
+                graph.upsert_memory_item(&super::memory_router::UpsertMemoryItemParams {
+                    key: key.to_string(),
+                    content: content.to_string(),
+                    scope: scope.to_string(),
+                    kind,
+                    title,
+                    summary,
+                    confidence,
+                    project_id: record.project_id.clone(),
+                    status,
+                    source_uri,
+                    evidence,
+                    content_hash: Some(record.content_hash.clone()),
+                    token_estimate: None,
+                    sensitivity,
+                    valid_from: meta
+                        .get("valid_from")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                    valid_to: meta
+                        .get("valid_to")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                    ttl_seconds: meta.get("ttl_seconds").and_then(|v| v.as_i64()),
+                    tags,
+                    conflict_strategy: super::memory_router::ConflictStrategy::Conflict,
+                })?;
+
+            match outcome {
+                super::memory_router::UpsertMemoryOutcome::Created {
+                    graph_entity_id, ..
+                } => Ok(graph_entity_id),
+                super::memory_router::UpsertMemoryOutcome::Unchanged {
+                    graph_entity_id, ..
+                } => Ok(graph_entity_id),
+                super::memory_router::UpsertMemoryOutcome::RevisionCreated {
+                    graph_entity_id,
+                    ..
+                } => Ok(graph_entity_id),
+                super::memory_router::UpsertMemoryOutcome::Conflict { reason, .. } => {
+                    anyhow::bail!("memory conflict: {}", reason)
+                }
+            }
         }
         Some(LedgerKind::Task) => {
             let description = record.metadata.get("description").and_then(|v| v.as_str());
