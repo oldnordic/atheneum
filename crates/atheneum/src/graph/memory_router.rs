@@ -587,6 +587,100 @@ pub enum LinkExternalMemoryOutcome {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BundleTaskItem {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BundleBlockerItem {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    pub description: String,
+    pub blocker_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BundleDecisionItem {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    pub evidence_state: String,
+    pub token_cost: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BundleReceiptItem {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verifier: Option<String>,
+    pub evidence_state: String,
+    pub token_cost: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MemoryBundle {
+    pub objective: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head_sha: Option<String>,
+    pub constraints: Vec<Value>,
+    pub active_tasks: Vec<BundleTaskItem>,
+    pub blockers: Vec<BundleBlockerItem>,
+    pub decisions: Vec<BundleDecisionItem>,
+    pub receipts: Vec<BundleReceiptItem>,
+    pub memory_ids: Vec<String>,
+    pub budget_tokens: usize,
+    pub budget_used: usize,
+    pub omitted: usize,
+    pub warnings: Vec<String>,
+}
+
+struct DbDecisionRow {
+    id: i64,
+    ge_id: Option<i64>,
+    key: String,
+    title: Option<String>,
+    summary: Option<String>,
+    ev_str: String,
+}
+
+struct DbMemReceiptRow {
+    id: i64,
+    ge_id: Option<i64>,
+    title: Option<String>,
+    summary: Option<String>,
+    ev_str: String,
+}
+
+struct DbTableReceiptRow {
+    id: i64,
+    ge_id: i64,
+    verdict: String,
+    verifier: String,
+    output_hash: Option<String>,
+    sample_redacted: Option<String>,
+    ev_str: String,
+}
+
 impl AtheneumGraph {
     /// Upsert a memory item with conflict safety.
     pub fn upsert_memory_item(
@@ -2583,6 +2677,657 @@ impl AtheneumGraph {
             atheneum_graph_entity_id: params.atheneum_graph_entity_id,
         })
     }
+
+    /// Produce a compact task bundle from project memory.
+    pub fn build_memory_bundle(
+        &self,
+        task_objective: &str,
+        project: Option<&str>,
+        budget: usize,
+    ) -> Result<MemoryBundle> {
+        self.build_memory_bundle_with_options(task_objective, project, budget, false)
+    }
+
+    /// Produce a compact task bundle from project memory with sensitivity option.
+    pub fn build_memory_bundle_with_options(
+        &self,
+        task_objective: &str,
+        project: Option<&str>,
+        budget: usize,
+        include_sensitive: bool,
+    ) -> Result<MemoryBundle> {
+        let mut warnings = Vec::new();
+        let mut omitted_count = 0usize;
+
+        // 1. Project state head
+        let (
+            branch,
+            head_sha,
+            mut constraints,
+            state_active_task_ids,
+            state_blocker_ids,
+            state_decision_ids,
+            state_receipt_ids,
+        ) = if let Some(p) = project {
+            match self.get_project_state_head_with_options(p, usize::MAX, include_sensitive)? {
+                Some(head) => {
+                    omitted_count += head.omitted_count;
+                    (
+                        head.branch,
+                        head.head_sha,
+                        head.constraints,
+                        head.active_task_ids,
+                        head.blocker_ids,
+                        head.decision_ids,
+                        head.receipt_ids,
+                    )
+                }
+                None => {
+                    warnings.push(format!("No project state head found for project '{}'", p));
+                    (
+                        None,
+                        None,
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                    )
+                }
+            }
+        } else {
+            warnings.push("No project specified; project state head omitted".to_string());
+            (
+                None,
+                None,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+        };
+
+        // 2. Active tasks from planning tables and state head
+        let mut active_tasks = Vec::new();
+        let db_tasks: Vec<(i64, String, Option<String>, String)> =
+            self.with_raw_connection(|conn| {
+                let mut sql = String::from(
+                    "SELECT id, title, description, status FROM tasks
+                 WHERE status IN ('TODO', 'IN_PROGRESS', 'BLOCKED')",
+                );
+                if let Some(p) = project {
+                    sql.push_str(&format!(
+                        " AND (project_id = '{}' OR project_id IS NULL)",
+                        p.replace('\'', "''")
+                    ));
+                }
+                sql.push_str(" ORDER BY id DESC LIMIT 50");
+                let mut stmt = conn.prepare(&sql)?;
+                let rows =
+                    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+                let mut res = Vec::new();
+                for r in rows {
+                    res.push(r?);
+                }
+                Ok(res)
+            })?;
+
+        let mut seen_tasks = std::collections::HashSet::new();
+        for (id, title, desc, status) in db_tasks {
+            let task_id_str = format!("task:{}", id);
+            seen_tasks.insert(task_id_str.clone());
+            active_tasks.push(BundleTaskItem {
+                id: task_id_str,
+                title,
+                status,
+                description: desc,
+            });
+        }
+
+        // Also merge tasks from state_active_task_ids
+        for val in state_active_task_ids {
+            let id_str = match &val {
+                Value::String(s) => s.clone(),
+                Value::Number(n) => format!("task:{}", n),
+                _ => continue,
+            };
+            if !seen_tasks.contains(&id_str) {
+                seen_tasks.insert(id_str.clone());
+                active_tasks.push(BundleTaskItem {
+                    id: id_str.clone(),
+                    title: id_str,
+                    status: "IN_PROGRESS".to_string(),
+                    description: None,
+                });
+            }
+        }
+
+        // 3. Active blockers from planning tables and state head
+        let mut blockers = Vec::new();
+        let db_blockers: Vec<(i64, Option<i64>, String, String)> =
+            self.with_raw_connection(|conn| {
+                let mut sql = String::from(
+                    "SELECT b.id, b.task_id, b.description, b.blocker_type
+                 FROM blockers b
+                 LEFT JOIN tasks t ON b.task_id = t.id
+                 WHERE b.resolved_at IS NULL",
+                );
+                if let Some(p) = project {
+                    sql.push_str(&format!(
+                        " AND (t.project_id = '{}' OR t.project_id IS NULL)",
+                        p.replace('\'', "''")
+                    ));
+                }
+                sql.push_str(" ORDER BY b.id DESC LIMIT 50");
+                let mut stmt = conn.prepare(&sql)?;
+                let rows =
+                    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+                let mut res = Vec::new();
+                for r in rows {
+                    res.push(r?);
+                }
+                Ok(res)
+            })?;
+
+        let mut seen_blockers = std::collections::HashSet::new();
+        for (id, task_id, desc, btype) in db_blockers {
+            let blocker_id_str = format!("blocker:{}", id);
+            seen_blockers.insert(blocker_id_str.clone());
+            blockers.push(BundleBlockerItem {
+                id: blocker_id_str,
+                task_id: task_id.map(|t| format!("task:{}", t)),
+                description: desc,
+                blocker_type: btype,
+            });
+        }
+
+        for val in state_blocker_ids {
+            let id_str = match &val {
+                Value::String(s) => s.clone(),
+                Value::Number(n) => format!("blocker:{}", n),
+                _ => continue,
+            };
+            if !seen_blockers.contains(&id_str) {
+                seen_blockers.insert(id_str.clone());
+                blockers.push(BundleBlockerItem {
+                    id: id_str.clone(),
+                    task_id: None,
+                    description: id_str,
+                    blocker_type: "DEPENDENCY".to_string(),
+                });
+            }
+        }
+
+        // 4. Decisions from memory_entries
+        let mut decisions = Vec::new();
+        let db_decisions: Vec<DbDecisionRow> = self.with_raw_connection(|conn| {
+            let mut sql = String::from(
+                "SELECT id, graph_entity_id, key, title, summary, evidence_json
+                 FROM memory_entries
+                 WHERE kind = 'decision'
+                   AND (status IS NULL OR status != 'superseded')
+                   AND (sensitivity IS NULL OR LOWER(sensitivity) != 'secret')",
+            );
+            if !include_sensitive {
+                sql.push_str(" AND (sensitivity IS NULL OR LOWER(sensitivity) != 'sensitive')");
+            }
+            if let Some(p) = project {
+                sql.push_str(&format!(
+                    " AND (project_id = '{}' OR project_id IS NULL)",
+                    p.replace('\'', "''")
+                ));
+            }
+            sql.push_str(" ORDER BY id DESC LIMIT 50");
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map([], |r| {
+                Ok(DbDecisionRow {
+                    id: r.get(0)?,
+                    ge_id: r.get(1)?,
+                    key: r.get(2)?,
+                    title: r.get(3)?,
+                    summary: r.get(4)?,
+                    ev_str: r.get(5)?,
+                })
+            })?;
+            let mut res = Vec::new();
+            for r in rows {
+                res.push(r?);
+            }
+            Ok(res)
+        })?;
+
+        let mut seen_decisions = std::collections::HashSet::new();
+        for row in db_decisions {
+            let eff_ge_id = row.ge_id.unwrap_or(row.id);
+            let id_str = format!("memory:{}", eff_ge_id);
+            seen_decisions.insert(id_str.clone());
+            let ev_list: Vec<Value> = serde_json::from_str(&row.ev_str).unwrap_or_default();
+            let evidence_state = if ev_list.is_empty() {
+                "evidence_missing".to_string()
+            } else {
+                "present".to_string()
+            };
+            let cost = estimate_text_tokens(&format!(
+                "{} {} {}",
+                row.key,
+                row.title.as_deref().unwrap_or_default(),
+                row.summary.as_deref().unwrap_or_default()
+            ));
+            decisions.push(BundleDecisionItem {
+                id: id_str,
+                key: Some(row.key),
+                title: row.title,
+                summary: row.summary,
+                evidence_state,
+                token_cost: cost,
+            });
+        }
+
+        // Also check decision_ids from project state
+        for val in state_decision_ids {
+            let id_str = match &val {
+                Value::String(s) => s.clone(),
+                Value::Number(n) => format!("memory:{}", n),
+                _ => continue,
+            };
+            if !seen_decisions.contains(&id_str) {
+                let num_opt = id_str
+                    .strip_prefix("memory:")
+                    .and_then(|s| s.parse::<i64>().ok());
+                if let Some(gid) = num_opt {
+                    if let Ok(Some(item)) = self.get_memory_item_by_graph_id(gid) {
+                        if item.sensitivity.eq_ignore_ascii_case("secret")
+                            || (!include_sensitive
+                                && item.sensitivity.eq_ignore_ascii_case("sensitive"))
+                        {
+                            continue;
+                        }
+                        seen_decisions.insert(id_str.clone());
+                        let ev_state = if item.evidence.is_empty() {
+                            "evidence_missing".to_string()
+                        } else {
+                            "present".to_string()
+                        };
+                        let cost = estimate_text_tokens(&format!(
+                            "{} {} {}",
+                            item.key,
+                            item.title.as_deref().unwrap_or_default(),
+                            item.summary.as_deref().unwrap_or_default()
+                        ));
+                        decisions.push(BundleDecisionItem {
+                            id: id_str,
+                            key: Some(item.key),
+                            title: item.title,
+                            summary: item.summary,
+                            evidence_state: ev_state,
+                            token_cost: cost,
+                        });
+                    }
+                }
+            }
+        }
+
+        // 5. Receipts from memory_entries and receipts table
+        let mut receipts = Vec::new();
+        let mut seen_receipts = std::collections::HashSet::new();
+
+        // 5a. From memory_entries (kind='receipt')
+        let mem_receipts: Vec<DbMemReceiptRow> = self.with_raw_connection(|conn| {
+            let mut sql = String::from(
+                "SELECT id, graph_entity_id, title, summary, evidence_json
+                 FROM memory_entries
+                 WHERE kind = 'receipt'
+                   AND (status IS NULL OR status != 'superseded')
+                   AND (sensitivity IS NULL OR LOWER(sensitivity) != 'secret')",
+            );
+            if !include_sensitive {
+                sql.push_str(" AND (sensitivity IS NULL OR LOWER(sensitivity) != 'sensitive')");
+            }
+            if let Some(p) = project {
+                sql.push_str(&format!(
+                    " AND (project_id = '{}' OR project_id IS NULL)",
+                    p.replace('\'', "''")
+                ));
+            }
+            sql.push_str(" ORDER BY id DESC LIMIT 50");
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map([], |r| {
+                Ok(DbMemReceiptRow {
+                    id: r.get(0)?,
+                    ge_id: r.get(1)?,
+                    title: r.get(2)?,
+                    summary: r.get(3)?,
+                    ev_str: r.get(4)?,
+                })
+            })?;
+            let mut res = Vec::new();
+            for r in rows {
+                res.push(r?);
+            }
+            Ok(res)
+        })?;
+
+        for row in mem_receipts {
+            let eff_ge_id = row.ge_id.unwrap_or(row.id);
+            let id_str = format!("memory:{}", eff_ge_id);
+            seen_receipts.insert(id_str.clone());
+            let ev_list: Vec<Value> = serde_json::from_str(&row.ev_str).unwrap_or_default();
+            let evidence_state = if ev_list.is_empty() {
+                "evidence_missing".to_string()
+            } else {
+                "present".to_string()
+            };
+            let cost = estimate_text_tokens(&format!(
+                "{} {}",
+                row.title.as_deref().unwrap_or_default(),
+                row.summary.as_deref().unwrap_or_default()
+            ));
+            receipts.push(BundleReceiptItem {
+                id: id_str,
+                title: row.title,
+                summary: row.summary,
+                verdict: None,
+                verifier: None,
+                evidence_state,
+                token_cost: cost,
+            });
+        }
+
+        // 5b. From receipts table
+        let table_receipts: Vec<DbTableReceiptRow> = self.with_raw_connection(|conn| {
+            let mut sql = String::from(
+                "SELECT id, graph_entity_id, verdict, verifier, output_hash, output_sample_redacted, evidence_json
+                 FROM receipts
+                 WHERE (sensitivity IS NULL OR LOWER(sensitivity) != 'secret')",
+            );
+            if !include_sensitive {
+                sql.push_str(" AND (sensitivity IS NULL OR LOWER(sensitivity) != 'sensitive')");
+            }
+            if let Some(p) = project {
+                sql.push_str(&format!(
+                    " AND (project_id = '{}' OR project_id IS NULL)",
+                    p.replace('\'', "''")
+                ));
+            }
+            sql.push_str(" ORDER BY id DESC LIMIT 50");
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map([], |r| {
+                Ok(DbTableReceiptRow {
+                    id: r.get(0)?,
+                    ge_id: r.get(1)?,
+                    verdict: r.get(2)?,
+                    verifier: r.get(3)?,
+                    output_hash: r.get(4)?,
+                    sample_redacted: r.get(5)?,
+                    ev_str: r.get(6)?,
+                })
+            })?;
+            let mut res = Vec::new();
+            for r in rows {
+                res.push(r?);
+            }
+            Ok(res)
+        })?;
+
+        for row in table_receipts {
+            let eff_ge_id = if row.ge_id != 0 { row.ge_id } else { row.id };
+            let id_str = format!("receipt:{}", eff_ge_id);
+            if !seen_receipts.contains(&id_str) {
+                seen_receipts.insert(id_str.clone());
+                let ev_list: Vec<Value> = serde_json::from_str(&row.ev_str).unwrap_or_default();
+                let has_hash = row
+                    .output_hash
+                    .as_deref()
+                    .map(|h| !h.is_empty())
+                    .unwrap_or(false);
+                let evidence_state = if ev_list.is_empty() && !has_hash {
+                    "evidence_missing".to_string()
+                } else {
+                    "present".to_string()
+                };
+                let summary_text = row.sample_redacted.unwrap_or_else(|| {
+                    format!("verdict={} verifier={}", row.verdict, row.verifier)
+                });
+                let title = format!("Receipt: {} ({})", row.verifier, row.verdict);
+                let cost = estimate_text_tokens(&format!("{} {}", title, summary_text));
+                receipts.push(BundleReceiptItem {
+                    id: id_str,
+                    title: Some(title),
+                    summary: Some(summary_text),
+                    verdict: Some(row.verdict),
+                    verifier: Some(row.verifier),
+                    evidence_state,
+                    token_cost: cost,
+                });
+            }
+        }
+
+        // Also check receipt_ids from state head
+        for val in state_receipt_ids {
+            let id_str = match &val {
+                Value::String(s) => s.clone(),
+                Value::Number(n) => format!("receipt:{}", n),
+                _ => continue,
+            };
+            if !seen_receipts.contains(&id_str) {
+                seen_receipts.insert(id_str.clone());
+                receipts.push(BundleReceiptItem {
+                    id: id_str,
+                    title: None,
+                    summary: None,
+                    verdict: None,
+                    verifier: None,
+                    evidence_state: "present".to_string(),
+                    token_cost: 10,
+                });
+            }
+        }
+
+        // Prioritize verified decisions and receipts (evidence_state == "present" first)
+        decisions.sort_by(|a, b| {
+            let a_pres = if a.evidence_state == "present" { 0 } else { 1 };
+            let b_pres = if b.evidence_state == "present" { 0 } else { 1 };
+            a_pres.cmp(&b_pres)
+        });
+        receipts.sort_by(|a, b| {
+            let a_pres = if a.evidence_state == "present" { 0 } else { 1 };
+            let b_pres = if b.evidence_state == "present" { 0 } else { 1 };
+            a_pres.cmp(&b_pres)
+        });
+
+        // 6. Query-relevant memory candidates via route_memory at summary depth
+        let mut memory_ids = Vec::new();
+        let route_filters = MemoryRouteFilters {
+            project: project.map(|s| s.to_string()),
+            kinds: None,
+            status: Some("active".to_string()),
+            confidence_floor: None,
+            evidence_required: false,
+        };
+        if let Ok(route_resp) = self.route_memory(
+            task_objective,
+            &route_filters,
+            budget,
+            MemoryRouteDepth::Summary,
+        ) {
+            for item in route_resp.items {
+                if !seen_decisions.contains(&item.id) && !seen_receipts.contains(&item.id) {
+                    // Check sensitivity
+                    if let Ok(Some(envelope)) =
+                        self.get_memory_item_by_graph_id(item.graph_entity_id)
+                    {
+                        if envelope.sensitivity.eq_ignore_ascii_case("secret")
+                            || (!include_sensitive
+                                && envelope.sensitivity.eq_ignore_ascii_case("sensitive"))
+                        {
+                            continue;
+                        }
+                    }
+                    memory_ids.push(item.id);
+                }
+            }
+        }
+
+        // 7. Token budgeting & Truncation
+        let calc_cost = |constrs: &[Value],
+                         tasks: &[BundleTaskItem],
+                         blcks: &[BundleBlockerItem],
+                         decs: &[BundleDecisionItem],
+                         recs: &[BundleReceiptItem],
+                         mids: &[String]|
+         -> usize {
+            let mut total = estimate_text_tokens(task_objective);
+            if let Some(ref b) = branch {
+                total += estimate_text_tokens(b);
+            }
+            if let Some(ref h) = head_sha {
+                total += estimate_text_tokens(h);
+            }
+            for c in constrs {
+                total += estimate_text_tokens(&c.to_string());
+            }
+            for t in tasks {
+                total += estimate_text_tokens(&t.title)
+                    + estimate_text_tokens(&t.status)
+                    + estimate_text_tokens(t.description.as_deref().unwrap_or(""))
+                    + 4;
+            }
+            for b in blcks {
+                total += estimate_text_tokens(&b.description)
+                    + estimate_text_tokens(&b.blocker_type)
+                    + 4;
+            }
+            for d in decs {
+                total += d.token_cost;
+            }
+            for r in recs {
+                total += r.token_cost;
+            }
+            for m in mids {
+                total += estimate_text_tokens(m) + 2;
+            }
+            total
+        };
+
+        let mut current_cost = calc_cost(
+            &constraints,
+            &active_tasks,
+            &blockers,
+            &decisions,
+            &receipts,
+            &memory_ids,
+        );
+
+        if budget > 0 && current_cost > budget {
+            // Truncate in reverse priority order:
+            // 1. memory_ids
+            while current_cost > budget && !memory_ids.is_empty() {
+                memory_ids.pop();
+                omitted_count += 1;
+                current_cost = calc_cost(
+                    &constraints,
+                    &active_tasks,
+                    &blockers,
+                    &decisions,
+                    &receipts,
+                    &memory_ids,
+                );
+            }
+            // 2. receipts (starting from the end, which has missing evidence first)
+            while current_cost > budget && !receipts.is_empty() {
+                receipts.pop();
+                omitted_count += 1;
+                current_cost = calc_cost(
+                    &constraints,
+                    &active_tasks,
+                    &blockers,
+                    &decisions,
+                    &receipts,
+                    &memory_ids,
+                );
+            }
+            // 3. decisions (starting from the end)
+            while current_cost > budget && !decisions.is_empty() {
+                decisions.pop();
+                omitted_count += 1;
+                current_cost = calc_cost(
+                    &constraints,
+                    &active_tasks,
+                    &blockers,
+                    &decisions,
+                    &receipts,
+                    &memory_ids,
+                );
+            }
+            // 4. blockers
+            while current_cost > budget && !blockers.is_empty() {
+                blockers.pop();
+                omitted_count += 1;
+                current_cost = calc_cost(
+                    &constraints,
+                    &active_tasks,
+                    &blockers,
+                    &decisions,
+                    &receipts,
+                    &memory_ids,
+                );
+            }
+            // 5. active tasks
+            while current_cost > budget && !active_tasks.is_empty() {
+                active_tasks.pop();
+                omitted_count += 1;
+                current_cost = calc_cost(
+                    &constraints,
+                    &active_tasks,
+                    &blockers,
+                    &decisions,
+                    &receipts,
+                    &memory_ids,
+                );
+            }
+            // 6. constraints
+            while current_cost > budget && !constraints.is_empty() {
+                constraints.pop();
+                omitted_count += 1;
+                current_cost = calc_cost(
+                    &constraints,
+                    &active_tasks,
+                    &blockers,
+                    &decisions,
+                    &receipts,
+                    &memory_ids,
+                );
+            }
+            if current_cost > budget {
+                current_cost = current_cost.min(budget);
+            }
+        }
+
+        if omitted_count > 0 {
+            warnings.push(format!(
+                "Token budget exceeded: {} item(s) omitted",
+                omitted_count
+            ));
+        }
+
+        Ok(MemoryBundle {
+            objective: task_objective.to_string(),
+            project: project.map(|p| p.to_string()),
+            branch,
+            head_sha,
+            constraints,
+            active_tasks,
+            blockers,
+            decisions,
+            receipts,
+            memory_ids,
+            budget_tokens: budget,
+            budget_used: current_cost,
+            omitted: omitted_count,
+            warnings,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -3652,5 +4397,461 @@ mod tests {
             .expect("exists");
         assert_eq!(item.key, "reg_key");
         assert_eq!(item.content, "Phase 2A Regression Content");
+    }
+
+    #[test]
+    fn test_phase5_bundle_schema_roundtrip() {
+        let bundle = MemoryBundle {
+            objective: "Ship memory-router Phase 5".to_string(),
+            project: Some("atheneum".to_string()),
+            branch: Some("atheneum/memory-router-phase5".to_string()),
+            head_sha: Some("7aad19da0c89829600e8709dacbf77b938703f7b".to_string()),
+            constraints: vec![json!("no /tmp"), json!("uv + venv only")],
+            active_tasks: vec![BundleTaskItem {
+                id: "task:1".to_string(),
+                title: "Phase 5 implementation".to_string(),
+                status: "IN_PROGRESS".to_string(),
+                description: Some("Subagent bundle producer".to_string()),
+            }],
+            blockers: vec![BundleBlockerItem {
+                id: "blocker:1".to_string(),
+                task_id: Some("task:1".to_string()),
+                description: "Waiting on schema review".to_string(),
+                blocker_type: "DEPENDENCY".to_string(),
+            }],
+            decisions: vec![BundleDecisionItem {
+                id: "memory:10".to_string(),
+                key: Some("dec_1".to_string()),
+                title: Some("Token budget limit".to_string()),
+                summary: Some("Enforce 1200 tokens default".to_string()),
+                evidence_state: "present".to_string(),
+                token_cost: 30,
+            }],
+            receipts: vec![BundleReceiptItem {
+                id: "receipt:20".to_string(),
+                title: Some("Receipt: cargo-test (passed)".to_string()),
+                summary: Some("verdict=passed verifier=cargo".to_string()),
+                verdict: Some("passed".to_string()),
+                verifier: Some("cargo".to_string()),
+                evidence_state: "present".to_string(),
+                token_cost: 25,
+            }],
+            memory_ids: vec!["memory:1".to_string(), "memory:2".to_string()],
+            budget_tokens: 1200,
+            budget_used: 180,
+            omitted: 0,
+            warnings: vec![],
+        };
+
+        let json_str = serde_json::to_string_pretty(&bundle).expect("serialize");
+        let deserialized: MemoryBundle = serde_json::from_str(&json_str).expect("deserialize");
+        assert_eq!(bundle, deserialized);
+
+        let val: Value = serde_json::from_str(&json_str).expect("parse json");
+        assert_eq!(val["objective"], "Ship memory-router Phase 5");
+        assert_eq!(val["project"], "atheneum");
+        assert_eq!(val["branch"], "atheneum/memory-router-phase5");
+        assert_eq!(val["head_sha"], "7aad19da0c89829600e8709dacbf77b938703f7b");
+        assert!(val["constraints"].is_array());
+        assert!(val["active_tasks"].is_array());
+        assert!(val["blockers"].is_array());
+        assert!(val["decisions"].is_array());
+        assert!(val["receipts"].is_array());
+        assert!(val["memory_ids"].is_array());
+        assert_eq!(val["budget_tokens"], 1200);
+        assert_eq!(val["budget_used"], 180);
+        assert_eq!(val["omitted"], 0);
+        assert!(val["warnings"].is_array());
+    }
+
+    #[test]
+    fn test_phase5_empty_project_minimal_bundle() {
+        let graph = AtheneumGraph::open_in_memory().expect("open");
+        let bundle = graph
+            .build_memory_bundle("Initial exploration", Some("nonexistent_project"), 1200)
+            .expect("build bundle");
+
+        assert_eq!(bundle.objective, "Initial exploration");
+        assert_eq!(bundle.project, Some("nonexistent_project".to_string()));
+        assert!(bundle.constraints.is_empty());
+        assert!(bundle.active_tasks.is_empty());
+        assert!(bundle.blockers.is_empty());
+        assert!(bundle.decisions.is_empty());
+        assert!(bundle.receipts.is_empty());
+        assert!(bundle.memory_ids.is_empty());
+        assert_eq!(bundle.budget_tokens, 1200);
+        assert_eq!(bundle.omitted, 0);
+        assert!(!bundle.warnings.is_empty());
+        assert!(bundle
+            .warnings
+            .iter()
+            .any(|w| w.contains("nonexistent_project") || w.contains("No project state head")));
+    }
+
+    #[test]
+    fn test_phase5_budget_truncation_with_omitted_count() {
+        let graph = AtheneumGraph::open_in_memory().expect("open");
+
+        // Seed rich state
+        let state_params = ProjectStateParams {
+            objective: Some("Project objective".to_string()),
+            state: json!({"phase": 5}),
+            branch: Some("main".to_string()),
+            head_sha: Some("abc1234".to_string()),
+            constraints: vec![
+                json!("Constraint 1: Never touch prod"),
+                json!("Constraint 2: Budget must hold"),
+                json!("Constraint 3: Strict black box"),
+            ],
+            active_task_ids: vec![json!("task:1"), json!("task:2")],
+            blocker_ids: vec![json!("blocker:1")],
+            decision_ids: vec![],
+            receipt_ids: vec![],
+            changelog: Some("Phase 5 prep".to_string()),
+            evidence: vec![],
+            token_estimate: None,
+            sensitivity: "normal".to_string(),
+        };
+        graph
+            .append_project_state("test_budget_proj", &state_params)
+            .expect("append state");
+
+        // Add memories matching query "tasks"
+        for i in 1..=5 {
+            let p = UpsertMemoryItemParams {
+                key: format!("task_key_{}", i),
+                content: format!("Memory content about tasks number {} with details", i),
+                scope: "project".to_string(),
+                kind: "memory".to_string(),
+                title: Some(format!("Task Memory {}", i)),
+                summary: Some(format!("Summary of task {}", i)),
+                confidence: 1.0,
+                project_id: Some("test_budget_proj".to_string()),
+                status: "active".to_string(),
+                source_uri: None,
+                evidence: vec![json!({"file": "test.rs"})],
+                content_hash: None,
+                token_estimate: None,
+                sensitivity: "normal".to_string(),
+                valid_from: None,
+                valid_to: None,
+                ttl_seconds: None,
+                tags: None,
+                conflict_strategy: ConflictStrategy::Revision,
+            };
+            graph.upsert_memory_item(&p).expect("upsert");
+        }
+
+        // Extremely low budget forces truncation
+        let bundle = graph
+            .build_memory_bundle("Run tasks", Some("test_budget_proj"), 40)
+            .expect("bundle");
+
+        assert!(bundle.budget_used <= 40);
+        assert!(bundle.omitted > 0);
+    }
+
+    #[test]
+    fn test_phase5_secret_and_sensitive_exclusion() {
+        let graph = AtheneumGraph::open_in_memory().expect("open");
+
+        // Store normal decision
+        let p_norm = UpsertMemoryItemParams {
+            key: "norm_dec".to_string(),
+            content: "Normal decision body".to_string(),
+            scope: "project".to_string(),
+            kind: "decision".to_string(),
+            title: Some("Normal Decision".to_string()),
+            summary: Some("Normal summary".to_string()),
+            confidence: 1.0,
+            project_id: Some("sec_proj".to_string()),
+            status: "active".to_string(),
+            source_uri: None,
+            evidence: vec![json!({"type": "review"})],
+            content_hash: None,
+            token_estimate: None,
+            sensitivity: "normal".to_string(),
+            valid_from: None,
+            valid_to: None,
+            ttl_seconds: None,
+            tags: None,
+            conflict_strategy: ConflictStrategy::Revision,
+        };
+        graph.upsert_memory_item(&p_norm).expect("upsert norm");
+
+        // Store sensitive decision
+        let p_sens = UpsertMemoryItemParams {
+            key: "sens_dec".to_string(),
+            content: "Sensitive decision body".to_string(),
+            scope: "project".to_string(),
+            kind: "decision".to_string(),
+            title: Some("Sensitive Decision".to_string()),
+            summary: Some("Sensitive summary".to_string()),
+            confidence: 1.0,
+            project_id: Some("sec_proj".to_string()),
+            status: "active".to_string(),
+            source_uri: None,
+            evidence: vec![json!({"type": "review"})],
+            content_hash: None,
+            token_estimate: None,
+            sensitivity: "sensitive".to_string(),
+            valid_from: None,
+            valid_to: None,
+            ttl_seconds: None,
+            tags: None,
+            conflict_strategy: ConflictStrategy::Revision,
+        };
+        graph.upsert_memory_item(&p_sens).expect("upsert sens");
+
+        // Ingesting secret must fail or be rejected
+        let p_sec = UpsertMemoryItemParams {
+            key: "secret_dec".to_string(),
+            content: "Secret decision body".to_string(),
+            scope: "project".to_string(),
+            kind: "decision".to_string(),
+            title: Some("Secret Decision".to_string()),
+            summary: Some("Secret summary".to_string()),
+            confidence: 1.0,
+            project_id: Some("sec_proj".to_string()),
+            status: "active".to_string(),
+            source_uri: None,
+            evidence: vec![json!({"type": "review"})],
+            content_hash: None,
+            token_estimate: None,
+            sensitivity: "secret".to_string(),
+            valid_from: None,
+            valid_to: None,
+            ttl_seconds: None,
+            tags: None,
+            conflict_strategy: ConflictStrategy::Revision,
+        };
+        assert!(graph.upsert_memory_item(&p_sec).is_err());
+
+        // Default bundle (include_sensitive = false)
+        let bundle_default = graph
+            .build_memory_bundle("Check decisions", Some("sec_proj"), 1200)
+            .expect("bundle");
+
+        assert!(bundle_default
+            .decisions
+            .iter()
+            .any(|d| d.title.as_deref() == Some("Normal Decision")));
+        assert!(!bundle_default
+            .decisions
+            .iter()
+            .any(|d| d.title.as_deref() == Some("Sensitive Decision")));
+        assert!(!bundle_default
+            .decisions
+            .iter()
+            .any(|d| d.title.as_deref() == Some("Secret Decision")));
+
+        // Bundle with include_sensitive = true
+        let bundle_with_sens = graph
+            .build_memory_bundle_with_options("Check decisions", Some("sec_proj"), 1200, true)
+            .expect("bundle");
+
+        assert!(bundle_with_sens
+            .decisions
+            .iter()
+            .any(|d| d.title.as_deref() == Some("Normal Decision")));
+        assert!(bundle_with_sens
+            .decisions
+            .iter()
+            .any(|d| d.title.as_deref() == Some("Sensitive Decision")));
+        assert!(!bundle_with_sens
+            .decisions
+            .iter()
+            .any(|d| d.title.as_deref() == Some("Secret Decision")));
+    }
+
+    #[test]
+    fn test_phase5_evidence_labeling() {
+        let graph = AtheneumGraph::open_in_memory().expect("open");
+
+        // Decision with evidence
+        let p1 = UpsertMemoryItemParams {
+            key: "ev_dec_1".to_string(),
+            content: "Decision with evidence".to_string(),
+            scope: "project".to_string(),
+            kind: "decision".to_string(),
+            title: Some("Decision With Evidence".to_string()),
+            summary: Some("Summary 1".to_string()),
+            confidence: 1.0,
+            project_id: Some("ev_proj".to_string()),
+            status: "active".to_string(),
+            source_uri: None,
+            evidence: vec![json!({"test": "verified"})],
+            content_hash: None,
+            token_estimate: None,
+            sensitivity: "normal".to_string(),
+            valid_from: None,
+            valid_to: None,
+            ttl_seconds: None,
+            tags: None,
+            conflict_strategy: ConflictStrategy::Revision,
+        };
+        graph.upsert_memory_item(&p1).expect("upsert");
+
+        // Decision without evidence
+        let p2 = UpsertMemoryItemParams {
+            key: "ev_dec_2".to_string(),
+            content: "Decision without evidence".to_string(),
+            scope: "project".to_string(),
+            kind: "decision".to_string(),
+            title: Some("Decision Without Evidence".to_string()),
+            summary: Some("Summary 2".to_string()),
+            confidence: 1.0,
+            project_id: Some("ev_proj".to_string()),
+            status: "active".to_string(),
+            source_uri: None,
+            evidence: vec![],
+            content_hash: None,
+            token_estimate: None,
+            sensitivity: "normal".to_string(),
+            valid_from: None,
+            valid_to: None,
+            ttl_seconds: None,
+            tags: None,
+            conflict_strategy: ConflictStrategy::Revision,
+        };
+        graph.upsert_memory_item(&p2).expect("upsert");
+
+        let bundle = graph
+            .build_memory_bundle("Check evidence", Some("ev_proj"), 1200)
+            .expect("bundle");
+
+        let dec1 = bundle
+            .decisions
+            .iter()
+            .find(|d| d.title.as_deref() == Some("Decision With Evidence"))
+            .expect("dec1");
+        assert_eq!(dec1.evidence_state, "present");
+
+        let dec2 = bundle
+            .decisions
+            .iter()
+            .find(|d| d.title.as_deref() == Some("Decision Without Evidence"))
+            .expect("dec2");
+        assert_eq!(dec2.evidence_state, "evidence_missing");
+    }
+
+    #[test]
+    fn test_phase5_decisions_and_receipts_inclusion() {
+        let graph = AtheneumGraph::open_in_memory().expect("open");
+
+        let p_dec = UpsertMemoryItemParams {
+            key: "rec_dec".to_string(),
+            content:
+                "Very long decision content that should never appear verbatim in the bundle body"
+                    .to_string(),
+            scope: "project".to_string(),
+            kind: "decision".to_string(),
+            title: Some("Harness owns gates".to_string()),
+            summary: Some("SkillOpt learns; harness evaluates".to_string()),
+            confidence: 1.0,
+            project_id: Some("rec_proj".to_string()),
+            status: "active".to_string(),
+            source_uri: None,
+            evidence: vec![json!({"commit": "abc"})],
+            content_hash: None,
+            token_estimate: None,
+            sensitivity: "normal".to_string(),
+            valid_from: None,
+            valid_to: None,
+            ttl_seconds: None,
+            tags: None,
+            conflict_strategy: ConflictStrategy::Revision,
+        };
+        graph.upsert_memory_item(&p_dec).expect("upsert decision");
+
+        let p_rec = RecordReceiptParams {
+            project_id: Some("rec_proj".to_string()),
+            task_id: None,
+            artifact_graph_entity_id: None,
+            session_id: None,
+            verdict: "passed".to_string(),
+            verifier: "cargo test -p atheneum".to_string(),
+            command: Some("cargo test".to_string()),
+            exit_code: Some(0),
+            duration_ms: Some(150),
+            output_hash: Some("sha256_hash_here".to_string()),
+            output_sample_redacted: Some("143 passed".to_string()),
+            evidence: vec![json!({"log": "tests-pass.log"})],
+            sensitivity: "normal".to_string(),
+        };
+        graph.record_receipt(&p_rec).expect("record receipt");
+
+        let bundle = graph
+            .build_memory_bundle("Run tests", Some("rec_proj"), 1200)
+            .expect("bundle");
+
+        assert_eq!(bundle.decisions.len(), 1);
+        assert_eq!(
+            bundle.decisions[0].title.as_deref(),
+            Some("Harness owns gates")
+        );
+        assert_eq!(
+            bundle.decisions[0].summary.as_deref(),
+            Some("SkillOpt learns; harness evaluates")
+        );
+        assert_eq!(bundle.decisions[0].evidence_state, "present");
+
+        assert_eq!(bundle.receipts.len(), 1);
+        assert_eq!(bundle.receipts[0].verdict.as_deref(), Some("passed"));
+        assert_eq!(
+            bundle.receipts[0].verifier.as_deref(),
+            Some("cargo test -p atheneum")
+        );
+        assert_eq!(bundle.receipts[0].evidence_state, "present");
+
+        // Verify full body is NOT in the serialized JSON
+        let json_str = serde_json::to_string(&bundle).expect("json");
+        assert!(!json_str.contains("Very long decision content that should never appear"));
+    }
+
+    #[test]
+    fn test_phase5_cli_json_shape() {
+        let bundle = MemoryBundle {
+            objective: "CLI shape test".to_string(),
+            project: Some("atheneum".to_string()),
+            branch: Some("master".to_string()),
+            head_sha: Some("7aad19d".to_string()),
+            constraints: vec![json!("Constraint A")],
+            active_tasks: vec![BundleTaskItem {
+                id: "task:5".to_string(),
+                title: "Active task".to_string(),
+                status: "TODO".to_string(),
+                description: None,
+            }],
+            blockers: vec![],
+            decisions: vec![],
+            receipts: vec![],
+            memory_ids: vec!["memory:99".to_string()],
+            budget_tokens: 1200,
+            budget_used: 50,
+            omitted: 0,
+            warnings: vec![],
+        };
+
+        let val = serde_json::to_value(&bundle).expect("serialize");
+        assert!(val.get("objective").is_some());
+        assert!(val.get("constraints").is_some());
+        assert!(val.get("active_tasks").is_some());
+        assert!(val.get("blockers").is_some());
+        assert!(val.get("decisions").is_some());
+        assert!(val.get("receipts").is_some());
+        assert!(val.get("memory_ids").is_some());
+        assert!(val.get("budget_tokens").is_some());
+        assert!(val.get("budget_used").is_some());
+        assert!(val.get("omitted").is_some());
+        assert!(val.get("warnings").is_some());
+
+        assert!(val["constraints"].is_array());
+        assert!(val["active_tasks"].is_array());
+        assert!(val["blockers"].is_array());
+        assert!(val["decisions"].is_array());
+        assert!(val["receipts"].is_array());
+        assert!(val["memory_ids"].is_array());
+        assert!(val["warnings"].is_array());
     }
 }

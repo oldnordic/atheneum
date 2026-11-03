@@ -2017,6 +2017,26 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             let resp = graph.expand_memory(&ids, budget)?;
             print_json(serde_json::to_value(&resp)?)?;
         }
+        "memory-bundle" => {
+            if args.len() < 4 {
+                eprintln!(
+                    "Usage: atheneum memory-bundle <db-path> <objective> [--project P] [--budget N] [--include-sensitive]"
+                );
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(args, 2, "db-path")?);
+            let objective = positional(args, 3, "objective")?;
+            let opts = parse_options(&args[4..])?;
+            let budget = parse_usize_option(opts.budget.as_deref(), "budget")?.unwrap_or(1200);
+            let graph = AtheneumGraph::open(&db_path)?;
+            let bundle = graph.build_memory_bundle_with_options(
+                objective,
+                opts.project.as_deref(),
+                budget,
+                opts.include_sensitive,
+            )?;
+            print_json(serde_json::to_value(&bundle)?)?;
+        }
         "project-state-append" => {
             if args.len() < 3 {
                 eprintln!(

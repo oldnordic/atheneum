@@ -59,8 +59,9 @@ pub use ledger_v2::{
 };
 pub use lint::{BrokenLinkMode, LintConfig, LintReport, MaintainConfig, MaintainReport};
 pub use memory_router::{
-    AgentStateEnvelope, AgentStateOutcome, AgentStateParams, ConflictStrategy,
-    LinkExternalMemoryOutcome, LinkExternalMemoryParams, MemoryExpandResponse, MemoryItemEnvelope,
+    AgentStateEnvelope, AgentStateOutcome, AgentStateParams, BundleBlockerItem, BundleDecisionItem,
+    BundleReceiptItem, BundleTaskItem, ConflictStrategy, LinkExternalMemoryOutcome,
+    LinkExternalMemoryParams, MemoryBundle, MemoryExpandResponse, MemoryItemEnvelope,
     MemoryRouteDepth, MemoryRouteFilters, MemoryRouteItem, MemoryRouteResponse,
     ProjectStateEnvelope, ProjectStateOutcome, ProjectStateParams, RecordArtifactOutcome,
     RecordArtifactParams, RecordReceiptOutcome, RecordReceiptParams, RecordSourceOutcome,
