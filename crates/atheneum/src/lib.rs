@@ -25,12 +25,14 @@ pub use config::{
 
 pub use graph::{
     AtheneumGraph, BrokenLinkMode, ClaimAuditReport, ClaudeTranscriptImportParams,
-    ClaudeTranscriptImportSummary, ConsolidationConfig, ConsolidationReport, DisambiguationResult,
-    DiscoveryPreview, DreamConfig, DreamFinding, DreamMode, DreamPhase, DreamReport, EdgeType,
-    EntityType, GroundedClaim, HandoffPreview, JournalSection, KanbanStatus, KanbanUpdate,
-    LintConfig, LintReport, MaintainConfig, MaintainReport, MemoryPatch, MemoryPreview, ModelInfo,
-    NavigateQueryPlan, ProvenanceData, QueryIntent, ResolvedEntity, RuntimeStats, SearchResult,
-    SeedMemory, UpsertAction, UpsertResult, WikiPage, WikiSearchResult,
+    ClaudeTranscriptImportSummary, ConflictStrategy, ConsolidationConfig, ConsolidationReport,
+    DisambiguationResult, DiscoveryPreview, DreamConfig, DreamFinding, DreamMode, DreamPhase,
+    DreamReport, EdgeType, EntityType, GroundedClaim, HandoffPreview, JournalSection, KanbanStatus,
+    KanbanUpdate, LintConfig, LintReport, MaintainConfig, MaintainReport, MemoryExpandResponse,
+    MemoryItemEnvelope, MemoryPatch, MemoryPreview, MemoryRouteDepth, MemoryRouteFilters,
+    MemoryRouteItem, MemoryRouteResponse, ModelInfo, NavigateQueryPlan, ProvenanceData,
+    QueryIntent, ResolvedEntity, RuntimeStats, SearchResult, SeedMemory, UpsertAction,
+    UpsertMemoryItemParams, UpsertMemoryOutcome, UpsertResult, WikiPage, WikiSearchResult,
 };
 
 // Re-export the sqlitegraph types so consumers can name them as

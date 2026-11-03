@@ -101,6 +101,22 @@ pub(crate) fn write_usage(mut writer: impl Write) -> io::Result<()> {
     writeln!(writer, "MEMORY:")?;
     writeln!(
         writer,
+        "  memory-item-upsert <db> <key> <content> [flags]  Store or revise a canonical memory item"
+    )?;
+    writeln!(
+        writer,
+        "  memory-item-get <db> <graph-entity-id>           Retrieve canonical memory item envelope"
+    )?;
+    writeln!(
+        writer,
+        "  memory-route <db> <query> [flags]                Route memories with token budget and depth"
+    )?;
+    writeln!(
+        writer,
+        "  memory-expand <db> <ids...> [--budget B]         Expand full memory item bodies"
+    )?;
+    writeln!(
+        writer,
         "  memory-store <db> <key> <content> [--scope S] [--confidence N] [--project P]  Store a memory"
     )?;
     writeln!(
@@ -409,6 +425,18 @@ pub struct CliOptions {
     pub ollama_url: Option<String>,
     pub similarity_threshold: Option<String>,
     pub swap_guard: Option<String>,
+    pub title: Option<String>,
+    pub summary: Option<String>,
+    pub source_uri: Option<String>,
+    pub evidence: Option<String>,
+    pub sensitivity: Option<String>,
+    pub valid_from: Option<String>,
+    pub valid_to: Option<String>,
+    pub ttl: Option<String>,
+    pub confidence_floor: Option<String>,
+    pub conflict_strategy: Option<String>,
+    pub evidence_required: bool,
+    pub create_revision: bool,
 }
 
 /// Read a required positional argument, rejecting flag-looking values.
@@ -500,6 +528,12 @@ pub(crate) fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
         } else if args[i] == "--trace" {
             opts.trace = true;
             i += 1;
+        } else if args[i] == "--evidence-required" {
+            opts.evidence_required = true;
+            i += 1;
+        } else if args[i] == "--create-revision" {
+            opts.create_revision = true;
+            i += 1;
         } else if args[i] == "--config-dir" {
             // Multi-valued flag consumed by `watch-decisions`; skipped here so
             // it isn't rejected as unknown. The arm re-scans the raw args.
@@ -551,6 +585,16 @@ pub(crate) fn parse_options(args: &[String]) -> anyhow::Result<CliOptions> {
                 "--ollama-url" => opts.ollama_url = Some(value),
                 "--similarity-threshold" => opts.similarity_threshold = Some(value),
                 "--swap-guard" => opts.swap_guard = Some(value),
+                "--title" => opts.title = Some(value),
+                "--summary" => opts.summary = Some(value),
+                "--source-uri" => opts.source_uri = Some(value),
+                "--evidence" => opts.evidence = Some(value),
+                "--sensitivity" => opts.sensitivity = Some(value),
+                "--valid-from" => opts.valid_from = Some(value),
+                "--valid-to" => opts.valid_to = Some(value),
+                "--ttl" => opts.ttl = Some(value),
+                "--confidence-floor" => opts.confidence_floor = Some(value),
+                "--conflict-strategy" => opts.conflict_strategy = Some(value),
                 other => anyhow::bail!("unknown option: {}", other),
             }
             i += 2;

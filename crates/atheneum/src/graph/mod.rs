@@ -29,6 +29,7 @@ pub mod ledger;
 pub mod lint;
 pub mod magellan_bridge;
 pub mod memory;
+pub mod memory_router;
 pub mod models;
 pub mod navigation;
 pub mod ontology;
@@ -51,6 +52,11 @@ pub use dream::{
 pub use extract_decisions::{run_extract, ExtractConfig, ExtractMode, ExtractStats};
 pub use ledger::{export_ledger, import_ledger, LedgerCounts, LedgerKind, LedgerRecord};
 pub use lint::{BrokenLinkMode, LintConfig, LintReport, MaintainConfig, MaintainReport};
+pub use memory_router::{
+    ConflictStrategy, MemoryExpandResponse, MemoryItemEnvelope, MemoryRouteDepth,
+    MemoryRouteFilters, MemoryRouteItem, MemoryRouteResponse, UpsertMemoryItemParams,
+    UpsertMemoryOutcome,
+};
 pub use models::ModelInfo;
 pub use navigation::{estimate_entity_tokens, truncate_subgraph};
 pub use planning::{KanbanStatus, KanbanUpdate};

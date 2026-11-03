@@ -1651,6 +1651,165 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
                 "sessions": sessions,
             }))?;
         }
+        "memory-item-upsert" => {
+            if args.len() < 3 {
+                eprintln!(
+                    "Usage: atheneum memory-item-upsert <db-path> <key> <content> [flags] OR \\\
+                     atheneum memory-item-upsert <db-path> --json '<json>'"
+                );
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(args, 2, "db-path")?);
+            let params: crate::UpsertMemoryItemParams = if args.len() > 3 && args[3] == "--json" {
+                let raw = positional(args, 4, "json")?;
+                let content = if std::path::Path::new(raw).is_file() {
+                    std::fs::read_to_string(raw)?
+                } else {
+                    raw.to_string()
+                };
+                serde_json::from_str(&content)?
+            } else {
+                if args.len() < 5 {
+                    eprintln!(
+                        "Usage: atheneum memory-item-upsert <db-path> <key> <content> [flags]"
+                    );
+                    std::process::exit(1);
+                }
+                let key = positional(args, 3, "key")?;
+                let content = positional(args, 4, "content")?;
+                let opts = parse_options(&args[5..])?;
+                let evidence: Vec<serde_json::Value> = if let Some(ref e_str) = opts.evidence {
+                    serde_json::from_str(e_str)?
+                } else {
+                    vec![]
+                };
+                let tags: Option<Vec<String>> = opts.tags.as_deref().map(|s| {
+                    s.split(',')
+                        .map(|p| p.trim().to_string())
+                        .filter(|p| !p.is_empty())
+                        .collect()
+                });
+                let confidence =
+                    parse_f64_option(opts.confidence.as_deref(), "confidence")?.unwrap_or(1.0);
+                let ttl_seconds = parse_i64_option(opts.ttl.as_deref(), "ttl")?;
+                let conflict_strategy = if opts.create_revision {
+                    crate::ConflictStrategy::Revision
+                } else {
+                    crate::ConflictStrategy::from_str_opt(opts.conflict_strategy.as_deref())
+                };
+
+                crate::UpsertMemoryItemParams {
+                    key: key.to_string(),
+                    content: content.to_string(),
+                    scope: opts.scope.unwrap_or_else(|| "user".to_string()),
+                    kind: opts.kind.unwrap_or_else(|| "memory".to_string()),
+                    title: opts.title,
+                    summary: opts.summary,
+                    confidence,
+                    project_id: opts.project,
+                    status: opts.status.unwrap_or_else(|| "active".to_string()),
+                    source_uri: opts.source_uri,
+                    evidence,
+                    content_hash: None,
+                    token_estimate: None,
+                    sensitivity: opts.sensitivity.unwrap_or_else(|| "normal".to_string()),
+                    valid_from: opts.valid_from,
+                    valid_to: opts.valid_to,
+                    ttl_seconds,
+                    tags,
+                    conflict_strategy,
+                }
+            };
+
+            let graph = AtheneumGraph::open(&db_path)?;
+            let outcome = graph.upsert_memory_item(&params)?;
+            print_json(serde_json::to_value(&outcome)?)?;
+        }
+        "memory-item-get" => {
+            if args.len() < 4 {
+                eprintln!("Usage: atheneum memory-item-get <db-path> <graph-entity-id>");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(args, 2, "db-path")?);
+            let id_str = positional(args, 3, "graph-entity-id")?;
+            let clean_id = id_str.strip_prefix("memory:").unwrap_or(id_str);
+            let id = parse_i64_arg(clean_id, "graph-entity-id")?;
+            let graph = AtheneumGraph::open(&db_path)?;
+            match graph.get_memory_item_by_graph_id(id)? {
+                Some(item) => print_json(serde_json::to_value(&item)?)?,
+                None => anyhow::bail!("memory item not found: {}", id),
+            }
+        }
+        "memory-route" => {
+            if args.len() < 3 {
+                eprintln!(
+                    "Usage: atheneum memory-route <db-path> [query] [--project P] [--kind K] \\\
+                     [--kinds K1,K2] [--status S] [--confidence-floor N] [--evidence-required] \\\
+                     [--budget B] [--depth summary|bundle|expand]"
+                );
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(args, 2, "db-path")?);
+            let (query, opts_slice) = if args.len() > 3 && !args[3].starts_with('-') {
+                (args[3].as_str(), &args[4..])
+            } else {
+                ("*", &args[3..])
+            };
+            let opts = parse_options(opts_slice)?;
+            let budget = parse_usize_option(opts.budget.as_deref(), "budget")?.unwrap_or(800);
+            let depth = crate::MemoryRouteDepth::from_str_opt(opts.depth.as_deref());
+            let kinds: Option<Vec<String>> = if let Some(ref ks) = opts.kinds {
+                Some(
+                    ks.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect(),
+                )
+            } else {
+                opts.kind.map(|k| vec![k])
+            };
+            let confidence_floor =
+                parse_f64_option(opts.confidence_floor.as_deref(), "confidence-floor")?;
+            let filters = crate::MemoryRouteFilters {
+                project: opts.project,
+                kinds,
+                status: opts.status,
+                confidence_floor,
+                evidence_required: opts.evidence_required,
+            };
+            let graph = AtheneumGraph::open(&db_path)?;
+            let resp = graph.route_memory(query, &filters, budget, depth)?;
+            print_json(serde_json::to_value(&resp)?)?;
+        }
+        "memory-expand" => {
+            if args.len() < 4 {
+                eprintln!("Usage: atheneum memory-expand <db-path> <id1,id2,...> [--budget B]");
+                std::process::exit(1);
+            }
+            let db_path = PathBuf::from(positional(args, 2, "db-path")?);
+            let mut ids = Vec::new();
+            let mut flag_args = Vec::new();
+            let mut i = 3;
+            while i < args.len() {
+                if args[i].starts_with('-') {
+                    flag_args.extend_from_slice(&args[i..]);
+                    break;
+                } else {
+                    for part in args[i].split(',') {
+                        let trimmed = part.trim();
+                        if !trimmed.is_empty() {
+                            ids.push(trimmed.to_string());
+                        }
+                    }
+                    i += 1;
+                }
+            }
+            let opts = parse_options(&flag_args)?;
+            let budget = parse_usize_option(opts.budget.as_deref(), "budget")?.unwrap_or(2000);
+            let graph = AtheneumGraph::open(&db_path)?;
+            let resp = graph.expand_memory(&ids, budget)?;
+            print_json(serde_json::to_value(&resp)?)?;
+        }
         "memory-store" => {
             if args.len() < 5 {
                 eprintln!("Usage: atheneum memory-store <db-path> <key> <content> [--scope S] [--confidence N] [--project P]");
